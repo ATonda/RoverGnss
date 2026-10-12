@@ -47,15 +47,24 @@ interface TrackDao {
 
     @Query("SELECT COUNT(*) FROM track_point WHERE trackId = :trackId")
     suspend fun pointCount(trackId: Long): Int
+
+    @Insert
+    suspend fun insertDiag(d: List<TrackDiag>)
+
+    @Query("SELECT * FROM track_diag WHERE trackId = :trackId ORDER BY rxMs")
+    suspend fun diag(trackId: Long): List<TrackDiag>
 }
 
-@Database(entities = [Job::class, Track::class, TrackPoint::class], version = 1, exportSchema = true)
+// Verze 2: diagnostika k trase, další sloupce bodů. Starší databáze se smaže (vývojová fáze).
+@Database(entities = [Job::class, Track::class, TrackPoint::class, TrackDiag::class], version = 2, exportSchema = true)
 abstract class AppDb : RoomDatabase() {
     abstract fun jobs(): JobDao
     abstract fun tracks(): TrackDao
 
     companion object {
         fun create(context: Context): AppDb =
-            Room.databaseBuilder(context, AppDb::class.java, "rovergnss.db").build()
+            Room.databaseBuilder(context, AppDb::class.java, "rovergnss.db")
+                .fallbackToDestructiveMigration()
+                .build()
     }
 }

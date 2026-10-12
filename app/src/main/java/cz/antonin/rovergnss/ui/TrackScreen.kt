@@ -52,6 +52,7 @@ fun TrackScreen(c: RoverController) {
     val tracks by tracksFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     val rec by c.recording.collectAsStateWithLifecycle()
 
+    var raw by remember { mutableStateOf(c.prefs.recordRaw) }
     var every by remember { mutableStateOf(c.prefs.recordEvery.toString()) }
     var antH by remember { mutableStateOf(c.prefs.antennaH.toString()) }
     var onlyFix by remember { mutableStateOf(false) }
@@ -72,17 +73,33 @@ fun TrackScreen(c: RoverController) {
         if (uri == null) return
         scope.launch {
             val n = withContext(Dispatchers.IO) {
-                val pts = c.db.tracks().points(t.id)
-                context.contentResolver.openOutputStream(uri)?.use { out ->
-                    if (kind == "csv") Exporter.csv(t, pts, filter(), out) else Exporter.gpx(t, pts, filter(), out)
-                } ?: -1
+                try {
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        when (kind) {
+                            "csv" -> Exporter.csv(t, c.db.tracks().points(t.id), filter(), out)
+                            "gpx" -> Exporter.gpx(t, c.db.tracks().points(t.id), filter(), out)
+                            "diag" -> Exporter.diagCsv(c.db.tracks().diag(t.id), out)
+                            else -> t.rawFile?.let { f -> c.rawFile(f).inputStream().use { it.copyTo(out) }.toInt() } ?: -1
+                        }
+                    } ?: -1
+                } catch (e: java.io.IOException) {
+                    -1
+                }
             }
-            c.postMessage(if (n >= 0) "Exportováno $n bodů" else "Soubor nelze zapsat")
+            c.postMessage(
+                when {
+                    n < 0 -> "Soubor nelze zapsat"
+                    kind == "raw" -> "Exportováno ${n / 1024} kB"
+                    kind == "diag" -> "Exportováno $n záznamů diagnostiky"
+                    else -> "Exportováno $n bodů"
+                }
+            )
         }
     }
 
     val csvLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { export(it) }
     val gpxLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/gpx+xml")) { export(it) }
+    val rawLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { export(it) }
 
     LazyColumn(Modifier.fillMaxSize()) {
         item {
@@ -110,8 +127,16 @@ fun TrackScreen(c: RoverController) {
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     )
                 }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(raw, {
+                        raw = it
+                        c.prefs.recordRaw = it
+                    })
+                    Text("ukládat i surový proud z roveru (~10 MB/h)")
+                }
                 Text(
-                    "Rover posílá polohu frekvencí profilu (5 Hz). Výška antény se uloží k nové trase a odečte při exportu.",
+                    "Rover posílá polohu frekvencí profilu (5 Hz). Výška antény se uloží k nové trase a odečte při exportu. " +
+                        "K trase se ukládá i diagnostika 1 Hz (stav roveru, satelity, BT, NTRIP).",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -149,17 +174,28 @@ fun TrackScreen(c: RoverController) {
                         if (t.antennaH != 0.0) ", anténa ${fmt(t.antennaH, 3)} m" else "",
                     style = MaterialTheme.typography.bodySmall,
                 )
+                val safe = t.name.replace(Regex("[^A-Za-z0-9_-]+"), "_")
+                val done = t.endMs != null
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val safe = t.name.replace(Regex("[^A-Za-z0-9_-]+"), "_")
                     OutlinedButton(onClick = {
                         pending = t to "csv"
                         csvLauncher.launch("$safe.csv")
-                    }, enabled = t.endMs != null) { Text("CSV") }
+                    }, enabled = done) { Text("CSV") }
                     OutlinedButton(onClick = {
                         pending = t to "gpx"
                         gpxLauncher.launch("$safe.gpx")
-                    }, enabled = t.endMs != null) { Text("GPX") }
-                    TextButton(onClick = { toDelete = t }, enabled = t.endMs != null) { Text("Smazat") }
+                    }, enabled = done) { Text("GPX") }
+                    OutlinedButton(onClick = {
+                        pending = t to "diag"
+                        csvLauncher.launch("${safe}_diag.csv")
+                    }, enabled = done) { Text("Diag") }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (t.rawFile != null) OutlinedButton(onClick = {
+                        pending = t to "raw"
+                        rawLauncher.launch("${safe}.log")
+                    }, enabled = done) { Text("Surový proud") }
+                    TextButton(onClick = { toDelete = t }, enabled = done) { Text("Smazat") }
                 }
             }
         }
@@ -173,7 +209,7 @@ fun TrackScreen(c: RoverController) {
             confirmButton = {
                 TextButton(onClick = {
                     toDelete = null
-                    scope.launch { c.db.tracks().delete(t.id) }
+                    c.deleteTrack(t)
                 }) { Text("Smazat") }
             },
             dismissButton = { TextButton(onClick = { toDelete = null }) { Text("Zrušit") } },

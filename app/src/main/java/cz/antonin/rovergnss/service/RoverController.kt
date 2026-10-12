@@ -6,6 +6,7 @@ import cz.antonin.rovergnss.data.AppDb
 import cz.antonin.rovergnss.data.Job
 import cz.antonin.rovergnss.data.Prefs
 import cz.antonin.rovergnss.data.Track
+import cz.antonin.rovergnss.data.TrackDiag
 import cz.antonin.rovergnss.data.TrackPoint
 import cz.antonin.rovergnss.geo.Etrs
 import cz.antonin.rovergnss.link.BtLink
@@ -35,11 +36,17 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
+import java.io.BufferedOutputStream
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /** Stav záznamu trasy. */
 data class RecordingState(val trackId: Long, val name: String, val points: Int, val startMs: Long)
@@ -95,7 +102,14 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     // ------------------------------------------------------------------ spojení
     private val satParts = ArrayList<Sat>()
     private val parser = StreamParser(onLine = ::onLine)
-    val link = BtLink(context, scope) { buf, n -> synchronized(parser) { parser.feed(buf, n) } }
+    val link = BtLink(context, scope) { buf, n ->
+        rawWrite(buf, n)
+        synchronized(parser) { parser.feed(buf, n) }
+    }
+
+    /** Věty $PRVR se špatným kontrolním součtem */
+    val badChecksum = AtomicLong()
+    val droppedLines: Long get() = parser.droppedLines
     val linkState: StateFlow<LinkState> get() = link.state
 
     // RTCM se do roveru posílá po celých rámcích, aby se mezi ně mohly vkládat příkazy JSON
@@ -111,6 +125,9 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     private val _recording = MutableStateFlow<RecordingState?>(null)
     val recording: StateFlow<RecordingState?> = _recording.asStateFlow()
     private val recBuffer = ArrayList<TrackPoint>()
+    private val diagBuffer = ArrayList<TrackDiag>()
+    private var rawOut: OutputStream? = null
+    private val rawLock = Any()
     private var recCounter = 0
 
     init {
@@ -207,27 +224,107 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         val job = db.jobs().first() ?: Job(name = "Výchozí").let { it.copy(id = db.jobs().insert(it)) }
         val now = System.currentTimeMillis()
         val n = name ?: ("Trasa " + SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(now)))
-        val id = db.tracks().insert(Track(jobId = job.id, name = n, startMs = now, antennaH = prefs.antennaH))
+        val id = db.tracks().insert(
+            Track(jobId = job.id, name = n, startMs = now, antennaH = prefs.antennaH, rateHz = _info.value?.rateHz ?: 0)
+        )
+        if (prefs.recordRaw) {
+            val name = "track_$id.log"
+            try {
+                val f = rawFile(name)
+                f.parentFile?.mkdirs()
+                synchronized(rawLock) { rawOut = BufferedOutputStream(FileOutputStream(f), 65536) }
+                db.tracks().get(id)?.let { db.tracks().update(it.copy(rawFile = name)) }
+            } catch (e: IOException) {
+                _messages.tryEmit("Surový záznam nelze založit: ${e.message}")
+            }
+        }
         recCounter = 0
         _recording.value = RecordingState(id, n, 0, now)
     }
 
     fun stopRecording() = scope.launch {
         val r = _recording.value ?: return@launch
-        flushRecording()
         _recording.value = null
+        flushRecording(r.trackId)
+        synchronized(rawLock) {
+            try {
+                rawOut?.close()
+            } catch (_: IOException) {
+            }
+            rawOut = null
+        }
         val t = db.tracks().get(r.trackId) ?: return@launch
         db.tracks().update(t.copy(endMs = System.currentTimeMillis(), points = db.tracks().pointCount(r.trackId)))
     }
 
-    private suspend fun flushRecording() {
+    fun rawFile(name: String): File = File(File(context.filesDir, "raw"), name)
+
+    fun deleteTrack(t: Track) = scope.launch {
+        if (_recording.value?.trackId == t.id) return@launch
+        t.rawFile?.let { rawFile(it).delete() }
+        db.tracks().delete(t.id)
+    }
+
+    private suspend fun flushRecording(trackId: Long? = _recording.value?.trackId) {
         val batch: List<TrackPoint>
+        val diag: List<TrackDiag>
         synchronized(recBuffer) {
-            if (recBuffer.isEmpty()) return
             batch = ArrayList(recBuffer)
             recBuffer.clear()
+            diag = ArrayList(diagBuffer)
+            diagBuffer.clear()
         }
-        db.tracks().insertPoints(batch)
+        if (batch.isNotEmpty()) db.tracks().insertPoints(batch)
+        if (diag.isNotEmpty()) db.tracks().insertDiag(diag)
+        if (trackId != null) synchronized(rawLock) {
+            try {
+                rawOut?.flush()
+            } catch (_: IOException) {
+            }
+        }
+    }
+
+    private fun rawWrite(buf: ByteArray, n: Int) {
+        if (rawOut == null) return
+        synchronized(rawLock) {
+            try {
+                rawOut?.write(buf, 0, n)
+            } catch (e: IOException) {
+                rawOut = null
+                _messages.tryEmit("Surový záznam přerušen: ${e.message}")
+            }
+        }
+    }
+
+    /** Diagnostika 1 Hz – volá se po každé větě STA. */
+    private fun recordDiag(s: Sta) {
+        val r = _recording.value ?: return
+        val sats = _sats.value
+        val used = sats.filter { it.used }
+        val now = System.currentTimeMillis()
+        val nt = ntrip.state.value
+        val d = TrackDiag(
+            trackId = r.trackId, rxMs = now, gnssMs = _pos.value?.timeMs,
+            batV = s.batV, profile = s.profile, rtcmOk = s.rtcmOk, rtcmBad = s.rtcmBad, rtcmAge = s.rtcmAge,
+            rtcmType = s.rtcmType, ubxErr = s.ubxErr, freeHeap = s.freeHeap, btDropped = s.btDropped,
+            satTracked = sats.size, satUsed = used.size,
+            usedGps = used.count { it.gnssId == 0 }, usedGal = used.count { it.gnssId == 2 },
+            usedBds = used.count { it.gnssId == 3 }, usedGlo = used.count { it.gnssId == 6 },
+            usedOther = used.count { it.gnssId !in setOf(0, 2, 3, 6) },
+            cnoMeanUsed = if (used.isEmpty()) null else used.map { it.cno }.average(),
+            cnoMax = sats.maxOfOrNull { it.cno } ?: 0,
+            btRxBytes = link.rxBytes.get(), btTxBytes = link.txBytes.get(), btTxDropped = link.txDropped.get(),
+            btReconnects = link.reconnects.get(), badChecksum = badChecksum.get(), droppedLines = parser.droppedLines,
+            ntripState = when (nt) {
+                NtripState.Off -> "off"
+                is NtripState.Connecting -> "connecting"
+                is NtripState.Streaming -> "streaming"
+                is NtripState.Failed -> "failed"
+            },
+            ntripBytes = ntrip.bytes.get(), ntripFrames = rtcmFramer.frames, ntripBadCrc = rtcmFramer.badCrc,
+            ntripAge = if (ntrip.lastDataMs > 0) (now - ntrip.lastDataMs) / 1000.0 else null,
+        )
+        synchronized(recBuffer) { diagBuffer.add(d) }
     }
 
     private fun record(p: Pos) {
@@ -240,6 +337,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             hEll = p.hEll ?: 0.0, hMsl = p.hMsl ?: 0.0, sN = p.sN, sE = p.sE, sU = p.sU,
             hAcc = p.hAcc, vAcc = p.vAcc, quality = p.quality.code, carrSoln = p.carrSoln, itrf = p.itrf,
             numSv = p.numSv, pdop = p.pdop, speed = p.speed, heading = p.heading, moving = p.moving,
+            corrAge = p.corrAge, rtcm = p.rtcm, hp = p.highPrecision, rxMs = p.rxMs,
         )
         synchronized(recBuffer) { recBuffer.add(tp) }
         _recording.value = r.copy(points = r.points + 1)
@@ -260,7 +358,10 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     }
 
     private fun onPrvr(line: String) {
-        val body = RoverProtocol.checkedBody(line) ?: return
+        val body = RoverProtocol.checkedBody(line) ?: run {
+            badChecksum.incrementAndGet()
+            return
+        }
         val f = body.split(',')
         when (f.getOrNull(1)) {
             "POS" -> RoverProtocol.parsePos(f)?.let { p ->
@@ -277,7 +378,10 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                     _trail.value = (if (t.size >= TRAIL_MAX) t.drop(t.size - TRAIL_MAX + 1) else t) + listOf(pt)
                 }
             }
-            "STA" -> RoverProtocol.parseSta(f)?.let { _sta.value = it }
+            "STA" -> RoverProtocol.parseSta(f)?.let {
+                _sta.value = it
+                recordDiag(it)
+            }
             "SAT" -> RoverProtocol.parseSat(f)?.let { part ->
                 if (part.part == 1) satParts.clear()
                 satParts.addAll(part.sats)

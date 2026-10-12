@@ -27,6 +27,11 @@ class Prefs(context: Context) {
         get() = sp.getInt("recordEvery", 1)
         set(v) = sp.edit().putInt("recordEvery", v).apply()
 
+    /** Při záznamu trasy ukládat i surový proud z roveru */
+    var recordRaw: Boolean
+        get() = sp.getBoolean("recordRaw", true)
+        set(v) = sp.edit().putBoolean("recordRaw", v).apply()
+
     var antennaH: Double
         get() = sp.getFloat("antennaH", 0f).toDouble()
         set(v) = sp.edit().putFloat("antennaH", v.toFloat()).apply()

@@ -47,6 +47,8 @@ class BtLink(
     val rxBytes = AtomicLong()
     val txBytes = AtomicLong()
     val txDropped = AtomicLong()
+    /** Navázaná spojení (první + obnovení) */
+    val reconnects = AtomicLong()
 
     private var job: Job? = null
     private var socket: BluetoothSocket? = null
@@ -80,6 +82,7 @@ class BtLink(
                     return@launch
                 }
                 socket = s
+                reconnects.incrementAndGet()
                 attempt = 0
                 lastError = null
                 _state.value = LinkState.Connected(name, address)
