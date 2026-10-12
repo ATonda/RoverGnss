@@ -128,7 +128,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         // Služba na popředí běží, dokud je něco aktivní
         scope.launch {
             combine(link.state, ntrip.state, _recording) { l, n, r ->
-                l !is LinkState.Idle || n !is NtripState.Off || r != null
+                (l !is LinkState.Idle && l !is LinkState.Failed) || n !is NtripState.Off || r != null
             }.distinctUntilChanged().collect { active ->
                 if (active) RoverService.start(context) else RoverService.stop(context)
             }

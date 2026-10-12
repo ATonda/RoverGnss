@@ -89,6 +89,10 @@ private fun RoverSection(c: RoverController) {
                     enabled = selected != null && c.link.isEnabled,
                 ) { Text("Připojit") }
             }
+            is LinkState.Failed -> {
+                Text(l.error, color = MaterialTheme.colorScheme.error)
+                OutlinedButton(onClick = { c.disconnect() }) { Text("Zpět") }
+            }
             is LinkState.Connecting -> {
                 Text("Připojuji ${l.name} (pokus ${l.attempt})…")
                 l.lastError?.let { Text(it, style = MaterialTheme.typography.bodySmall) }

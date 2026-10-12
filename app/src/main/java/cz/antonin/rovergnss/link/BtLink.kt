@@ -25,6 +25,7 @@ sealed class LinkState {
     data object Idle : LinkState()
     data class Connecting(val name: String, val attempt: Int, val lastError: String?) : LinkState()
     data class Connected(val name: String, val address: String) : LinkState()
+    data class Failed(val error: String) : LinkState()   // chyba, kterou opakování nevyřeší (oprávnění)
 }
 
 /**
@@ -74,6 +75,9 @@ class BtLink(
                     lastError = e.message ?: "spojení selhalo"
                     delay(backoff(attempt))
                     continue
+                } catch (e: SecurityException) {
+                    _state.value = LinkState.Failed("chybí oprávnění Bluetooth: ${e.message}")
+                    return@launch
                 }
                 socket = s
                 attempt = 0
@@ -93,6 +97,8 @@ class BtLink(
                     }
                 } catch (e: IOException) {
                     lastError = "spojení přerušeno"
+                } catch (e: SecurityException) {
+                    lastError = "chybí oprávnění Bluetooth"
                 } finally {
                     writer.cancel()
                     closeQuietly(s)
@@ -131,7 +137,7 @@ class BtLink(
     }
 
     private fun open(dev: BluetoothDevice, attempt: Int): BluetoothSocket {
-        adapter?.cancelDiscovery()
+        // cancelDiscovery() se nevolá: od Androidu 12 vyžaduje BLUETOOTH_SCAN a aplikace vyhledávání nespouští
         val s: BluetoothSocket = if (attempt % 2 == 1) {
             dev.createRfcommSocketToServiceRecord(SPP_UUID)
         } else {

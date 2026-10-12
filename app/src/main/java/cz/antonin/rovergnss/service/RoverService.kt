@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -32,10 +33,17 @@ class RoverService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
-        ServiceCompat.startForeground(
-            this, NOTIF_ID, build("Spouštím…"),
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0,
-        )
+        try {
+            ServiceCompat.startForeground(
+                this, NOTIF_ID, build("Spouštím…"),
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0,
+            )
+        } catch (e: Exception) {
+            // systém službu na popředí odmítl (oprávnění, start z pozadí) – aplikace běží dál bez ní
+            Log.w(TAG, "startForeground odmítnuto: $e")
+            stopSelf()
+            return
+        }
         // CPU musí běžet i při zhasnutém displeji (příjem BT, NTRIP, zápis trasy)
         wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RoverGnss:link").apply { acquire() }
@@ -62,6 +70,7 @@ class RoverService : LifecycleService() {
             is LinkState.Connected -> l.name
             is LinkState.Connecting -> "připojuji ${l.name}…"
             LinkState.Idle -> "rover odpojen"
+            is LinkState.Failed -> "chyba spojení"
         }
         c.pos.value?.let { p ->
             parts += p.quality.label
@@ -100,6 +109,7 @@ class RoverService : LifecycleService() {
     }
 
     companion object {
+        private const val TAG = "RoverService"
         private const val CHANNEL = "link"
         private const val NOTIF_ID = 1
 
