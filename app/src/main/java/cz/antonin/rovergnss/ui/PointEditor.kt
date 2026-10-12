@@ -6,6 +6,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -93,26 +99,47 @@ fun PointEditor(
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize()) {
+          // okraje podle systémových lišt a klávesnice – tlačítka se nesmí plést se systémovými
+          Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    if (initial.id == 0L) "Nový bod" else "Bod ${initial.name}",
+                    style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f),
+                )
+                OutlinedButton(onClick = onDismiss) { Text("Zrušit") }
+                Button(onClick = { build()?.let(onSave) }) { Text("Uložit") }
+            }
+            err?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 16.dp)) }
+            HorizontalDivider()
             Column(
-                Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+                Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Text(if (initial.id == 0L) "Nový bod" else "Bod ${initial.name}", style = MaterialTheme.typography.titleLarge)
                 OutlinedTextField(name, { name = it }, label = { Text("Název / číslo") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(kind, { kind = it }, label = { Text("Druh") }, singleLine = true, modifier = Modifier.fillMaxWidth())
 
                 Text("S-JTSK a výška Bpv", style = MaterialTheme.typography.titleSmall)
                 Row {
-                    NumField(y, { y = it }, "Y [m]", Modifier.weight(1f))
+                    NumField(y, { y = it }, "Y [m]", Modifier.weight(1f), if (initial.jtskDerived) num(initial.y, 2) else "")
                     Spacer(Modifier.width(8.dp))
-                    NumField(x, { x = it }, "X [m]", Modifier.weight(1f))
+                    NumField(x, { x = it }, "X [m]", Modifier.weight(1f), if (initial.jtskDerived) num(initial.x, 2) else "")
                 }
+                if (initial.jtskDerived && y.isEmpty()) Text("S-JTSK dopočteno z ETRS89 (šedě)", style = MaterialTheme.typography.bodySmall)
                 NumField(bpv, { bpv = it }, "Bpv [m]", Modifier.fillMaxWidth())
 
                 Text("ETRS89", style = MaterialTheme.typography.titleSmall)
-                OutlinedTextField(lat, { lat = it }, label = { Text("φ (49°55′9,8368″ nebo 49,919399)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(lon, { lon = it }, label = { Text("λ") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                NumField(hEll, { hEll = it }, "h elipsoidická [m]", Modifier.fillMaxWidth())
+                val dLat = if (initial.etrsDerived) initial.lat?.let { Angles.dms(it, 4) } ?: "" else ""
+                val dLon = if (initial.etrsDerived) initial.lon?.let { Angles.dms(it, 4) } ?: "" else ""
+                OutlinedTextField(lat, { lat = it }, label = { Text("φ (49°55′9,8368″ nebo 49,919399)") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth(), placeholder = { if (dLat.isNotEmpty()) Text(dLat) })
+                OutlinedTextField(lon, { lon = it }, label = { Text("λ") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth(), placeholder = { if (dLon.isNotEmpty()) Text(dLon) })
+                NumField(hEll, { hEll = it }, "h elipsoidická [m]", Modifier.fillMaxWidth(), if (initial.etrsDerived) num(initial.hEll, 2) else "")
+                if (initial.etrsDerived && lat.isEmpty()) Text("ETRS89 dopočteno ze S-JTSK (šedě)", style = MaterialTheme.typography.bodySmall)
                 Text(
                     "Stačí jeden systém, druhý se dopočte (7 parametrů, ~0,4 m). Prázdná pole = dopočtená.",
                     style = MaterialTheme.typography.bodySmall,
@@ -144,25 +171,37 @@ fun PointEditor(
                 OutlinedTextField(note, { note = it }, label = { Text("Poznámka") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(url, { url = it }, label = { Text("Geodetické údaje (odkaz)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
 
-                err?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { build()?.let(onSave) }) { Text("Uložit") }
-                    OutlinedButton(onClick = onDismiss) { Text("Zrušit") }
-                    if (onDelete != null) {
-                        TextButton(onClick = { if (confirmDelete) onDelete() else confirmDelete = true }) {
-                            Text(if (confirmDelete) "Opravdu smazat" else "Smazat", color = MaterialTheme.colorScheme.error)
-                        }
+                if (onDelete != null) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = { confirmDelete = true }) {
+                        Text("Smazat bod", color = MaterialTheme.colorScheme.error)
                     }
                 }
             }
+          }
+        }
+        if (confirmDelete && onDelete != null) {
+            AlertDialog(
+                onDismissRequest = { confirmDelete = false },
+                title = { Text("Smazat bod?") },
+                text = { Text("${initial.name} – nelze vrátit.") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmDelete = false
+                        onDelete()
+                    }) { Text("Smazat", color = MaterialTheme.colorScheme.error) }
+                },
+                dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Zrušit") } },
+            )
         }
     }
 }
 
 @Composable
-private fun NumField(v: String, onChange: (String) -> Unit, label: String, modifier: Modifier) {
+private fun NumField(v: String, onChange: (String) -> Unit, label: String, modifier: Modifier, hint: String = "") {
     OutlinedTextField(
         v, onChange, label = { Text(label) }, singleLine = true, modifier = modifier,
+        placeholder = { if (hint.isNotEmpty()) Text(hint) },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
     )
 }

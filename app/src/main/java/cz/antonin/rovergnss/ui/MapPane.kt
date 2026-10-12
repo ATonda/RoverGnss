@@ -99,17 +99,17 @@ fun MapPane(
     points: List<JobPoint> = emptyList(),
     showCuzk: Boolean = false,
     onClick: (lat: Double, lon: Double, zoom: Double, point: JobPoint?) -> Unit = { _, _, _, _ -> },
+    initialCamera: DoubleArray? = null,   // [lat, lon, zoom] poslední pohled; null = celá ČR a vycentrovat na první fix
+    onCamera: (lat: Double, lon: Double, zoom: Double, idle: Boolean) -> Unit = { _, _, _, _ -> },
 ) {
     val clickCb by rememberUpdatedState(onClick)
+    val cameraCb by rememberUpdatedState(onCamera)
     val pointsNow by rememberUpdatedState(points)
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val holder = remember { MapHolder() }
     var mapReady by remember { mutableStateOf(false) }
     var styleVersion by remember { mutableStateOf(0) }
-    // kamera pro měřítko
-    var camZoom by remember { mutableStateOf(6.5) }
-    var camLat by remember { mutableStateOf(49.8) }
 
     val mapView = remember {
         MapView(context).apply {
@@ -119,13 +119,19 @@ fun MapPane(
                 m.uiSettings.isRotateGesturesEnabled = false
                 m.uiSettings.isTiltGesturesEnabled = false
                 m.setMaxZoomPreference(MAX_ZOOM)
-                m.cameraPosition = CameraPosition.Builder().target(LatLng(49.8, 15.5)).zoom(6.5).build()
-                val camUpdate = {
-                    camZoom = m.cameraPosition.zoom
-                    m.cameraPosition.target?.let { camLat = it.latitude }
+                if (initialCamera != null) {
+                    // návrat na mapu: poslední pohled, bez automatického vycentrování
+                    m.cameraPosition = CameraPosition.Builder()
+                        .target(LatLng(initialCamera[0], initialCamera[1])).zoom(initialCamera[2]).build()
+                    holder.centered = true
+                } else {
+                    m.cameraPosition = CameraPosition.Builder().target(LatLng(49.8, 15.5)).zoom(6.5).build()
                 }
-                m.addOnCameraMoveListener { camUpdate() }
-                m.addOnCameraIdleListener { camUpdate() }
+                val camUpdate = { idle: Boolean ->
+                    m.cameraPosition.target?.let { cameraCb(it.latitude, it.longitude, m.cameraPosition.zoom, idle) }
+                }
+                m.addOnCameraMoveListener { camUpdate(false) }
+                m.addOnCameraIdleListener { camUpdate(true) }
                 m.addOnMapClickListener { ll ->
                     val sp = m.projection.toScreenLocation(ll)
                     // bod zakázky v okolí prstu (±20 px)
@@ -258,10 +264,7 @@ fun MapPane(
         }
     }
 
-    Box(modifier) {
-        AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
-        ScaleBar(camZoom, camLat, Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 34.dp))
-    }
+    AndroidView(factory = { mapView }, modifier = modifier)
 }
 
 /**
@@ -269,7 +272,7 @@ fun MapPane(
  * Rozlišení MapLibre: svět má 512 dp × 2^zoom, m/dp = obvod·cos φ / (512·2^zoom).
  */
 @Composable
-private fun ScaleBar(zoom: Double, lat: Double, modifier: Modifier = Modifier) {
+fun ScaleBar(zoom: Double, lat: Double, modifier: Modifier = Modifier) {
     val mPerDp = 40_075_016.686 * kotlin.math.cos(Math.toRadians(lat)) / (512.0 * Math.pow(2.0, zoom))
     if (mPerDp <= 0 || mPerDp.isNaN()) return
     val maxM = mPerDp * 100

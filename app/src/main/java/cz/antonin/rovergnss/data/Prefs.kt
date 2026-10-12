@@ -18,6 +18,17 @@ class Prefs(context: Context) {
         get() = sp.getLong("activeJobId", 0)
         set(v) = sp.edit().putLong("activeJobId", v).apply()
 
+    /** Poslední pohled mapy [lat, lon, zoom] (null = ještě nebyl) */
+    var mapCamera: DoubleArray?
+        get() = sp.getString("mapCamera", null)?.split(',')?.mapNotNull { it.toDoubleOrNull() }
+            ?.takeIf { it.size == 3 }?.toDoubleArray()
+        set(v) = sp.edit().putString("mapCamera", v?.joinToString(",")).apply()
+
+    /** Mapa sleduje polohu roveru */
+    var mapFollow: Boolean
+        get() = sp.getBoolean("mapFollow", true)
+        set(v) = sp.edit().putBoolean("mapFollow", v).apply()
+
     /** Vrstva bodových polí ČÚZK na mapě */
     var showCuzk: Boolean
         get() = sp.getBoolean("showCuzk", false)

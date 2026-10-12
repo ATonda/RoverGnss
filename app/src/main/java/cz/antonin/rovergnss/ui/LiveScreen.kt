@@ -60,7 +60,10 @@ fun LiveScreen(c: RoverController) {
     val rec by c.recording.collectAsStateWithLifecycle()
     val lq by c.linkQuality.collectAsStateWithLifecycle()
     var style by rememberSaveable { mutableIntStateOf(c.prefs.mapStyle) }
-    var follow by rememberSaveable { mutableStateOf(true) }
+    var follow by remember { mutableStateOf(c.prefs.mapFollow) }
+    val initialCamera = remember { c.prefs.mapCamera }
+    var camZoom by remember { mutableStateOf(initialCamera?.get(2) ?: 6.5) }
+    var camLat by remember { mutableStateOf(initialCamera?.get(0) ?: 49.8) }
     var styleMenu by remember { mutableStateOf(false) }
     var showCuzk by rememberSaveable { mutableStateOf(c.prefs.showCuzk) }
     var editing by remember { mutableStateOf<cz.antonin.rovergnss.data.Point?>(null) }
@@ -83,6 +86,12 @@ fun LiveScreen(c: RoverController) {
                 modifier = Modifier.fillMaxSize(),
                 points = points,
                 showCuzk = showCuzk,
+                initialCamera = initialCamera,
+                onCamera = { lat, lon, zoom, idle ->
+                    camZoom = zoom
+                    camLat = lat
+                    if (idle) c.prefs.mapCamera = doubleArrayOf(lat, lon, zoom)
+                },
                 onClick = { lat, lon, zoom, pt ->
                     when {
                         pt != null -> editing = pt
@@ -91,6 +100,7 @@ fun LiveScreen(c: RoverController) {
                     }
                 },
             )
+            ScaleBar(camZoom, camLat, Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 34.dp))
             Column(
                 Modifier.align(Alignment.TopEnd).padding(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -109,7 +119,10 @@ fun LiveScreen(c: RoverController) {
                         }
                     }
                 }
-                FilledIconToggleButton(checked = follow, onCheckedChange = { follow = it }) {
+                FilledIconToggleButton(checked = follow, onCheckedChange = {
+                    follow = it
+                    c.prefs.mapFollow = it
+                }) {
                     Icon(Icons.Filled.MyLocation, contentDescription = "Sledovat polohu")
                 }
                 FilledIconToggleButton(checked = showCuzk, onCheckedChange = {
