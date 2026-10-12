@@ -48,7 +48,8 @@ import java.util.Locale
 fun TrackScreen(c: RoverController) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val tracksFlow = remember { c.db.tracks().all() }
+    val job by c.activeJob.collectAsStateWithLifecycle()
+    val tracksFlow = remember(job?.id) { job?.let { c.db.tracks().byJob(it.id) } ?: kotlinx.coroutines.flow.emptyFlow() }
     val tracks by tracksFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     val rec by c.recording.collectAsStateWithLifecycle()
 
@@ -104,6 +105,7 @@ fun TrackScreen(c: RoverController) {
     val rawLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { export(it) }
 
     LazyColumn(Modifier.fillMaxSize()) {
+        item { JobBar(c) }
         item {
             Section("Záznam") {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

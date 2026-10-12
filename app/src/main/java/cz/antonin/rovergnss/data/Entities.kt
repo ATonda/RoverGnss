@@ -127,3 +127,48 @@ data class TrackDiag(
     val hpCount: Long?,       // epochy s HPPOSLLH (rover)
     val appMode: Boolean,     // rover v režimu aplikace
 )
+
+/** Kvalita polohy daného bodu (pro porovnání s měřením). */
+object PointQuality {
+    const val EXACT = 0      // přesná (geodetické údaje)
+    const val APPROX = 1     // přibližná
+    const val NONE = 2       // nevyhodnocovat
+    val NAMES = listOf("přesná", "přibližná", "nevyhodnocovat")
+}
+
+/** Původ bodu. */
+object PointSource {
+    const val ENTERED = 0    // zadaný ručně / import
+    const val MEASURED = 1   // změřený roverem
+    const val CUZK = 2       // převzatý z bodových polí ČÚZK
+    val NAMES = listOf("zadaný", "změřený", "ČÚZK")
+}
+
+/**
+ * Bod zakázky. Souřadnice ETRS89 i S-JTSK; když je zadaný jen jeden systém, druhý se dopočte
+ * a označí příznakem *Derived (přepočet 7 parametry ~0,4 m, po etapě 2c přesně).
+ */
+@Entity(
+    tableName = "point",
+    foreignKeys = [ForeignKey(entity = Job::class, parentColumns = ["id"], childColumns = ["jobId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("jobId")],
+)
+data class Point(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val jobId: Long,
+    val name: String,
+    val kind: String = "",        // druh (ZhB, PPBP, nivelační, …)
+    val note: String = "",
+    val lat: Double? = null,      // ETRS89 [°]
+    val lon: Double? = null,
+    val hEll: Double? = null,     // elipsoidická výška [m]
+    val etrsDerived: Boolean = false,
+    val y: Double? = null,        // S-JTSK [m]
+    val x: Double? = null,
+    val jtskDerived: Boolean = false,
+    val bpv: Double? = null,      // normální výška Bpv [m]
+    val quality: Int = PointQuality.EXACT,
+    val source: Int = PointSource.ENTERED,
+    val url: String? = null,      // geodetické údaje
+    val createdMs: Long = System.currentTimeMillis(),
+)

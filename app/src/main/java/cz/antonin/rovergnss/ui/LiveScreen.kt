@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -61,6 +62,12 @@ fun LiveScreen(c: RoverController) {
     var style by rememberSaveable { mutableIntStateOf(c.prefs.mapStyle) }
     var follow by rememberSaveable { mutableStateOf(true) }
     var styleMenu by remember { mutableStateOf(false) }
+    var showCuzk by rememberSaveable { mutableStateOf(c.prefs.showCuzk) }
+    var editing by remember { mutableStateOf<cz.antonin.rovergnss.data.Point?>(null) }
+    var cuzkAt by remember { mutableStateOf<DoubleArray?>(null) }
+    val job by c.activeJob.collectAsStateWithLifecycle()
+    val pointsFlow = remember(job?.id) { job?.let { c.db.points().byJob(it.id) } ?: kotlinx.coroutines.flow.emptyFlow() }
+    val points by pointsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
 
     val p = pos
     val g = p?.etrs()
@@ -74,6 +81,15 @@ fun LiveScreen(c: RoverController) {
                 trail = trail,
                 follow = follow,
                 modifier = Modifier.fillMaxSize(),
+                points = points,
+                showCuzk = showCuzk,
+                onClick = { lat, lon, zoom, pt ->
+                    when {
+                        pt != null -> editing = pt
+                        showCuzk && zoom >= 14.0 -> cuzkAt = doubleArrayOf(lat, lon)
+                        showCuzk -> c.postMessage("Pro bodová pole přibliž mapu (aspoň 14)")
+                    }
+                },
             )
             Column(
                 Modifier.align(Alignment.TopEnd).padding(8.dp),
@@ -95,6 +111,12 @@ fun LiveScreen(c: RoverController) {
                 }
                 FilledIconToggleButton(checked = follow, onCheckedChange = { follow = it }) {
                     Icon(Icons.Filled.MyLocation, contentDescription = "Sledovat polohu")
+                }
+                FilledIconToggleButton(checked = showCuzk, onCheckedChange = {
+                    showCuzk = it
+                    c.prefs.showCuzk = it
+                }) {
+                    Icon(Icons.Filled.Place, contentDescription = "Bodová pole ČÚZK")
                 }
             }
             ExtendedFloatingActionButton(
@@ -152,5 +174,23 @@ fun LiveScreen(c: RoverController) {
                 KeyValue("Baterie roveru", s.batV?.let { "${fmt(it, 2)} V (${s.batPct} %)" } ?: "–")
             }
         }
+    }
+
+    editing?.let { pt ->
+        PointEditor(
+            initial = pt, rover = pos, antennaH = c.prefs.antennaH,
+            onSave = {
+                c.savePoint(it)
+                editing = null
+            },
+            onDelete = {
+                c.deletePoint(pt)
+                editing = null
+            },
+            onDismiss = { editing = null },
+        )
+    }
+    cuzkAt?.let { ll ->
+        CuzkDialog(ll[0], ll[1], onTake = { c.takeCuzkPoint(it) }, onDismiss = { cuzkAt = null })
     }
 }

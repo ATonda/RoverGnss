@@ -20,6 +20,36 @@ interface JobDao {
 
     @Query("SELECT * FROM job ORDER BY createdMs LIMIT 1")
     suspend fun first(): Job?
+
+    @Query("SELECT * FROM job WHERE id = :id")
+    suspend fun get(id: Long): Job?
+
+    @Update
+    suspend fun update(j: Job)
+
+    @Query("DELETE FROM job WHERE id = :id")
+    suspend fun delete(id: Long)
+}
+
+@Dao
+interface PointDao {
+    @Insert
+    suspend fun insert(p: Point): Long
+
+    @Insert
+    suspend fun insertAll(p: List<Point>)
+
+    @Update
+    suspend fun update(p: Point)
+
+    @Query("DELETE FROM point WHERE id = :id")
+    suspend fun delete(id: Long)
+
+    @Query("SELECT * FROM point WHERE jobId = :jobId ORDER BY name")
+    fun byJob(jobId: Long): Flow<List<Point>>
+
+    @Query("SELECT * FROM point WHERE jobId = :jobId ORDER BY name")
+    suspend fun listByJob(jobId: Long): List<Point>
 }
 
 @Dao
@@ -35,6 +65,12 @@ interface TrackDao {
 
     @Query("SELECT * FROM track ORDER BY startMs DESC")
     fun all(): Flow<List<Track>>
+
+    @Query("SELECT * FROM track WHERE jobId = :jobId ORDER BY startMs DESC")
+    fun byJob(jobId: Long): Flow<List<Track>>
+
+    @Query("SELECT * FROM track WHERE jobId = :jobId")
+    suspend fun listByJob(jobId: Long): List<Track>
 
     @Query("DELETE FROM track WHERE id = :id")
     suspend fun delete(id: Long)
@@ -55,11 +91,12 @@ interface TrackDao {
     suspend fun diag(trackId: Long): List<TrackDiag>
 }
 
-// Verze 3: diagnostika spojení a telefonu. Starší databáze se smaže (vývojová fáze).
-@Database(entities = [Job::class, Track::class, TrackPoint::class, TrackDiag::class], version = 3, exportSchema = true)
+// Verze 4: body zakázek. Starší databáze se smaže (vývojová fáze).
+@Database(entities = [Job::class, Track::class, TrackPoint::class, TrackDiag::class, Point::class], version = 4, exportSchema = true)
 abstract class AppDb : RoomDatabase() {
     abstract fun jobs(): JobDao
     abstract fun tracks(): TrackDao
+    abstract fun points(): PointDao
 
     companion object {
         fun create(context: Context): AppDb =

@@ -3,7 +3,10 @@ package cz.antonin.rovergnss.service
 import android.content.Context
 import android.util.Log
 import cz.antonin.rovergnss.data.AppDb
+import cz.antonin.rovergnss.cuzk.CuzkPoint
 import cz.antonin.rovergnss.data.Job
+import cz.antonin.rovergnss.data.Point
+import cz.antonin.rovergnss.data.PointCoords
 import cz.antonin.rovergnss.data.Prefs
 import cz.antonin.rovergnss.data.Track
 import cz.antonin.rovergnss.data.TrackDiag
@@ -156,7 +159,70 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     private val rawLock = Any()
     private var recCounter = 0
 
+    // ------------------------------------------------------------------ zakázky
+    private val _activeJob = MutableStateFlow<Job?>(null)
+    val activeJob: StateFlow<Job?> = _activeJob.asStateFlow()
+
+    /** Aktivní zakázka; když žádná není, založí „Výchozí“. */
+    suspend fun ensureJob(): Job {
+        _activeJob.value?.let { return it }
+        val j = db.jobs().get(prefs.activeJobId) ?: db.jobs().first()
+            ?: Job(name = "Výchozí").let { it.copy(id = db.jobs().insert(it)) }
+        prefs.activeJobId = j.id
+        _activeJob.value = j
+        return j
+    }
+
+    fun setActiveJob(id: Long) = scope.launch {
+        val j = db.jobs().get(id) ?: return@launch
+        prefs.activeJobId = j.id
+        _activeJob.value = j
+    }
+
+    fun createJob(name: String) = scope.launch {
+        val n = name.trim().ifEmpty { return@launch }
+        val id = db.jobs().insert(Job(name = n))
+        setActiveJob(id)
+    }
+
+    fun renameJob(j: Job, name: String) = scope.launch {
+        val n = name.trim().ifEmpty { return@launch }
+        db.jobs().update(j.copy(name = n))
+        if (_activeJob.value?.id == j.id) _activeJob.value = j.copy(name = n)
+    }
+
+    /** Smaže zakázku i s body a trasami; aktivní se stane jiná (nebo nová „Výchozí“). */
+    fun deleteJob(j: Job) = scope.launch {
+        if (_recording.value != null) {
+            _messages.tryEmit("Během záznamu nelze mazat zakázky")
+            return@launch
+        }
+        // trasy a body se smažou kaskádou, surové soubory tras ručně
+        db.tracks().listByJob(j.id).forEach { t -> t.rawFile?.let { rawFile(it).delete() } }
+        db.jobs().delete(j.id)
+        if (_activeJob.value?.id == j.id) {
+            _activeJob.value = null
+            prefs.activeJobId = 0
+            ensureJob()
+        }
+    }
+
+    // ------------------------------------------------------------------ body
+    fun savePoint(p: Point) = scope.launch {
+        val q = PointCoords.complete(p)
+        if (q.id == 0L) db.points().insert(q) else db.points().update(q)
+    }
+
+    fun deletePoint(p: Point) = scope.launch { db.points().delete(p.id) }
+
+    fun takeCuzkPoint(c: CuzkPoint) = scope.launch {
+        val j = ensureJob()
+        db.points().insert(c.toPoint(j.id))
+        _messages.tryEmit("Bod ${c.name} převzat do zakázky ${j.name}")
+    }
+
     init {
+        scope.launch { ensureJob() }
         // Po připojení zjistit, co je na druhé straně
         scope.launch {
             link.state.collect { st ->
@@ -265,7 +331,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     // ------------------------------------------------------------------ záznam trasy
     fun startRecording(name: String? = null) = scope.launch {
         if (_recording.value != null) return@launch
-        val job = db.jobs().first() ?: Job(name = "Výchozí").let { it.copy(id = db.jobs().insert(it)) }
+        val job = ensureJob()
         val now = System.currentTimeMillis()
         val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(now))
         val id = db.tracks().insert(

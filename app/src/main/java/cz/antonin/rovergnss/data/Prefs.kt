@@ -13,6 +13,16 @@ class Prefs(context: Context) {
         get() = sp.getString("roverAddress", null)
         set(v) = sp.edit().putString("roverAddress", v).apply()
 
+    /** Aktivní zakázka (0 = ještě nezvolená) */
+    var activeJobId: Long
+        get() = sp.getLong("activeJobId", 0)
+        set(v) = sp.edit().putLong("activeJobId", v).apply()
+
+    /** Vrstva bodových polí ČÚZK na mapě */
+    var showCuzk: Boolean
+        get() = sp.getBoolean("showCuzk", false)
+        set(v) = sp.edit().putBoolean("showCuzk", v).apply()
+
     var ntripIndex: Int
         get() = sp.getInt("ntripIndex", 0)
         set(v) = sp.edit().putInt("ntripIndex", v).apply()

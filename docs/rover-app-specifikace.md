@@ -136,3 +136,10 @@ Příkazy z mobilu: řádek JSON začínající `{` a ukončený `\n`. Rover ho 
 - Zdroj a formát mřížek ČÚZK (transformace S-JTSK, kvazigeoid) – ověřit aktuální soubory a licenci.
 - NTRIP: dostupné castery (VESOG, CZEPOS) a vzdálenost referenčních stanic od místa měření (fix spolehlivě do ~20–30 km).
 - Mock location pro ostatní aplikace v telefonu – volitelně.
+
+## 9. Stav aplikace
+
+- **0.1.0 (etapa 1):** spojení BT, protokol `$PRVR`, NTRIP, mapa, satelity, záznam tras, export CSV/GPX, diagnostika (DB v3).
+- **0.2.0 (etapa 2a):** zakázky (výběr, nová, přejmenování, smazání), záložka Body (ruční zadání S-JTSK+Bpv nebo ETRS89, úhly i 49°55′9,8368″, dopočet druhého systému 7 parametry, import/export CSV), body na mapě s popisky, vrstva bodových polí ČÚZK (rastr ze služby BodovaPole od přiblížení 13) a dotaz klepnutím (do 30 m, vrstvy ZhB, ZPBP, PPBP, ZVBP, PVBP) s převzetím do zakázky; trasy podle zakázky. DB v4 (starší data se smažou).
+  - Pole služby BodovaPole (ZhB): CISLO, ZTLTL, DRUH, Y, X, VYSKA, B, L, HEL, GPS, GEODETICKE_UDAJE, NAZEV_KU, NAZEV_OKRES; formát hodnot ověřit na skutečných datech (karta bodu ukazuje všechna pole).
+
