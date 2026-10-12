@@ -108,6 +108,19 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 16)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
+    /** Žádost o zavření okna aplikace (po [shutdown]). */
+    private val _exit = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val exit: SharedFlow<Unit> = _exit.asSharedFlow()
+
+    /** Úplné ukončení: uloží běžící záznam, odpojí NTRIP a rover (i znovupřipojování), zastaví službu, zavře okno. */
+    fun shutdown() = scope.launch {
+        stopRecording().join()
+        ntrip.stop()
+        link.disconnect()
+        RoverService.stop(context)
+        _exit.tryEmit(Unit)
+    }
+
     /** Řádky protokolu pro diagnostiku (poslední) */
     private val _console = MutableStateFlow<List<String>>(emptyList())
     val console: StateFlow<List<String>> = _console.asStateFlow()

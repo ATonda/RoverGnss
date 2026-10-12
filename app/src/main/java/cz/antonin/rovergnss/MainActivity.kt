@@ -9,6 +9,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.mutableStateOf
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import cz.antonin.rovergnss.ui.RoverUi
 
 class MainActivity : ComponentActivity() {
@@ -22,6 +24,8 @@ class MainActivity : ComponentActivity() {
         checkPermissions()
         if (!permissionsOk.value) requestPermissions.launch(neededPermissions())
         val controller = (application as RoverApp).controller
+        // „Ukončit“ (tlačítko, oznámení, odsunutí ze seznamu) zavře i okno
+        lifecycleScope.launch { controller.exit.collect { finishAndRemoveTask() } }
         setContent {
             RoverUi(
                 controller = controller,

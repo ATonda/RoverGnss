@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
@@ -123,6 +124,32 @@ private fun RoverSection(c: RoverController) {
                 }
             }
         }
+        ExitButton(c)
+    }
+}
+
+/** Úplné ukončení aplikace (služba na popředí jinak drží spojení i po zavření okna). */
+@Composable
+private fun ExitButton(c: RoverController) {
+    val rec by c.recording.collectAsStateWithLifecycle()
+    var ask by remember { mutableStateOf(false) }
+    Spacer(Modifier.height(8.dp))
+    OutlinedButton(onClick = { if (rec != null) ask = true else c.shutdown() }) {
+        Text("Ukončit aplikaci", color = MaterialTheme.colorScheme.error)
+    }
+    if (ask) {
+        AlertDialog(
+            onDismissRequest = { ask = false },
+            title = { Text("Ukončit aplikaci?") },
+            text = { Text("Běží záznam trasy – uloží se a ukončí.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    ask = false
+                    c.shutdown()
+                }) { Text("Uložit a ukončit", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { ask = false }) { Text("Zrušit") } },
+        )
     }
 }
 

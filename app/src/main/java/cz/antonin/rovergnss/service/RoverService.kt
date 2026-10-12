@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -58,6 +59,13 @@ class RoverService : LifecycleService() {
         }
     }
 
+    /** Odsunutí ze seznamu aplikací: bez záznamu se aplikace ukončí, běžící záznam pokračuje. */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        val c = (application as RoverApp).controller
+        if (c.recording.value == null) c.shutdown()
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
@@ -98,6 +106,11 @@ class RoverService : LifecycleService() {
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val exit = PendingIntent.getBroadcast(
+            this, 1, Intent(this, ExitReceiver::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val recording = (application as RoverApp).controller.recording.value != null
         return NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notif)
             .setContentTitle(getString(R.string.app_name))
@@ -105,7 +118,15 @@ class RoverService : LifecycleService() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(pi)
+            .addAction(0, if (recording) "Ukončit (uloží záznam)" else "Ukončit", exit)
             .build()
+    }
+
+    /** Akce „Ukončit“ z oznámení. */
+    class ExitReceiver : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent?) {
+            (context.applicationContext as RoverApp).controller.shutdown()
+        }
     }
 
     companion object {
