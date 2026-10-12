@@ -1,6 +1,19 @@
 package cz.antonin.rovergnss.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -94,6 +107,9 @@ fun MapPane(
     val holder = remember { MapHolder() }
     var mapReady by remember { mutableStateOf(false) }
     var styleVersion by remember { mutableStateOf(0) }
+    // kamera pro měřítko
+    var camZoom by remember { mutableStateOf(6.5) }
+    var camLat by remember { mutableStateOf(49.8) }
 
     val mapView = remember {
         MapView(context).apply {
@@ -104,6 +120,12 @@ fun MapPane(
                 m.uiSettings.isTiltGesturesEnabled = false
                 m.setMaxZoomPreference(MAX_ZOOM)
                 m.cameraPosition = CameraPosition.Builder().target(LatLng(49.8, 15.5)).zoom(6.5).build()
+                val camUpdate = {
+                    camZoom = m.cameraPosition.zoom
+                    m.cameraPosition.target?.let { camLat = it.latitude }
+                }
+                m.addOnCameraMoveListener { camUpdate() }
+                m.addOnCameraIdleListener { camUpdate() }
                 m.addOnMapClickListener { ll ->
                     val sp = m.projection.toScreenLocation(ll)
                     // bod zakázky v okolí prstu (±20 px)
@@ -236,7 +258,45 @@ fun MapPane(
         }
     }
 
-    AndroidView(factory = { mapView }, modifier = modifier)
+    Box(modifier) {
+        AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
+        ScaleBar(camZoom, camLat, Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 34.dp))
+    }
+}
+
+/**
+ * Měřítko: délka 1–2–5×10ⁿ m, aby úsečka měla nejvýš ~100 dp.
+ * Rozlišení MapLibre: svět má 512 dp × 2^zoom, m/dp = obvod·cos φ / (512·2^zoom).
+ */
+@Composable
+private fun ScaleBar(zoom: Double, lat: Double, modifier: Modifier = Modifier) {
+    val mPerDp = 40_075_016.686 * kotlin.math.cos(Math.toRadians(lat)) / (512.0 * Math.pow(2.0, zoom))
+    if (mPerDp <= 0 || mPerDp.isNaN()) return
+    val maxM = mPerDp * 100
+    var nice = 1.0
+    val p = Math.pow(10.0, kotlin.math.floor(kotlin.math.log10(maxM)))
+    for (k in listOf(5.0, 2.0, 1.0)) if (k * p <= maxM) { nice = k * p; break }
+    val widthDp = (nice / mPerDp).toFloat()
+    val label = when {
+        nice >= 1000 -> "${(nice / 1000).let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() }} km"
+        nice >= 1 -> "${nice.toInt()} m"
+        else -> "${(nice * 100).toInt()} cm"
+    }
+    Column(modifier) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.Black,
+            modifier = Modifier.background(Color.White.copy(alpha = 0.7f)).padding(horizontal = 3.dp),
+        )
+        Box(
+            Modifier
+                .width(widthDp.dp)
+                .height(6.dp)
+                .background(Color.White.copy(alpha = 0.7f))
+                .border(1.5.dp, Color.Black)
+        )
+    }
 }
 
 private const val SRC_POS = "rover-pos"

@@ -6,9 +6,6 @@ import cz.antonin.rovergnss.data.PointQuality
 import cz.antonin.rovergnss.data.PointSource
 import cz.antonin.rovergnss.geo.Angles
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -54,46 +51,58 @@ object CuzkPoints {
     const val TILES = "$BASE/export?bbox={bbox-epsg-3857}&bboxSR=3857&imageSR=3857&size=256,256" +
         "&format=png32&transparent=true&dpi=96&f=image"
 
-    // vrstvy s body (číslo vrstvy → zkratka); viz $BASE?f=pjson
-    private val LAYERS = listOf(38 to "ZhB", 18 to "ZPBP", 42 to "PPBP", 44 to "ZVBP", 46 to "PVBP")
-
-    /** Body do [radiusM] od místa. Chyba jedné vrstvy nevadí, vrací se to, co prošlo; výjimka jen když selžou všechny. */
+    /**
+     * Body do [radiusM] od místa. Operace „identify“ prohledá všechny vrstvy služby najednou
+     * (body ZPBP/ZhB jsou podle způsobu určení rozdělené do mnoha vrstev, dotaz na vybrané vrstvy je míjel).
+     */
     suspend fun near(lat: Double, lon: Double, radiusM: Int = 30): List<CuzkPoint> = withContext(Dispatchers.IO) {
-        coroutineScope {
-            val jobs = LAYERS.map { (id, name) -> async { runCatching { queryLayer(id, name, lat, lon, radiusM) } } }
-            val res = jobs.awaitAll()
-            if (res.all { it.isFailure }) throw res.first().exceptionOrNull() ?: IllegalStateException("dotaz selhal")
-            res.flatMap { it.getOrDefault(emptyList()) }
-                .sortedBy { Angles.distanceBearing(lat, lon, it.lat, it.lon).first }
-        }
-    }
-
-    private fun queryLayer(id: Int, layer: String, lat: Double, lon: Double, radiusM: Int): List<CuzkPoint> {
+        // výřez 4×R kolem místa na 200 px → tolerance 50 px ≈ R
+        val dLat = 2.0 * radiusM / 111_132.95
+        val dLon = 2.0 * radiusM / (111_319.49 * kotlin.math.cos(Math.toRadians(lat)))
         val q = mapOf(
             "geometry" to String.format(Locale.US, "%.8f,%.8f", lon, lat),
             "geometryType" to "esriGeometryPoint",
-            "inSR" to "4326",
-            "spatialRel" to "esriSpatialRelIntersects",
-            "distance" to radiusM.toString(),
-            "units" to "esriSRUnit_Meter",
-            "outFields" to "*",
+            "sr" to "4326",
+            "layers" to "all",
+            "tolerance" to "50",
+            "mapExtent" to String.format(Locale.US, "%.8f,%.8f,%.8f,%.8f", lon - dLon, lat - dLat, lon + dLon, lat + dLat),
+            "imageDisplay" to "200,200,96",
             "returnGeometry" to "true",
-            "outSR" to "4326",
             "f" to "json",
         ).entries.joinToString("&") { (k, v) -> k + "=" + URLEncoder.encode(v, "UTF-8") }
-        val conn = URL("$BASE/$id/query?$q").openConnection() as HttpURLConnection
+        val conn = URL("$BASE/identify?$q").openConnection() as HttpURLConnection
         conn.connectTimeout = 10_000
-        conn.readTimeout = 15_000
-        conn.setRequestProperty("User-Agent", "RoverGnss/0.1")
-        try {
+        conn.readTimeout = 20_000
+        conn.setRequestProperty("User-Agent", "RoverGnss/0.2")
+        val list = try {
             val text = conn.inputStream.bufferedReader().readText()
             val root = JSONObject(text)
             root.optJSONObject("error")?.let { throw IllegalStateException(it.optString("message", "chyba služby")) }
-            val feats = root.optJSONArray("features") ?: return emptyList()
-            return (0 until feats.length()).mapNotNull { parse(layer, feats.getJSONObject(it)) }
+            val res = root.optJSONArray("results") ?: return@withContext emptyList()
+            (0 until res.length()).mapNotNull { i ->
+                val r = res.getJSONObject(i)
+                parse(layerShort(r.optString("layerName", "")), r)
+            }
         } finally {
             conn.disconnect()
         }
+        // stejný bod bývá ve vrstvě bodu i ve vrstvě čísel – nechat jeden (přednost má záznam s víc údaji)
+        list.groupBy { it.name + String.format(Locale.US, "%.6f,%.6f", it.lat, it.lon) }
+            .map { (_, v) -> v.maxBy { it.attributes.size + (if (it.y != null) 10 else 0) + (if (it.etrsLat != null) 10 else 0) } }
+            .filter { Angles.distanceBearing(lat, lon, it.lat, it.lon).first <= radiusM * 1.5 }
+            .sortedBy { Angles.distanceBearing(lat, lon, it.lat, it.lon).first }
+    }
+
+    /** Zkratka z názvu vrstvy (např. „Bod ZPBP určený v ETRS89“ → ZPBP). */
+    private fun layerShort(n: String): String = when {
+        n.contains("ZPBP") -> "ZPBP"
+        n.contains("ZhB", ignoreCase = true) -> "ZhB"
+        n.contains("PPBP") -> "PPBP"
+        n.contains("ZVBP") -> "ZVBP"
+        n.contains("PVBP") -> "PVBP"
+        n.contains("ZTBP") -> "ZTBP"
+        n.contains("CZEPOS") -> "CZEPOS"
+        else -> n
     }
 
     private fun parse(layer: String, f: JSONObject): CuzkPoint? {
@@ -103,7 +112,12 @@ object CuzkPoints {
         if (gx.isNaN() || gy.isNaN()) return null
         val a = f.optJSONObject("attributes") ?: JSONObject()
         val attrs = LinkedHashMap<String, String>()
-        a.keys().forEach { k -> if (!a.isNull(k)) attrs[k] = a.get(k).toString() }
+        a.keys().forEach { k ->
+            if (!a.isNull(k)) {
+                val v = a.get(k).toString().trim()
+                if (v.isNotEmpty() && !v.equals("Null", ignoreCase = true)) attrs[k] = v
+            }
+        }
         fun get(vararg keys: String): String? = keys.firstNotNullOfOrNull { k ->
             attrs.entries.firstOrNull { it.key.equals(k, ignoreCase = true) }?.value?.trim()?.takeIf { it.isNotEmpty() }
         }
