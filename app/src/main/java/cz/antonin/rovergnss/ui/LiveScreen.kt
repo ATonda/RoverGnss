@@ -57,6 +57,7 @@ fun LiveScreen(c: RoverController) {
     val sta by c.sta.collectAsStateWithLifecycle()
     val trail by c.trail.collectAsStateWithLifecycle()
     val rec by c.recording.collectAsStateWithLifecycle()
+    val lq by c.linkQuality.collectAsStateWithLifecycle()
     var style by rememberSaveable { mutableIntStateOf(c.prefs.mapStyle) }
     var follow by rememberSaveable { mutableStateOf(true) }
     var styleMenu by remember { mutableStateOf(false) }
@@ -118,6 +119,7 @@ fun LiveScreen(c: RoverController) {
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
+            LinkMeter(lq)
             if (p == null) {
                 Text("Žádná data z roveru.")
                 return@Column

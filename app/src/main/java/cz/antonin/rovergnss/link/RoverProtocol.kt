@@ -70,6 +70,11 @@ data class Sta(
     val measSeconds: Long,
     val measSamples: Int,
     val btDropped: Long,
+    // FW 0.8.1+ (starší firmware: null)
+    val btBacklog: Long? = null,  // nepotvrzená data v zásobníku BT roveru [B]
+    val appMode: Boolean = false, // rover je v režimu aplikace (NMEA jen GGA, RMC)
+    val eoe: Boolean = false,     // X20 posílá konec epochy (HPPOSLLH u každé epochy)
+    val hpCount: Long? = null,    // epochy s polohou z HPPOSLLH (od startu roveru)
     val rxMs: Long = System.currentTimeMillis(),
 )
 
@@ -155,6 +160,10 @@ object RoverProtocol {
             ubxErr = l(f[12]) ?: 0, freeHeap = l(f[13]) ?: 0,
             measPhase = i(f[14]) ?: 0, measSeconds = l(f[15]) ?: 0, measSamples = i(f[16]) ?: 0,
             btDropped = l(f[17]) ?: 0,
+            btBacklog = f.getOrNull(18)?.let { l(it) },
+            appMode = f.getOrNull(19) == "1",
+            eoe = f.getOrNull(20) == "1",
+            hpCount = f.getOrNull(21)?.let { l(it) },
         )
     }
 

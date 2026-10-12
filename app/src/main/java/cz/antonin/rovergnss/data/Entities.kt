@@ -115,4 +115,15 @@ data class TrackDiag(
     val ntripFrames: Long,
     val ntripBadCrc: Long,
     val ntripAge: Double?,    // [s] od posledních dat z casteru
+    // spojení a telefon (verze 3)
+    val foreground: Boolean,  // aplikace na obrazovce
+    val network: String,      // wifi2.4 / wifi5 / wifi / mobil / zadna
+    val netRxBytes: Long,     // příjem telefonu ze sítě celkem (všechny aplikace)
+    val linkBars: Int,        // kvalita spojení 0–4
+    val latencyMs: Long?,     // medián zpoždění epoch
+    val lossPct: Double?,     // ztráty epoch za 30 s
+    val lostTotal: Long,      // ztracené epochy od připojení
+    val btBacklog: Long?,     // nepotvrzená data v roveru [B]
+    val hpCount: Long?,       // epochy s HPPOSLLH (rover)
+    val appMode: Boolean,     // rover v režimu aplikace
 )

@@ -48,6 +48,19 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
+/**
+ * Kvalita spojení s roverem (z pohledu dat, ne síly signálu – tu Android u SPP neukáže).
+ * @param bars 0–4 jako u signálu
+ */
+data class LinkQuality(
+    val bars: Int,
+    val ageMs: Long?,        // od posledně přijaté polohy
+    val latencyMs: Long?,    // medián zpoždění (příjem v telefonu − čas GNSS) za 10 s
+    val lossPct: Double?,    // ztracené epochy za 30 s
+    val backlog: Long?,      // nepotvrzená data v roveru [B] (FW 0.8.1+)
+    val lostTotal: Long,     // ztracené epochy od připojení
+)
+
 /** Stav záznamu trasy. */
 data class RecordingState(val trackId: Long, val name: String, val points: Int, val startMs: Long)
 
@@ -101,6 +114,19 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
 
     // ------------------------------------------------------------------ spojení
     private val satParts = ArrayList<Sat>()
+    private var satNextPart = 1
+
+    // kvalita spojení
+    private val _linkQuality = MutableStateFlow(LinkQuality(0, null, null, null, null, 0))
+    val linkQuality: StateFlow<LinkQuality> = _linkQuality.asStateFlow()
+    private val epochTimes = ArrayDeque<Long>()      // čas GNSS přijatých epoch (30 s)
+    private val epochLatency = ArrayDeque<Long>()    // zpoždění epoch (10 s)
+    private var lastPosRxMs = 0L
+    private var lastEpochMs = 0L
+    private var lostTotal = 0L
+
+    /** Aplikace je na obrazovce (nastavuje MainActivity) – do diagnostiky. */
+    @Volatile var foreground = false
     private val parser = StreamParser(onLine = ::onLine)
     val link = BtLink(context, scope) { buf, n ->
         rawWrite(buf, n)
@@ -148,6 +174,24 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                 (l !is LinkState.Idle && l !is LinkState.Failed) || n !is NtripState.Off || r != null
             }.distinctUntilChanged().collect { active ->
                 if (active) RoverService.start(context) else RoverService.stop(context)
+            }
+        }
+        // Kvalita spojení: přepočet i bez nových dat (stárnutí)
+        scope.launch {
+            while (true) {
+                delay(500)
+                updateLinkQuality()
+            }
+        }
+        scope.launch {
+            link.state.collect { st ->
+                if (st is LinkState.Connected) synchronized(epochTimes) {
+                    epochTimes.clear()
+                    epochLatency.clear()
+                    lastEpochMs = 0
+                    lostTotal = 0
+                    lastPosRxMs = 0
+                }
             }
         }
         // Zápis bodů trasy do databáze po dávkách
@@ -223,10 +267,13 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         if (_recording.value != null) return@launch
         val job = db.jobs().first() ?: Job(name = "Výchozí").let { it.copy(id = db.jobs().insert(it)) }
         val now = System.currentTimeMillis()
-        val n = name ?: ("Trasa " + SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(now)))
+        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(now))
         val id = db.tracks().insert(
-            Track(jobId = job.id, name = n, startMs = now, antennaH = prefs.antennaH, rateHz = _info.value?.rateHz ?: 0)
+            Track(jobId = job.id, name = name ?: stamp, startMs = now, antennaH = prefs.antennaH, rateHz = _info.value?.rateHz ?: 0)
         )
+        // výchozí název: číslo trasy a čas na sekundy (jednoznačný), lze přejmenovat
+        val n = name ?: "T$id $stamp"
+        db.tracks().get(id)?.let { db.tracks().update(it.copy(name = n)) }
         if (prefs.recordRaw) {
             val name = "track_$id.log"
             try {
@@ -255,6 +302,13 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         }
         val t = db.tracks().get(r.trackId) ?: return@launch
         db.tracks().update(t.copy(endMs = System.currentTimeMillis(), points = db.tracks().pointCount(r.trackId)))
+    }
+
+    fun renameTrack(t: Track, name: String) = scope.launch {
+        val n = name.trim()
+        if (n.isEmpty()) return@launch
+        db.tracks().get(t.id)?.let { db.tracks().update(it.copy(name = n)) }
+        _recording.value?.let { if (it.trackId == t.id) _recording.value = it.copy(name = n) }
     }
 
     fun rawFile(name: String): File = File(File(context.filesDir, "raw"), name)
@@ -303,6 +357,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         val used = sats.filter { it.used }
         val now = System.currentTimeMillis()
         val nt = ntrip.state.value
+        val lq = _linkQuality.value
         val d = TrackDiag(
             trackId = r.trackId, rxMs = now, gnssMs = _pos.value?.timeMs,
             batV = s.batV, profile = s.profile, rtcmOk = s.rtcmOk, rtcmBad = s.rtcmBad, rtcmAge = s.rtcmAge,
@@ -323,6 +378,9 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             },
             ntripBytes = ntrip.bytes.get(), ntripFrames = rtcmFramer.frames, ntripBadCrc = rtcmFramer.badCrc,
             ntripAge = if (ntrip.lastDataMs > 0) (now - ntrip.lastDataMs) / 1000.0 else null,
+            foreground = foreground, network = NetInfo.type(context), netRxBytes = NetInfo.rxBytes(),
+            linkBars = lq.bars, latencyMs = lq.latencyMs, lossPct = lq.lossPct, lostTotal = lq.lostTotal,
+            btBacklog = s.btBacklog, hpCount = s.hpCount, appMode = s.appMode,
         )
         synchronized(recBuffer) { diagBuffer.add(d) }
     }
@@ -366,6 +424,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         when (f.getOrNull(1)) {
             "POS" -> RoverProtocol.parsePos(f)?.let { p ->
                 _pos.value = p
+                onEpoch(p)
                 record(p)
                 val now = System.currentTimeMillis()
                 if (p.hasFix && now - lastTrailMs >= 1000) {
@@ -383,9 +442,23 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                 recordDiag(it)
             }
             "SAT" -> RoverProtocol.parseSat(f)?.let { part ->
-                if (part.part == 1) satParts.clear()
+                // části musí jít po sobě; chybějící část = celá sada se zahodí (jinak se slijí dvě epochy)
+                if (part.part == 1) {
+                    satParts.clear()
+                    satNextPart = 1
+                }
+                if (part.part != satNextPart) {
+                    satParts.clear()
+                    satNextPart = 1
+                    return@let
+                }
                 satParts.addAll(part.sats)
-                if (part.part == part.parts) _sats.value = ArrayList(satParts)
+                satNextPart++
+                if (part.part == part.parts) {
+                    _sats.value = ArrayList(satParts)
+                    satParts.clear()
+                    satNextPart = 1
+                }
             }
         }
     }
@@ -410,6 +483,59 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     private fun addConsole(s: String) {
         val c = _console.value
         _console.value = (if (c.size >= 50) c.drop(1) else c) + s
+    }
+
+    /** Evidence epoch pro kvalitu spojení. */
+    private fun onEpoch(p: Pos) {
+        val t = p.timeMs ?: return
+        synchronized(epochTimes) {
+            lastPosRxMs = p.rxMs
+            val per = periodMs()
+            if (lastEpochMs > 0 && t > lastEpochMs) {
+                val missing = Math.round((t - lastEpochMs).toDouble() / per) - 1
+                if (missing in 1L..3000L) lostTotal += missing
+            }
+            if (t > lastEpochMs) lastEpochMs = t
+            epochTimes.addLast(t)
+            while (epochTimes.isNotEmpty() && t - epochTimes.first() > 30_000) epochTimes.removeFirst()
+            epochLatency.addLast(p.rxMs - t)
+            while (epochLatency.size > 10 * (1000 / per).toInt().coerceAtLeast(1)) epochLatency.removeFirst()
+        }
+    }
+
+    private fun periodMs(): Long {
+        val hz = _info.value?.rateHz ?: 0
+        return if (hz > 0) 1000L / hz else 200L
+    }
+
+    private fun updateLinkQuality() {
+        if (link.state.value !is LinkState.Connected) {
+            _linkQuality.value = LinkQuality(0, null, null, null, null, lostTotal)
+            return
+        }
+        val now = System.currentTimeMillis()
+        val q: LinkQuality
+        synchronized(epochTimes) {
+            val age = if (lastPosRxMs > 0) now - lastPosRxMs else null
+            val lat = if (epochLatency.isEmpty()) null else epochLatency.sorted()[epochLatency.size / 2]
+            val loss = if (epochTimes.size >= 2) {
+                val span = epochTimes.last() - epochTimes.first()
+                val expected = span / periodMs() + 1
+                ((expected - epochTimes.size).coerceAtLeast(0L) * 100.0 / expected)
+            } else null
+            val backlog = _sta.value?.btBacklog
+            // stáří dat vůči „teď“: když data nechodí, zpoždění roste i bez nových epoch
+            val lagNow = if (lastEpochMs > 0) now - lastEpochMs else null
+            val bars = when {
+                age == null || age > 10_000L -> 0
+                age > 3000L -> 1
+                (lagNow ?: 0L) > 2000L || (loss ?: 0.0) > 10 -> 2
+                (lat ?: 0L) > 600L || (loss ?: 0.0) > 2 || (backlog ?: 0L) > 1024L -> 3
+                else -> 4
+            }
+            q = LinkQuality(bars, age, lat, loss, backlog, lostTotal)
+        }
+        _linkQuality.value = q
     }
 
     fun postMessage(text: String) {

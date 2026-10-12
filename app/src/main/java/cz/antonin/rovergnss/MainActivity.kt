@@ -31,6 +31,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        (application as RoverApp).controller.foreground = true
+    }
+
+    override fun onStop() {
+        (application as RoverApp).controller.foreground = false
+        super.onStop()
+    }
+
     private fun neededPermissions(): Array<String> {
         val p = ArrayList<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) p += Manifest.permission.BLUETOOTH_CONNECT

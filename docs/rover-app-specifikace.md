@@ -89,9 +89,13 @@ Kontrolní součet jako NMEA (XOR bajtů UTF-8 mezi `$` a `*`). Prázdné pole =
 | 20 | pohyb | 1 = IMU hlásí pohyb (15 °/s nebo 0,2 g, drží 1,5 s) |
 | 21 | hp | 1 = poloha z NAV-HPPOSLLH |
 
-`$PRVR,STA,` – 1 Hz: FW, baterie V, baterie %, aktivní profil (od 0), počet profilů, název profilu, RTCM přijato, RTCM chybné, stáří RTCM [s], typ poslední RTCM, chyby UBX, volná RAM [B], fáze měření bodu (0 nic, 1 odpočet, 2 ustálení, 3 sběr, 4 hotovo, 5 selhalo), čas ve fázi [s], vzorků, zahozené dávky BT.
+`$PRVR,STA,` – 1 Hz: FW, baterie V, baterie %, aktivní profil (od 0), počet profilů, název profilu, RTCM přijato, RTCM chybné, stáří RTCM [s], typ poslední RTCM, chyby UBX, volná RAM [B], fáze měření bodu (0 nic, 1 odpočet, 2 ustálení, 3 sběr, 4 hotovo, 5 selhalo), čas ve fázi [s], vzorků, zahozené dávky BT; od FW 0.8.1 navíc: fronta BT v roveru [B] (odesláno, zásobníkem BT nepotvrzeno), režim aplikace (0/1), konec epochy X20 (1 = X20 posílá NAV-EOE), počet epoch s HPPOSLLH.
 
-`$PRVR,SAT,` – 1 Hz, po 12 družicích: část, počet částí, celkem sledovaných, pak opakovaně `gnssId,svId,C/N0,elevace,azimut,použit` (jen C/N0 > 0).
+`$PRVR,SAT,` – 1 Hz (v režimu aplikace každé 2 s), po 12 družicích: část, počet částí, celkem sledovaných, pak opakovaně `gnssId,svId,C/N0,elevace,azimut,použit` (jen C/N0 > 0).
+
+Režim aplikace (FW 0.8.1): první příkaz JSON ho zapne, odpojení BT vypne. Z NMEA jde jen GGA a RMC (GGA potřebuje NTRIP), GSA/GSV/GST se neposílají (data jsou v `$PRVR`). Přenos ~1,7 kB/s místo ~3,6 kB/s.
+
+Omezení zpoždění (FW 0.8.1): rover počítá odeslaná a zásobníkem BT potvrzená data (ESP_SPP_WRITE_EVT); nad 2 kB nepotvrzených dat se dávky zahazují – po zaseknutí spojení přijde nejnovější poloha, ne stará fronta.
 
 Příkazy z mobilu: řádek JSON začínající `{` a ukončený `\n`. Rover ho rozpozná jen mimo rámec RTCM – aplikace proto posílá RTCM po celých rámcích. Etapa 1 (FW 0.8.0): `get info`, `get profiles`, `profile`, `x20 reset`.
 

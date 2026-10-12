@@ -55,8 +55,8 @@ interface TrackDao {
     suspend fun diag(trackId: Long): List<TrackDiag>
 }
 
-// Verze 2: diagnostika k trase, další sloupce bodů. Starší databáze se smaže (vývojová fáze).
-@Database(entities = [Job::class, Track::class, TrackPoint::class, TrackDiag::class], version = 2, exportSchema = true)
+// Verze 3: diagnostika spojení a telefonu. Starší databáze se smaže (vývojová fáze).
+@Database(entities = [Job::class, Track::class, TrackPoint::class, TrackDiag::class], version = 3, exportSchema = true)
 abstract class AppDb : RoomDatabase() {
     abstract fun jobs(): JobDao
     abstract fun tracks(): TrackDao

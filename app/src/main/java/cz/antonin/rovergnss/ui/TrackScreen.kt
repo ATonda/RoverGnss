@@ -60,6 +60,8 @@ fun TrackScreen(c: RoverController) {
     var maxHAcc by remember { mutableStateOf("") }
     var pending by remember { mutableStateOf<Pair<Track, String>?>(null) }
     var toDelete by remember { mutableStateOf<Track?>(null) }
+    var toRename by remember { mutableStateOf<Track?>(null) }
+    var newName by remember { mutableStateOf("") }
 
     fun filter() = ExportFilter(
         minQuality = if (onlyFix) setOf(4) else setOf(1, 2, 3, 4, 5),
@@ -174,12 +176,13 @@ fun TrackScreen(c: RoverController) {
                         if (t.antennaH != 0.0) ", anténa ${fmt(t.antennaH, 3)} m" else "",
                     style = MaterialTheme.typography.bodySmall,
                 )
-                val safe = t.name.replace(Regex("[^A-Za-z0-9_-]+"), "_")
+                // jména souborů podle začátku trasy: RG_20261012_191607_body.csv …
+                val safe = "RG_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(t.startMs))
                 val done = t.endMs != null
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = {
                         pending = t to "csv"
-                        csvLauncher.launch("$safe.csv")
+                        csvLauncher.launch("${safe}_body.csv")
                     }, enabled = done) { Text("CSV") }
                     OutlinedButton(onClick = {
                         pending = t to "gpx"
@@ -193,12 +196,33 @@ fun TrackScreen(c: RoverController) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (t.rawFile != null) OutlinedButton(onClick = {
                         pending = t to "raw"
-                        rawLauncher.launch("${safe}.log")
+                        rawLauncher.launch("${safe}_raw.log")
                     }, enabled = done) { Text("Surový proud") }
+                    TextButton(onClick = {
+                        newName = t.name
+                        toRename = t
+                    }) { Text("Přejmenovat") }
                     TextButton(onClick = { toDelete = t }, enabled = done) { Text("Smazat") }
                 }
             }
         }
+    }
+
+    toRename?.let { t ->
+        AlertDialog(
+            onDismissRequest = { toRename = null },
+            title = { Text("Přejmenovat trasu") },
+            text = {
+                OutlinedTextField(newName, { newName = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    toRename = null
+                    c.renameTrack(t, newName)
+                }, enabled = newName.isNotBlank()) { Text("Uložit") }
+            },
+            dismissButton = { TextButton(onClick = { toRename = null }) { Text("Zrušit") } },
+        )
     }
 
     toDelete?.let { t ->

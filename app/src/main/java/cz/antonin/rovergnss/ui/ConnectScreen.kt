@@ -100,6 +100,9 @@ private fun RoverSection(c: RoverController) {
             }
             is LinkState.Connected -> {
                 Text("Připojeno: ${l.name}", style = MaterialTheme.typography.bodyLarge)
+                val lq by c.linkQuality.collectAsStateWithLifecycle()
+                LinkMeter(lq)
+                if (lq.lostTotal > 0) KeyValue("Ztracené epochy", lq.lostTotal.toString())
                 info?.let { i ->
                     KeyValue("Firmware", "${i.fw} (protokol ${i.proto})")
                     KeyValue("X20", listOfNotNull(i.x20, i.x20Fw).joinToString(", ").ifEmpty { "neodpovídá" })
@@ -108,6 +111,10 @@ private fun RoverSection(c: RoverController) {
                 sta?.let { s ->
                     KeyValue("Baterie", s.batV?.let { "${fmt(it, 2)} V (${s.batPct} %)" } ?: "–")
                     KeyValue("Volná RAM", "${s.freeHeap / 1024} kB")
+                    if (s.btBacklog != null) {
+                        KeyValue("Konec epochy X20", if (s.eoe) "ano (HPPOSLLH v každé epoše)" else "ne")
+                        KeyValue("Režim aplikace", if (s.appMode) "ano (NMEA jen GGA, RMC)" else "ne")
+                    }
                     ProfilePicker(c, s.profile, s.profileCount, s.profileName)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -103,7 +103,8 @@ object Exporter {
         val w = out.bufferedWriter(Charsets.UTF_8)
         w.write("cas_telefon;cas_gnss;baterie_v;profil;rtcm_ok;rtcm_chyb;rtcm_stari;rtcm_typ;ubx_chyb;volna_ram;" +
             "bt_zahozeno_rover;sat_sled;sat_pouz;gps;gal;bds;glo;ostatni;cn0_prumer;cn0_max;" +
-            "bt_rx_b;bt_tx_b;bt_tx_zahozeno;bt_spojeni;spatny_soucet;usekle_radky;ntrip;ntrip_b;ntrip_ramce;ntrip_crc_chyb;ntrip_stari\r\n")
+            "bt_rx_b;bt_tx_b;bt_tx_zahozeno;bt_spojeni;spatny_soucet;usekle_radky;ntrip;ntrip_b;ntrip_ramce;ntrip_crc_chyb;ntrip_stari;" +
+            "popredi;sit;sit_rx_b;spojeni_kvalita;latence_ms;ztraty_pct;ztraty_celkem;bt_fronta_rover_b;hp_epoch;rezim_app\r\n")
         for (d in diag) {
             w.write(
                 listOf(
@@ -115,6 +116,9 @@ object Exporter {
                     d.btRxBytes.toString(), d.btTxBytes.toString(), d.btTxDropped.toString(), d.btReconnects.toString(),
                     d.badChecksum.toString(), d.droppedLines.toString(), d.ntripState, d.ntripBytes.toString(),
                     d.ntripFrames.toString(), d.ntripBadCrc.toString(), f(d.ntripAge, 1),
+                    if (d.foreground) "1" else "0", d.network, d.netRxBytes.toString(), d.linkBars.toString(),
+                    d.latencyMs?.toString() ?: "", f(d.lossPct, 1), d.lostTotal.toString(), d.btBacklog?.toString() ?: "",
+                    d.hpCount?.toString() ?: "", if (d.appMode) "1" else "0",
                 ).joinToString(";")
             )
             w.write("\r\n")

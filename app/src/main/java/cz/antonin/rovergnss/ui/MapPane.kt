@@ -28,23 +28,24 @@ import org.maplibre.geojson.Point
 
 /** Mapové podklady. */
 object MapStyles {
-    val NAMES = listOf("Mapa", "Ortofoto ČÚZK", "ZTM ČÚZK")
+    val NAMES = listOf("Mapa OSM", "Ortofoto ČÚZK", "ZTM ČÚZK")
 
-    private const val OFM = "https://tiles.openfreemap.org/styles/liberty"
+    private const val OSM = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
     private const val ORTO = "https://ags.cuzk.gov.cz/arcgis1/rest/services/ORTOFOTO_WM/MapServer/tile/{z}/{y}/{x}"
     private const val ZTM = "https://ags.cuzk.gov.cz/arcgis1/rest/services/ZTM_WM/MapServer/tile/{z}/{y}/{x}"
 
-    private fun raster(url: String, maxZoom: Int) = """
+    private fun raster(url: String, maxZoom: Int, attribution: String) = """
         {"version":8,
          "sources":{"r":{"type":"raster","tiles":["$url"],"tileSize":256,"maxzoom":$maxZoom,
-                         "attribution":"© ČÚZK"}},
+                         "attribution":"$attribution"}},
          "layers":[{"id":"r","type":"raster","source":"r"}]}
     """.trimIndent()
 
     fun builder(i: Int): Style.Builder = when (i) {
-        1 -> Style.Builder().fromJson(raster(ORTO, 20))
-        2 -> Style.Builder().fromJson(raster(ZTM, 18))
-        else -> Style.Builder().fromUri(OFM)
+        // nad nejvyšší úrovní dlaždic se poslední úroveň zvětšuje (zoom až 22)
+        1 -> Style.Builder().fromJson(raster(ORTO, 20, "© ČÚZK"))
+        2 -> Style.Builder().fromJson(raster(ZTM, 18, "© ČÚZK"))
+        else -> Style.Builder().fromJson(raster(OSM, 19, "© OpenStreetMap"))
     }
 }
 
@@ -79,6 +80,8 @@ fun MapPane(
             getMapAsync { m ->
                 holder.map = m
                 m.uiSettings.isRotateGesturesEnabled = false
+                m.uiSettings.isTiltGesturesEnabled = false
+                m.setMaxZoomPreference(MAX_ZOOM)
                 m.cameraPosition = CameraPosition.Builder().target(LatLng(49.8, 15.5)).zoom(6.5).build()
                 mapReady = true
             }
@@ -142,7 +145,7 @@ fun MapPane(
         (st.getLayer(SRC_POS) as? CircleLayer)?.setProperties(PropertyFactory.circleColor(qualityColorArgb(quality)))
         if (!holder.centered) {
             holder.centered = true
-            m.cameraPosition = CameraPosition.Builder().target(LatLng(pos[0], pos[1])).zoom(18.0).build()
+            m.cameraPosition = CameraPosition.Builder().target(LatLng(pos[0], pos[1])).zoom(START_ZOOM).build()
         } else if (follow) {
             m.easeCamera(CameraUpdateFactory.newLatLng(LatLng(pos[0], pos[1])), 300)
         }
@@ -162,4 +165,6 @@ fun MapPane(
 }
 
 private const val SRC_POS = "rover-pos"
+private const val START_ZOOM = 21.0  // po prvním fixu
+private const val MAX_ZOOM = 22.0
 private const val SRC_TRAIL = "rover-trail"
