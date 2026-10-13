@@ -92,6 +92,24 @@ fun PointExtras(c: RoverController, p: Point, onClose: () -> Unit) {
     var toDelete by remember { mutableStateOf<Measurement?>(null) }
     var expanded by remember { mutableStateOf<Long?>(null) }
 
+    var ubxPending by remember { mutableStateOf<Measurement?>(null) }
+    val ubxLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri: Uri? ->
+        val name = ubxPending?.rawUbx
+        ubxPending = null
+        if (uri == null || name == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val n = withContext(Dispatchers.IO) {
+                try {
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        c.rawFile(name).inputStream().use { it.copyTo(out) }
+                    } ?: -1L
+                } catch (e: Exception) {
+                    -1L
+                }
+            }
+            c.postMessage(if (n >= 0) "Exportováno ${n / 1024} kB surových dat" else "Soubor nelze zapsat")
+        }
+    }
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
@@ -147,7 +165,14 @@ fun PointExtras(c: RoverController, p: Point, onClose: () -> Unit) {
         Text("Historie měření (${done.size})", style = MaterialTheme.typography.titleSmall)
         MeasureCharts(done)
         done.asReversed().forEach { m ->
-            MeasureRow(m, expanded == m.id, onClick = { expanded = if (expanded == m.id) null else m.id }, onDelete = { toDelete = m })
+            MeasureRow(
+                m, expanded == m.id, onClick = { expanded = if (expanded == m.id) null else m.id }, onDelete = { toDelete = m },
+                onExportUbx = {
+                    ubxPending = m
+                    val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(m.startMs))
+                    ubxLauncher.launch("RG_${stamp}_${p.name.replace(Regex("[^A-Za-z0-9_-]"), "_")}.ubx")
+                },
+            )
         }
         OutlinedButton(onClick = {
             val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
@@ -200,6 +225,11 @@ fun MeasureStatus(m: MeasureState, onStop: () -> Unit, onCancel: () -> Unit, mod
             TextButton(onClick = onCancel) { Text("Zrušit") }
             Button(onClick = onStop) { Text("Ukončit") }
         }
+        Text(
+            (if (m.staticModel) "X20 statický model" else "model z profilu") +
+                (if (m.raw) " · RAWX ${m.rawFrames} rámců" else ""),
+            style = MaterialTheme.typography.bodySmall,
+        )
         if (r == null) {
             Text("Čekám na epochy…", style = MaterialTheme.typography.bodySmall)
         } else {
@@ -234,7 +264,7 @@ fun MeasureBanner(c: RoverController) {
 }
 
 @Composable
-private fun MeasureRow(m: Measurement, expanded: Boolean, onClick: () -> Unit, onDelete: () -> Unit) {
+private fun MeasureRow(m: Measurement, expanded: Boolean, onClick: () -> Unit, onDelete: () -> Unit, onExportUbx: () -> Unit) {
     val df = remember { SimpleDateFormat("d. M. yyyy HH:mm", Locale.getDefault()) }
     val d2 = if (m.dN != null && m.dE != null) hypot(m.dN, m.dE) else null
     Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 4.dp)) {
@@ -260,7 +290,12 @@ private fun MeasureRow(m: Measurement, expanded: Boolean, onClick: () -> Unit, o
                 "průměr ${dms(m.lat, true)}  ${dms(m.lon, false)}  h ${fmt(m.hEll, 3)} m",
                 fontFamily = FontFamily.Monospace, style = t,
             )
-            Text("anténa ${fmt(m.antennaH, 3)} m · profil ${m.profile.ifEmpty { "–" }}", style = t)
+            Text(
+                "anténa ${fmt(m.antennaH, 3)} m · profil ${m.profile.ifEmpty { "–" }}" +
+                    (if (m.staticModel) " · statický model" else ""),
+                style = t,
+            )
+            if (m.rawUbx != null) TextButton(onClick = onExportUbx) { Text("Surová data .ubx (PPK)") }
             if (m.refDerived) Text("Dané ETRS89 bodu dopočtené ze S-JTSK (převod ČÚZK, ~1–2 cm) – odchylka obsahuje i chybu převodu.", style = t)
             TextButton(onClick = onDelete) { Text("Smazat měření", color = MaterialTheme.colorScheme.error) }
         }

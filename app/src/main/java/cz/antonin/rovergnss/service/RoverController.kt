@@ -83,6 +83,9 @@ data class MeasureState(
     val antennaH: Double,
     val result: MeasureResult? = null,
     val offset: MeasureOffset? = null,
+    val staticModel: Boolean = false, // rover potvrdil statický model X20
+    val raw: Boolean = false,         // ukládají se RAWX/SFRBX
+    val rawFrames: Int = 0,
 )
 
 /** Údaje o roveru z odpovědi na `get info`. */
@@ -162,7 +165,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
 
     /** Aplikace je na obrazovce (nastavuje MainActivity) – do diagnostiky. */
     @Volatile var foreground = false
-    private val parser = StreamParser(onLine = ::onLine)
+    private val parser = StreamParser(onLine = ::onLine, onUbx = ::onUbx)
     val link = BtLink(context, scope) { buf, n ->
         rawWrite(buf, n)
         synchronized(parser) { parser.feed(buf, n) }
@@ -252,7 +255,10 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         }
         if (_navTarget.value?.id == p.id) _navTarget.value = null
         // stopy měření bodu (trasy „M …“) se smažou s ním
-        db.measurements().byPointList(p.id).forEach { m -> m.trackId?.let { deleteTrackFiles(it) } }
+        db.measurements().byPointList(p.id).forEach { m ->
+            m.trackId?.let { deleteTrackFiles(it) }
+            m.rawUbx?.let { rawFile(it).delete() }
+        }
         db.points().delete(p.id)
     }
 
@@ -270,6 +276,9 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     private val measEpochs = ArrayList<MeasureEpoch>()
     private var measTimer: kotlinx.coroutines.Job? = null
     @Volatile private var measLastCalc = 0L
+    private var ubxOut: OutputStream? = null       // surová data měření (RAWX/SFRBX)
+    private val ubxLock = Any()
+    @Volatile private var ubxFrames = 0
 
     /**
      * Měření bodu: záznam trasy „M bod čas“ (všechny epochy, surový proud podle nastavení) a průběžný průměr.
@@ -298,7 +307,39 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         )
         synchronized(measEpochs) { measEpochs.clear() }
         measLastCalc = 0
-        _measure.value = MeasureState(id, r.trackId, p, now, seconds, antH)
+        // rover (FW 0.9.0+): statický model X20 a surová data; starší firmware na příkaz neodpoví
+        var static = false
+        var raw = false
+        val wantRaw = prefs.measRaw
+        if (prefs.measStatic || wantRaw) {
+            val rr = command(
+                JSONObject().put("cmd", "meas").put("op", "start").put("static", prefs.measStatic).put("raw", wantRaw), 3000,
+            )
+            if (rr == null || !rr.optBoolean("ok")) {
+                _messages.tryEmit("Rover nepodporuje režim měření (FW 0.9.0+) – měří se v modelu z profilu")
+            } else {
+                static = rr.optBoolean("static")
+                raw = rr.optBoolean("raw")
+                if (!rr.optBoolean("ack", true)) _messages.tryEmit("X20 nepotvrdila nastavení měření")
+            }
+        }
+        var ubxName: String? = null
+        if (raw) {
+            val name = "meas_$id.ubx"
+            try {
+                val f = rawFile(name)
+                f.parentFile?.mkdirs()
+                synchronized(ubxLock) {
+                    ubxOut = BufferedOutputStream(FileOutputStream(f), 65536)
+                    ubxFrames = 0
+                }
+                ubxName = name
+            } catch (e: IOException) {
+                _messages.tryEmit("Soubor surových dat nelze založit: ${e.message}")
+            }
+        }
+        db.measurements().get(id)?.let { db.measurements().update(it.copy(staticModel = static, rawUbx = ubxName)) }
+        _measure.value = MeasureState(id, r.trackId, p, now, seconds, antH, staticModel = static, raw = ubxName != null)
         if (seconds > 0) measTimer = scope.launch {
             delay(seconds * 1000L)
             stopMeasurement()
@@ -311,9 +352,12 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         _measure.value = null
         measTimer?.cancel()  // časovač už mohl doběhnout (sám volá stopMeasurement)
         measTimer = null
+        if (m.staticModel || m.raw) command(JSONObject().put("cmd", "meas").put("op", "stop"), 3000)
+        closeUbx()
         stopRecording().join()
         val eps = synchronized(measEpochs) { ArrayList(measEpochs).also { measEpochs.clear() } }
         if (!save) {
+            if (m.raw) rawFile("meas_${m.measurementId}.ubx").delete()
             db.measurements().delete(m.measurementId)
             deleteTrackFiles(m.trackId)
             _messages.tryEmit("Měření zrušeno")
@@ -345,6 +389,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
 
     fun deleteMeasurement(m: Measurement) = scope.launch {
         if (_measure.value?.measurementId == m.id) return@launch
+        m.rawUbx?.let { rawFile(it).delete() }
         db.measurements().delete(m.id)
         m.trackId?.let { deleteTrackFiles(it) }
     }
@@ -355,6 +400,30 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         val t = db.tracks().get(trackId) ?: return
         t.rawFile?.let { rawFile(it).delete() }
         db.tracks().delete(t.id)
+    }
+
+    private fun closeUbx() {
+        synchronized(ubxLock) {
+            try {
+                ubxOut?.close()
+            } catch (_: IOException) {
+            }
+            ubxOut = null
+        }
+    }
+
+    /** Rámec UBX z roveru (RXM-RAWX / RXM-SFRBX během měření bodu) do souboru .ubx. */
+    private fun onUbx(frame: ByteArray) {
+        if (ubxOut == null) return
+        synchronized(ubxLock) {
+            try {
+                ubxOut?.write(frame)
+                ubxFrames++
+            } catch (e: IOException) {
+                ubxOut = null
+                _messages.tryEmit("Zápis surových dat přerušen: ${e.message}")
+            }
+        }
     }
 
     /** Epocha do probíhajícího měření (ETRS89, anténa odečtena). */
@@ -372,7 +441,9 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         val eps = synchronized(measEpochs) { ArrayList(measEpochs) }
         val res = MeasureCalc.compute(eps)
         // compareAndSet: mezitím ukončené měření se nesmí obnovit
-        _measure.compareAndSet(m, m.copy(result = res, offset = MeasureCalc.offset(res.lat, res.lon, res.h, m.point)))
+        _measure.compareAndSet(
+            m, m.copy(result = res, offset = MeasureCalc.offset(res.lat, res.lon, res.h, m.point), rawFrames = ubxFrames),
+        )
     }
 
     fun takeCuzkPoint(c: CuzkPoint) = scope.launch {

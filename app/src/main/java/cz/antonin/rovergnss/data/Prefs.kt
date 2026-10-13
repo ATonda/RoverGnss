@@ -44,6 +44,16 @@ class Prefs(context: Context) {
         get() = sp.getInt("measureSec", 180)
         set(v) = sp.edit().putInt("measureSec", v).apply()
 
+    /** Měření bodu: X20 ve statickém modelu (FW 0.9.0+) */
+    var measStatic: Boolean
+        get() = sp.getBoolean("measStatic", true)
+        set(v) = sp.edit().putBoolean("measStatic", v).apply()
+
+    /** Měření bodu: surová data RAWX/SFRBX do souboru .ubx (FW 0.9.0+) */
+    var measRaw: Boolean
+        get() = sp.getBoolean("measRaw", false)
+        set(v) = sp.edit().putBoolean("measRaw", v).apply()
+
     /** Vrstva bodových polí ČÚZK na mapě */
     var showCuzk: Boolean
         get() = sp.getBoolean("showCuzk", false)

@@ -41,6 +41,8 @@ fun SettingsScreen(c: RoverController) {
     var every by remember { mutableStateOf(c.prefs.recordEvery.toString()) }
     var raw by remember { mutableStateOf(c.prefs.recordRaw) }
     var measSec by remember { mutableIntStateOf(c.prefs.measureSec) }
+    var measStatic by remember { mutableStateOf(c.prefs.measStatic) }
+    var measRaw by remember { mutableStateOf(c.prefs.measRaw) }
     var style by remember { mutableIntStateOf(c.prefs.mapStyle) }
     var rotate by remember { mutableIntStateOf(c.prefs.mapRotate) }
     val antErr = antH.isNotBlank() && antH.replace(',', '.').toDoubleOrNull()?.takeIf { it in 0.0..10.0 } == null
@@ -89,6 +91,25 @@ fun SettingsScreen(c: RoverController) {
                     }, label = { Text(label) })
                 }
             }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(measStatic, {
+                    measStatic = it
+                    c.prefs.measStatic = it
+                })
+                Text("X20 během měření ve statickém modelu")
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(measRaw, {
+                    measRaw = it
+                    c.prefs.measRaw = it
+                })
+                Text("ukládat surová data RAWX/SFRBX (.ubx, ~1,5 kB/s)")
+            }
+            Text(
+                "Vyžaduje firmware 0.9.0+. Po měření rover vrátí model z profilu. Soubor .ubx je pro dodatečné " +
+                    "zpracování (PPK, např. RTKLIB) – export u měření bodu.",
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
         Section("Mapa") {
             Text("Podklad", style = MaterialTheme.typography.bodyMedium)
