@@ -599,6 +599,8 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     /** Rámec UBX z roveru (RXM-RAWX / RXM-SFRBX během měření bodu) do souboru .ubx. */
     private fun onUbx(frame: ByteArray) {
         if (ubxOut == null) return
+        // jen RXM (RAWX/SFRBX); IMU z roveru (třída 0xF5) zůstává jen v surovém proudu trasy
+        if (frame.size < 4 || (frame[2].toInt() and 0xFF) != 0x02) return
         synchronized(ubxLock) {
             try {
                 ubxOut?.write(frame)
