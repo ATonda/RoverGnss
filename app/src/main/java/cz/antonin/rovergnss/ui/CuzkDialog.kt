@@ -31,16 +31,19 @@ import cz.antonin.rovergnss.geo.Angles
 
 /** Body bodových polí ČÚZK v okolí klepnutí; „Převzít“ uloží bod do aktivní zakázky. */
 @Composable
-fun CuzkDialog(lat: Double, lon: Double, onTake: (CuzkPoint) -> Unit, onDismiss: () -> Unit) {
+fun CuzkDialog(tap: MapTap, onTake: (CuzkPoint) -> Unit, onDismiss: () -> Unit) {
+    val lat = tap.lat
+    val lon = tap.lon
+    val radius = remember(tap) { CuzkPoints.searchRadius(tap.zoom, tap.lat).toInt() }
     val context = LocalContext.current
     var result by remember { mutableStateOf<List<CuzkPoint>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var expanded by remember { mutableStateOf<String?>(null) }
     var taken by remember { mutableStateOf(setOf<String>()) }
 
-    LaunchedEffect(lat, lon) {
+    LaunchedEffect(tap) {
         try {
-            result = CuzkPoints.near(lat, lon, 30)
+            result = CuzkPoints.near(lat, lon, tap.zoom, tap.widthDp, tap.heightDp)
         } catch (e: Exception) {
             error = e.message ?: e.javaClass.simpleName
         }
@@ -55,9 +58,9 @@ fun CuzkDialog(lat: Double, lon: Double, onTake: (CuzkPoint) -> Unit, onDismiss:
                     error != null -> Text("Dotaz selhal: $error", color = MaterialTheme.colorScheme.error)
                     result == null -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         CircularProgressIndicator(Modifier.padding(4.dp))
-                        Text("Hledám body do 30 m…")
+                        Text("Hledám body do $radius m…")
                     }
-                    result!!.isEmpty() -> Text("Do 30 m od místa žádný bod. Přibliž mapu a klepni přímo na značku bodu.")
+                    result!!.isEmpty() -> Text("Do $radius m od místa žádný bod. Přibliž mapu a klepni přímo na značku bodu.")
                     else -> result!!.forEach { p ->
                         val key = p.layer + p.name
                         val (d, _) = Angles.distanceBearing(lat, lon, p.lat, p.lon)

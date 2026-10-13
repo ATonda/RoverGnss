@@ -33,6 +33,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import cz.antonin.rovergnss.data.Point
 import cz.antonin.rovergnss.data.PointIo
 import cz.antonin.rovergnss.data.PointSource
+import cz.antonin.rovergnss.export.Exporter
 import cz.antonin.rovergnss.geo.Angles
 import cz.antonin.rovergnss.service.RoverController
 import kotlinx.coroutines.Dispatchers
@@ -72,6 +73,22 @@ fun PointsScreen(c: RoverController) {
             c.postMessage("Načteno ${r.points.size} bodů" + if (r.skipped > 0) ", vynecháno ${r.skipped} řádků" else "")
         }
     }
+    val measLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val n = withContext(Dispatchers.IO) {
+                try {
+                    val j = c.ensureJob()
+                    val list = c.db.measurements().listByJob(j.id)
+                    val map = c.db.points().listByJob(j.id).associateBy { it.id }
+                    context.contentResolver.openOutputStream(uri)?.use { Exporter.measurementsCsv(map, list, it) } ?: -1
+                } catch (e: Exception) {
+                    -1
+                }
+            }
+            c.postMessage(if (n >= 0) "Exportováno $n měření" else "Soubor nelze zapsat")
+        }
+    }
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
@@ -101,6 +118,12 @@ fun PointsScreen(c: RoverController) {
                 exportLauncher.launch("RG_${stamp}_body_zakazky.csv")
             }, enabled = points.isNotEmpty()) { Text("Export") }
         }
+        if (points.any { it.control }) Row(Modifier.padding(horizontal = 12.dp)) {
+            OutlinedButton(onClick = {
+                val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+                measLauncher.launch("RG_${stamp}_mereni_bodu.csv")
+            }) { Text("Export měření bodů") }
+        }
         Text(
             "Body bodových polí ČÚZK: na mapě (Živě) zapni vrstvu ČÚZK a klepni na bod.",
             style = MaterialTheme.typography.bodySmall,
@@ -119,7 +142,8 @@ fun PointsScreen(c: RoverController) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(p.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                         Text(
-                            listOf(p.kind, PointSource.NAMES.getOrElse(p.source) { "" }).filter { it.isNotEmpty() }.joinToString(" · "),
+                            listOf(if (p.control) "kontrolní" else "", p.kind, PointSource.NAMES.getOrElse(p.source) { "" })
+                                .filter { it.isNotEmpty() }.joinToString(" · "),
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
@@ -146,7 +170,7 @@ fun PointsScreen(c: RoverController) {
 
     editing?.let { p ->
         PointEditor(
-            initial = p, rover = pos, antennaH = c.prefs.antennaH,
+            initial = p,
             onSave = {
                 c.savePoint(it)
                 editing = null
@@ -156,6 +180,7 @@ fun PointsScreen(c: RoverController) {
                 editing = null
             }) else null,
             onDismiss = { editing = null },
+            extra = { PointExtras(c, p, onClose = { editing = null }) },
         )
     }
 }

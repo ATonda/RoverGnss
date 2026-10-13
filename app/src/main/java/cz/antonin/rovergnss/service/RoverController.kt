@@ -5,6 +5,11 @@ import android.util.Log
 import cz.antonin.rovergnss.data.AppDb
 import cz.antonin.rovergnss.cuzk.CuzkPoint
 import cz.antonin.rovergnss.data.Job
+import cz.antonin.rovergnss.data.MeasureCalc
+import cz.antonin.rovergnss.data.MeasureEpoch
+import cz.antonin.rovergnss.data.MeasureOffset
+import cz.antonin.rovergnss.data.MeasureResult
+import cz.antonin.rovergnss.data.Measurement
 import cz.antonin.rovergnss.data.Point
 import cz.antonin.rovergnss.data.PointCoords
 import cz.antonin.rovergnss.data.Prefs
@@ -12,6 +17,7 @@ import cz.antonin.rovergnss.data.Track
 import cz.antonin.rovergnss.data.TrackDiag
 import cz.antonin.rovergnss.data.TrackPoint
 import cz.antonin.rovergnss.geo.Etrs
+import cz.antonin.rovergnss.geo.Geodetic
 import cz.antonin.rovergnss.link.BtLink
 import cz.antonin.rovergnss.link.LinkState
 import cz.antonin.rovergnss.link.Pos
@@ -67,6 +73,18 @@ data class LinkQuality(
 /** Stav záznamu trasy. */
 data class RecordingState(val trackId: Long, val name: String, val points: Int, val startMs: Long)
 
+/** Probíhající měření bodu (průběžný výpočet 1× za sekundu). */
+data class MeasureState(
+    val measurementId: Long,
+    val trackId: Long,
+    val point: Point,
+    val startMs: Long,
+    val plannedSec: Int,      // 0 = do ručního ukončení
+    val antennaH: Double,
+    val result: MeasureResult? = null,
+    val offset: MeasureOffset? = null,
+)
+
 /** Údaje o roveru z odpovědi na `get info`. */
 data class RoverInfo(
     val fw: String,
@@ -100,7 +118,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     private val _info = MutableStateFlow<RoverInfo?>(null)
     val info: StateFlow<RoverInfo?> = _info.asStateFlow()
 
-    /** Stopa posledních poloh pro mapu (ETRS89, 1 Hz, max. [TRAIL_MAX]). */
+    /** Stopa posledních poloh pro mapu (ETRS89, 1 Hz, max. [TRAIL_MAX] = 2 h). */
     private val _trail = MutableStateFlow<List<DoubleArray>>(emptyList())
     val trail: StateFlow<List<DoubleArray>> = _trail.asStateFlow()
 
@@ -114,6 +132,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
 
     /** Úplné ukončení: uloží běžící záznam, odpojí NTRIP a rover (i znovupřipojování), zastaví službu, zavře okno. */
     fun shutdown() = scope.launch {
+        if (_measure.value != null) stopMeasurement().join()
         stopRecording().join()
         ntrip.stop()
         link.disconnect()
@@ -226,7 +245,135 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         if (q.id == 0L) db.points().insert(q) else db.points().update(q)
     }
 
-    fun deletePoint(p: Point) = scope.launch { db.points().delete(p.id) }
+    fun deletePoint(p: Point) = scope.launch {
+        if (_measure.value?.point?.id == p.id) {
+            _messages.tryEmit("Na bodě probíhá měření")
+            return@launch
+        }
+        if (_navTarget.value?.id == p.id) _navTarget.value = null
+        // stopy měření bodu (trasy „M …“) se smažou s ním
+        db.measurements().byPointList(p.id).forEach { m -> m.trackId?.let { deleteTrackFiles(it) } }
+        db.points().delete(p.id)
+    }
+
+    // ------------------------------------------------------------------ navigace k bodu
+    private val _navTarget = MutableStateFlow<Point?>(null)
+    val navTarget: StateFlow<Point?> = _navTarget.asStateFlow()
+
+    fun navigateTo(p: Point?) {
+        _navTarget.value = p
+    }
+
+    // ------------------------------------------------------------------ měření bodu
+    private val _measure = MutableStateFlow<MeasureState?>(null)
+    val measure: StateFlow<MeasureState?> = _measure.asStateFlow()
+    private val measEpochs = ArrayList<MeasureEpoch>()
+    private var measTimer: kotlinx.coroutines.Job? = null
+    @Volatile private var measLastCalc = 0L
+
+    /**
+     * Měření bodu: záznam trasy „M bod čas“ (všechny epochy, surový proud podle nastavení) a průběžný průměr.
+     * @param seconds délka měření, 0 = do ručního ukončení
+     */
+    fun startMeasurement(p: Point, seconds: Int) = scope.launch {
+        if (_measure.value != null) return@launch
+        if (link.state.value !is LinkState.Connected) {
+            _messages.tryEmit("Rover není připojený")
+            return@launch
+        }
+        if (_recording.value != null) {
+            _messages.tryEmit("Nejdřív ukonči záznam trasy")
+            return@launch
+        }
+        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+        startRecording("M ${p.name} $stamp").join()
+        val r = _recording.value ?: return@launch
+        val now = System.currentTimeMillis()
+        val antH = prefs.antennaH
+        val id = db.measurements().insert(
+            Measurement(
+                pointId = p.id, trackId = r.trackId, startMs = now, plannedSec = seconds, antennaH = antH,
+                profile = _sta.value?.profileName ?: "",
+            )
+        )
+        synchronized(measEpochs) { measEpochs.clear() }
+        measLastCalc = 0
+        _measure.value = MeasureState(id, r.trackId, p, now, seconds, antH)
+        if (seconds > 0) measTimer = scope.launch {
+            delay(seconds * 1000L)
+            stopMeasurement()
+        }
+    }
+
+    /** Konec měření: [save] = false měření i jeho trasu zahodí. */
+    fun stopMeasurement(save: Boolean = true) = scope.launch {
+        val m = _measure.value ?: return@launch
+        _measure.value = null
+        measTimer?.cancel()  // časovač už mohl doběhnout (sám volá stopMeasurement)
+        measTimer = null
+        stopRecording().join()
+        val eps = synchronized(measEpochs) { ArrayList(measEpochs).also { measEpochs.clear() } }
+        if (!save) {
+            db.measurements().delete(m.measurementId)
+            deleteTrackFiles(m.trackId)
+            _messages.tryEmit("Měření zrušeno")
+            return@launch
+        }
+        val point = db.points().get(m.point.id) ?: m.point
+        val res = MeasureCalc.compute(eps)
+        val off = MeasureCalc.offset(res.lat, res.lon, res.h, point)
+        val mount = (ntrip.state.value as? NtripState.Streaming)?.mount
+        val corr = when {
+            res.epochs > 0 && res.nRtcm * 2 > res.epochs -> "RTCM" + (mount?.let { " $it" } ?: "")
+            res.nHas > 0 -> "HAS"
+            else -> "bez korekcí"
+        }
+        val old = db.measurements().get(m.measurementId) ?: return@launch
+        db.measurements().update(
+            old.copy(
+                endMs = System.currentTimeMillis(), epochs = res.epochs, used = res.used, usedQuality = res.usedQuality,
+                nFix = res.nFix, nFloat = res.nFloat, nHas = res.nHas, nDgnss = res.nDgnss, nOther = res.nOther,
+                corr = corr, lat = res.lat, lon = res.lon, hEll = res.h, sN = res.sN, sE = res.sE, sU = res.sU,
+                dN = off.dN, dE = off.dE, dU = off.dU, dY = off.dY, dX = off.dX, refDerived = off.refDerived,
+            )
+        )
+        _messages.tryEmit(
+            "Měření ${point.name}: ${res.used} epoch" +
+                (off.d2?.let { String.format(Locale.US, ", odchylka %.3f m", it) } ?: "")
+        )
+    }
+
+    fun deleteMeasurement(m: Measurement) = scope.launch {
+        if (_measure.value?.measurementId == m.id) return@launch
+        db.measurements().delete(m.id)
+        m.trackId?.let { deleteTrackFiles(it) }
+    }
+
+    /** Smaže trasu i se surovým souborem (ne probíhající záznam). */
+    private suspend fun deleteTrackFiles(trackId: Long) {
+        if (_recording.value?.trackId == trackId) return
+        val t = db.tracks().get(trackId) ?: return
+        t.rawFile?.let { rawFile(it).delete() }
+        db.tracks().delete(t.id)
+    }
+
+    /** Epocha do probíhajícího měření (ETRS89, anténa odečtena). */
+    private fun measureEpoch(p: Pos) {
+        val m = _measure.value ?: return
+        if (!p.hasFix || p.timeMs == null) return
+        val g = if (p.itrf) Etrs.itrfToEtrs(p.lat!!, p.lon!!, p.hEll ?: 0.0, Etrs.epochYear(p.timeMs))
+        else Geodetic(p.lat!!, p.lon!!, p.hEll ?: 0.0)
+        synchronized(measEpochs) {
+            measEpochs.add(MeasureEpoch(g.lat, g.lon, g.h - m.antennaH, p.quality.code, p.moving, p.rtcm))
+        }
+        val now = System.currentTimeMillis()
+        if (now - measLastCalc < 1000) return
+        measLastCalc = now
+        val eps = synchronized(measEpochs) { ArrayList(measEpochs) }
+        val res = MeasureCalc.compute(eps)
+        // compareAndSet: mezitím ukončené měření se nesmí obnovit
+        _measure.compareAndSet(m, m.copy(result = res, offset = MeasureCalc.offset(res.lat, res.lon, res.h, m.point)))
+    }
 
     fun takeCuzkPoint(c: CuzkPoint) = scope.launch {
         val j = ensureJob()
@@ -370,6 +517,11 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
 
     fun stopRecording() = scope.launch {
         val r = _recording.value ?: return@launch
+        // trasu měření bodu ukončuje jen konec měření (stopMeasurement nejdřív zruší _measure)
+        if (_measure.value != null) {
+            _messages.tryEmit("Probíhá měření bodu – ukonči ho v pruhu měření")
+            return@launch
+        }
         _recording.value = null
         flushRecording(r.trackId)
         synchronized(rawLock) {
@@ -468,7 +620,8 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         val r = _recording.value ?: return
         if (!p.hasFix || p.timeMs == null) return
         recCounter++
-        if (recCounter % prefs.recordEvery.coerceAtLeast(1) != 0) return
+        // měření bodu ukládá každou epochu
+        if (_measure.value == null && recCounter % prefs.recordEvery.coerceAtLeast(1) != 0) return
         val tp = TrackPoint(
             trackId = r.trackId, timeMs = p.timeMs, lat = p.lat!!, lon = p.lon!!,
             hEll = p.hEll ?: 0.0, hMsl = p.hMsl ?: 0.0, sN = p.sN, sE = p.sE, sU = p.sU,
@@ -505,6 +658,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                 _pos.value = p
                 onEpoch(p)
                 record(p)
+                measureEpoch(p)
                 val now = System.currentTimeMillis()
                 if (p.hasFix && now - lastTrailMs >= 1000) {
                     lastTrailMs = now
@@ -631,6 +785,6 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
 
     companion object {
         private const val TAG = "RoverController"
-        const val TRAIL_MAX = 3600
+        const val TRAIL_MAX = 7200  // 2 h při 1 Hz
     }
 }

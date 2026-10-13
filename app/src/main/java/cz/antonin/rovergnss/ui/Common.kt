@@ -48,6 +48,12 @@ fun dms(deg: Double, latitude: Boolean): String {
     return String.format(Locale.US, "%d°%02d′%07.4f″ %s", d, m, s, h).replace('.', ',')
 }
 
+/** Baterie roveru; napětí mimo rozsah článku LiPo (2,5–4,4 V) = vadné měření, ne stav baterie. */
+fun batteryText(s: cz.antonin.rovergnss.link.Sta): String {
+    val v = s.batV ?: return "–"
+    return if (v < 2.5 || v > 4.4) "chyba měření (${fmt(v, 2)} V)" else "${fmt(v, 2)} V (${s.batPct} %)"
+}
+
 @Composable
 fun Section(title: String, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Card(modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {

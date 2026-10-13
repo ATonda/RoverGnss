@@ -171,4 +171,51 @@ data class Point(
     val source: Int = PointSource.ENTERED,
     val url: String? = null,      // geodetické údaje
     val createdMs: Long = System.currentTimeMillis(),
+    val control: Boolean = false, // kontrolní (kalibrační) bod – opakovaná měření přijímače
+)
+
+/**
+ * Měření na bodě (relace): průměr epoch, rozptyl a odchylka od daných souřadnic bodu.
+ * Epochy a surový proud jsou v trase [trackId] (záznam „M …“), souhrn zůstává i po smazání trasy.
+ * Odchylky = měřeno − dané; ETRS89 v metrech (sever, východ, výška), S-JTSK ΔY/ΔX.
+ */
+@Entity(
+    tableName = "measurement",
+    foreignKeys = [
+        ForeignKey(entity = Point::class, parentColumns = ["id"], childColumns = ["pointId"], onDelete = ForeignKey.CASCADE),
+        ForeignKey(entity = Track::class, parentColumns = ["id"], childColumns = ["trackId"], onDelete = ForeignKey.SET_NULL),
+    ],
+    indices = [Index("pointId"), Index("trackId")],
+)
+data class Measurement(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val pointId: Long,
+    val trackId: Long?,
+    val startMs: Long,
+    val endMs: Long? = null,
+    val plannedSec: Int = 0,      // plánovaná délka [s], 0 = ukončeno ručně
+    val antennaH: Double = 0.0,   // výška antény (odečtena od průměru)
+    val epochs: Int = 0,          // epochy s polohou (bez pohybu)
+    val used: Int = 0,            // epochy v průměru
+    val usedQuality: Int = 0,     // kvalita epoch v průměru (kód Quality)
+    val nFix: Int = 0,
+    val nFloat: Int = 0,
+    val nHas: Int = 0,
+    val nDgnss: Int = 0,
+    val nOther: Int = 0,
+    val corr: String = "",        // korekce: RTCM (mountpoint) / HAS / bez korekcí
+    val profile: String = "",
+    val lat: Double? = null,      // průměr ETRS89 [°]
+    val lon: Double? = null,
+    val hEll: Double? = null,
+    val sN: Double? = null,       // směrodatná odchylka epoch [m]
+    val sE: Double? = null,
+    val sU: Double? = null,
+    val dN: Double? = null,       // měřeno − dané [m]
+    val dE: Double? = null,
+    val dU: Double? = null,
+    val dY: Double? = null,
+    val dX: Double? = null,
+    val refDerived: Boolean = false, // dané ETRS89 dopočtené ze S-JTSK (7 parametrů, ~0,4 m)
+    val note: String = "",
 )

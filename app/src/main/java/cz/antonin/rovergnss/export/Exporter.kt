@@ -1,11 +1,14 @@
 package cz.antonin.rovergnss.export
 
+import cz.antonin.rovergnss.data.Measurement
+import cz.antonin.rovergnss.data.Point
 import cz.antonin.rovergnss.data.Track
 import cz.antonin.rovergnss.data.TrackDiag
 import cz.antonin.rovergnss.data.TrackPoint
 import cz.antonin.rovergnss.geo.Etrs
 import cz.antonin.rovergnss.geo.Geodetic
 import cz.antonin.rovergnss.geo.Krovak
+import cz.antonin.rovergnss.link.Quality
 import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -125,6 +128,35 @@ object Exporter {
         }
         w.flush()
         return diag.size
+    }
+
+    /** Měření bodů: souhrn každé relace, odchylky = měřeno − dané. */
+    fun measurementsCsv(points: Map<Long, Point>, list: List<Measurement>, out: OutputStream): Int {
+        val fmt = iso()
+        val w = out.bufferedWriter(Charsets.UTF_8)
+        w.write("bod;druh;zacatek_utc;konec_utc;delka_s;epoch;v_prumeru;kvalita_prumeru;fix;float;has;sbas;gnss3d;korekce;profil;" +
+            "vyska_anteny;lat_etrs89;lon_etrs89;h_ell_etrs89;sN;sE;sU;dN;dE;d2D;dU;dY;dX;dane_etrs_dopocteno\r\n")
+        var n = 0
+        for (m in list) {
+            if (m.endMs == null) continue
+            val p = points[m.pointId]
+            val d2 = if (m.dN != null && m.dE != null) Math.hypot(m.dN, m.dE) else null
+            w.write(
+                listOf(
+                    p?.name ?: m.pointId.toString(), p?.kind ?: "", fmt.format(m.startMs), fmt.format(m.endMs),
+                    ((m.endMs - m.startMs) / 1000).toString(), m.epochs.toString(), m.used.toString(),
+                    if (m.usedQuality == 0) "smisena" else Quality.of(m.usedQuality).label,
+                    m.nFix.toString(), m.nFloat.toString(), m.nHas.toString(), m.nDgnss.toString(), m.nOther.toString(),
+                    m.corr, m.profile, f(m.antennaH, 3), f(m.lat, 9), f(m.lon, 9), f(m.hEll, 4),
+                    f(m.sN, 4), f(m.sE, 4), f(m.sU, 4), f(m.dN, 4), f(m.dE, 4), f(d2, 4), f(m.dU, 4), f(m.dY, 4), f(m.dX, 4),
+                    if (m.refDerived) "1" else "0",
+                ).joinToString(";") { it.replace(";", ",") }
+            )
+            w.write("\r\n")
+            n++
+        }
+        w.flush()
+        return n
     }
 
     private fun gpxFix(q: Int) = when (q) {

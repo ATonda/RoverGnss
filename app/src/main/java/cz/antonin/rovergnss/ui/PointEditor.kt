@@ -1,5 +1,6 @@
 package cz.antonin.rovergnss.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,7 +9,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.ui.Alignment
@@ -18,6 +18,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -34,30 +35,27 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import cz.antonin.rovergnss.data.Point
 import cz.antonin.rovergnss.data.PointQuality
 import cz.antonin.rovergnss.data.PointSource
 import cz.antonin.rovergnss.geo.Angles
-import cz.antonin.rovergnss.geo.Krovak
-import cz.antonin.rovergnss.link.Pos
 import java.util.Locale
 
 private fun num(v: Double?, dec: Int) = if (v == null) "" else String.format(Locale.US, "%.${dec}f", v).replace('.', ',')
 
 /**
  * Úprava bodu. Zadává se S-JTSK + Bpv nebo ETRS89 (úhly i ve tvaru 49°55′9,8368″); chybějící systém dopočte uložení.
- * @param rover aktuální poloha roveru (pro „Převzít polohu roveru“), null = bez polohy
+ * Souřadnice bodu jsou dané (ruční zadání, import, ČÚZK) – měření roveru je nikdy nepřepisuje, ukládá se zvlášť.
+ * Kreslí se jako vrstva přes obsah aplikace (ne samostatné okno), aby respektovala lišty Androidu.
+ * @param extra další obsah pod formulářem (navigace, měření bodu) – jen u uloženého bodu
  */
 @Composable
 fun PointEditor(
     initial: Point,
-    rover: Pos?,
-    antennaH: Double,
     onSave: (Point) -> Unit,
     onDelete: (() -> Unit)?,
     onDismiss: () -> Unit,
+    extra: @Composable () -> Unit = {},
 ) {
     var name by remember { mutableStateOf(initial.name) }
     var kind by remember { mutableStateOf(initial.kind) }
@@ -72,6 +70,7 @@ fun PointEditor(
     var quality by remember { mutableIntStateOf(initial.quality) }
     var source by remember { mutableIntStateOf(initial.source) }
     var url by remember { mutableStateOf(initial.url ?: "") }
+    var control by remember { mutableStateOf(initial.control) }
     var err by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
 
@@ -93,14 +92,14 @@ fun PointEditor(
             y = if (hasJ) kotlin.math.abs(py!!) else null, x = if (hasJ) kotlin.math.abs(px!!) else null, jtskDerived = false,
             lat = if (hasE) pl else null, lon = if (hasE) pn else null, etrsDerived = false,
             hEll = Angles.parseNumber(hEll), bpv = Angles.parseNumber(bpv),
-            quality = quality, source = source,
+            quality = quality, source = source, control = control,
         )
     }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.fillMaxSize()) {
-          // okraje podle systémových lišt a klávesnice – tlačítka se nesmí plést se systémovými
-          Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
+    BackHandler(enabled = !confirmDelete, onBack = onDismiss)
+    // vrstva v obsahu aplikace: okraje lišt už řeší Scaffold, klávesnice imePadding
+    Surface(Modifier.fillMaxSize()) {
+          Column(Modifier.fillMaxSize().imePadding()) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -144,22 +143,6 @@ fun PointEditor(
                     "Stačí jeden systém, druhý se dopočte (7 parametrů, ~0,4 m). Prázdná pole = dopočtená.",
                     style = MaterialTheme.typography.bodySmall,
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = {
-                        y = ""; x = ""; lat = ""; lon = ""; hEll = ""
-                        rover?.etrs()?.let { g ->
-                            lat = Angles.dms(g.lat, 5)
-                            lon = Angles.dms(g.lon, 5)
-                            hEll = num(g.h - antennaH, 3)
-                            val j = Krovak.fromEtrs(g.lat, g.lon, g.h - antennaH)
-                            y = num(j.y, 3)
-                            x = num(j.x, 3)
-                            source = PointSource.MEASURED
-                            quality = PointQuality.APPROX
-                        }
-                    }, enabled = rover?.hasFix == true) { Text("Poloha roveru") }
-                }
-                rover?.let { if (it.hasFix) Text("Rover: ${it.quality.label}, hAcc ${fmt(it.hAcc, 2)} m – jedna epocha, ne měření bodu", style = MaterialTheme.typography.bodySmall) }
 
                 Text("Kvalita polohy", style = MaterialTheme.typography.titleSmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -168,8 +151,14 @@ fun PointEditor(
                     }
                 }
                 Text("Zdroj: ${PointSource.NAMES.getOrElse(source) { "?" }}", style = MaterialTheme.typography.bodySmall)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(control, { control = it })
+                    Text("Kontrolní bod (opakovaná měření přijímače)")
+                }
                 OutlinedTextField(note, { note = it }, label = { Text("Poznámka") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(url, { url = it }, label = { Text("Geodetické údaje (odkaz)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+
+                extra()
 
                 if (onDelete != null) {
                     Spacer(Modifier.height(8.dp))
@@ -177,14 +166,14 @@ fun PointEditor(
                         Text("Smazat bod", color = MaterialTheme.colorScheme.error)
                     }
                 }
+                Spacer(Modifier.height(16.dp))
             }
           }
-        }
         if (confirmDelete && onDelete != null) {
             AlertDialog(
                 onDismissRequest = { confirmDelete = false },
                 title = { Text("Smazat bod?") },
-                text = { Text("${initial.name} – nelze vrátit.") },
+                text = { Text("${initial.name} i s měřeními – nelze vrátit.") },
                 confirmButton = {
                     TextButton(onClick = {
                         confirmDelete = false

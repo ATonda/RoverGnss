@@ -29,6 +29,21 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("mapFollow", true)
         set(v) = sp.edit().putBoolean("mapFollow", v).apply()
 
+    /** Mapa přes celou obrazovku (bez panelu údajů a lišty karet) */
+    var mapFull: Boolean
+        get() = sp.getBoolean("mapFull", false)
+        set(v) = sp.edit().putBoolean("mapFull", v).apply()
+
+    /** Natočení mapy: 0 sever nahoře, 1 směr pohybu nahoře, 2 volně */
+    var mapRotate: Int
+        get() = sp.getInt("mapRotate", 0)
+        set(v) = sp.edit().putInt("mapRotate", v).apply()
+
+    /** Délka posledního měření bodu [s] (0 = ručně) */
+    var measureSec: Int
+        get() = sp.getInt("measureSec", 180)
+        set(v) = sp.edit().putInt("measureSec", v).apply()
+
     /** Vrstva bodových polí ČÚZK na mapě */
     var showCuzk: Boolean
         get() = sp.getBoolean("showCuzk", false)

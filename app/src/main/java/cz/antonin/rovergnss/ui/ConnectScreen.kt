@@ -110,7 +110,7 @@ private fun RoverSection(c: RoverController) {
                     KeyValue("IMU", if (i.imu) "ano" else "ne")
                 }
                 sta?.let { s ->
-                    KeyValue("Baterie", s.batV?.let { "${fmt(it, 2)} V (${s.batPct} %)" } ?: "–")
+                    KeyValue("Baterie", batteryText(s))
                     KeyValue("Volná RAM", "${s.freeHeap / 1024} kB")
                     if (s.btBacklog != null) {
                         KeyValue("Konec epochy X20", if (s.eoe) "ano (HPPOSLLH v každé epoše)" else "ne")

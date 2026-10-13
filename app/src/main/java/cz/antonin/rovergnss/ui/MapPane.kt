@@ -29,6 +29,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
@@ -77,6 +78,16 @@ object MapStyles {
     }
 }
 
+/** Klepnutí do mapy: místo, přiblížení a velikost mapy v dp (pro dotaz ČÚZK ve stejném měřítku). */
+data class MapTap(val lat: Double, val lon: Double, val zoom: Double, val widthDp: Int, val heightDp: Int)
+
+/** Natočení mapy. */
+object MapRotate {
+    const val NORTH = 0   // sever nahoře
+    const val COURSE = 1  // směr pohybu nahoře
+    const val FREE = 2    // volně (otáčení prsty)
+}
+
 private class MapHolder {
     var map: MapLibreMap? = null
     var style: Style? = null
@@ -86,7 +97,10 @@ private class MapHolder {
 /**
  * Mapa MapLibre s polohou roveru (barva podle kvality), stopou, body zakázky a vrstvou bodových polí ČÚZK.
  * @param pos [lat, lon] v ETRS89, null = bez polohy
- * @param onClick klepnutí: místo, přiblížení, bod zakázky pod prstem (nebo null)
+ * @param onClick klepnutí a bod zakázky pod prstem (nebo null)
+ * @param rotate natočení ([MapRotate]), [course] = kurz pro „směr pohybu nahoře“ (null = držet poslední)
+ * @param navTarget [lat, lon] cíle navigace – čára od roveru a značka cíle
+ * @param fitTrail při změně (> 0) přiblíží mapu na celou stopu
  */
 @Composable
 fun MapPane(
@@ -98,9 +112,13 @@ fun MapPane(
     modifier: Modifier = Modifier,
     points: List<JobPoint> = emptyList(),
     showCuzk: Boolean = false,
-    onClick: (lat: Double, lon: Double, zoom: Double, point: JobPoint?) -> Unit = { _, _, _, _ -> },
+    onClick: (tap: MapTap, point: JobPoint?) -> Unit = { _, _ -> },
     initialCamera: DoubleArray? = null,   // [lat, lon, zoom] poslední pohled; null = celá ČR a vycentrovat na první fix
-    onCamera: (lat: Double, lon: Double, zoom: Double, idle: Boolean) -> Unit = { _, _, _, _ -> },
+    onCamera: (lat: Double, lon: Double, zoom: Double, bearing: Double, idle: Boolean) -> Unit = { _, _, _, _, _ -> },
+    rotate: Int = MapRotate.NORTH,
+    course: Double? = null,
+    navTarget: DoubleArray? = null,
+    fitTrail: Int = 0,
 ) {
     val clickCb by rememberUpdatedState(onClick)
     val cameraCb by rememberUpdatedState(onCamera)
@@ -128,7 +146,8 @@ fun MapPane(
                     m.cameraPosition = CameraPosition.Builder().target(LatLng(49.8, 15.5)).zoom(6.5).build()
                 }
                 val camUpdate = { idle: Boolean ->
-                    m.cameraPosition.target?.let { cameraCb(it.latitude, it.longitude, m.cameraPosition.zoom, idle) }
+                    val cp = m.cameraPosition
+                    cp.target?.let { cameraCb(it.latitude, it.longitude, cp.zoom, cp.bearing, idle) }
                 }
                 m.addOnCameraMoveListener { camUpdate(false) }
                 m.addOnCameraIdleListener { camUpdate(true) }
@@ -138,7 +157,9 @@ fun MapPane(
                     val r = android.graphics.RectF(sp.x - 20, sp.y - 20, sp.x + 20, sp.y + 20)
                     val f = m.queryRenderedFeatures(r, LYR_POINTS).firstOrNull()
                     val id = f?.getNumberProperty("id")?.toLong()
-                    clickCb(ll.latitude, ll.longitude, m.cameraPosition.zoom, pointsNow.firstOrNull { it.id == id })
+                    val dens = resources.displayMetrics.density
+                    val tap = MapTap(ll.latitude, ll.longitude, m.cameraPosition.zoom, (width / dens).toInt(), (height / dens).toInt())
+                    clickCb(tap, pointsNow.firstOrNull { it.id == id })
                     true
                 }
                 mapReady = true
@@ -200,11 +221,28 @@ fun MapPane(
             )
             st.addSource(GeoJsonSource(SRC_TRAIL))
             st.addSource(GeoJsonSource(SRC_POS))
+            st.addSource(GeoJsonSource(SRC_NAV))
             st.addLayer(
                 LineLayer(SRC_TRAIL, SRC_TRAIL).withProperties(
                     PropertyFactory.lineColor(android.graphics.Color.rgb(255, 193, 7)),
                     PropertyFactory.lineWidth(3f),
                 )
+            )
+            // navigace: čárkovaná čára rover → cíl a kroužek na cíli
+            st.addLayer(
+                LineLayer(LYR_NAV_LINE, SRC_NAV).withProperties(
+                    PropertyFactory.lineColor(android.graphics.Color.rgb(198, 40, 40)),
+                    PropertyFactory.lineWidth(2.5f),
+                    PropertyFactory.lineDasharray(arrayOf(2f, 1.5f)),
+                ).withFilter(Expression.eq(Expression.geometryType(), Expression.literal("LineString")))
+            )
+            st.addLayer(
+                CircleLayer(LYR_NAV_TARGET, SRC_NAV).withProperties(
+                    PropertyFactory.circleRadius(11f),
+                    PropertyFactory.circleOpacity(0f),
+                    PropertyFactory.circleStrokeColor(android.graphics.Color.rgb(198, 40, 40)),
+                    PropertyFactory.circleStrokeWidth(3f),
+                ).withFilter(Expression.eq(Expression.geometryType(), Expression.literal("Point")))
             )
             st.addLayer(
                 CircleLayer(SRC_POS, SRC_POS).withProperties(
@@ -229,11 +267,60 @@ fun MapPane(
         }
         src.setGeoJson(Point.fromLngLat(pos[1], pos[0]))
         (st.getLayer(SRC_POS) as? CircleLayer)?.setProperties(PropertyFactory.circleColor(qualityColorArgb(quality)))
+        val cp = m.cameraPosition
+        val bearing = when (rotate) {
+            MapRotate.COURSE -> course ?: cp.bearing
+            MapRotate.NORTH -> 0.0
+            else -> cp.bearing
+        }
         if (!holder.centered) {
             holder.centered = true
-            m.cameraPosition = CameraPosition.Builder().target(LatLng(pos[0], pos[1])).zoom(START_ZOOM).build()
+            m.cameraPosition = CameraPosition.Builder().target(LatLng(pos[0], pos[1])).zoom(START_ZOOM).bearing(bearing).build()
         } else if (follow) {
-            m.easeCamera(CameraUpdateFactory.newLatLng(LatLng(pos[0], pos[1])), 300)
+            m.easeCamera(
+                CameraUpdateFactory.newCameraPosition(
+                    CameraPosition.Builder().target(LatLng(pos[0], pos[1])).zoom(cp.zoom).bearing(bearing).build()
+                ), 300,
+            )
+        } else if (rotate == MapRotate.COURSE && course != null && kotlin.math.abs(cp.bearing - course) > 1.0) {
+            m.easeCamera(CameraUpdateFactory.bearingTo(course), 300)
+        }
+    }
+
+    // natočení: gesta jen ve volném režimu, sever nahoře srovná mapu hned
+    LaunchedEffect(rotate, mapReady) {
+        val m = holder.map ?: return@LaunchedEffect
+        m.uiSettings.isRotateGesturesEnabled = rotate == MapRotate.FREE
+        if (rotate == MapRotate.NORTH && m.cameraPosition.bearing != 0.0) m.easeCamera(CameraUpdateFactory.bearingTo(0.0), 300)
+        if (rotate == MapRotate.COURSE && course != null) m.easeCamera(CameraUpdateFactory.bearingTo(course), 300)
+    }
+
+    LaunchedEffect(navTarget?.get(0), navTarget?.get(1), pos?.get(0), pos?.get(1), styleVersion) {
+        val st = holder.style ?: return@LaunchedEffect
+        val src = st.getSourceAs<GeoJsonSource>(SRC_NAV) ?: return@LaunchedEffect
+        if (navTarget == null) {
+            src.setGeoJson("""{"type":"FeatureCollection","features":[]}""")
+            return@LaunchedEffect
+        }
+        val t = Point.fromLngLat(navTarget[1], navTarget[0])
+        val feats = arrayListOf(Feature.fromGeometry(t))
+        if (pos != null) feats += Feature.fromGeometry(LineString.fromLngLats(listOf(Point.fromLngLat(pos[1], pos[0]), t)))
+        src.setGeoJson(FeatureCollection.fromFeatures(feats))
+    }
+
+    // přiblížit na stopu (s polohou roveru a cílem navigace)
+    LaunchedEffect(fitTrail) {
+        if (fitTrail == 0) return@LaunchedEffect
+        val m = holder.map ?: return@LaunchedEffect
+        val pts = trail.map { LatLng(it[0], it[1]) } + listOfNotNull(pos?.let { LatLng(it[0], it[1]) })
+        when {
+            pts.isEmpty() -> return@LaunchedEffect
+            pts.size == 1 -> m.easeCamera(CameraUpdateFactory.newLatLngZoom(pts[0], START_ZOOM), 500)
+            else -> {
+                val b = LatLngBounds.Builder().includes(pts).build()
+                val pad = (48 * mapView.resources.displayMetrics.density).toInt()
+                m.easeCamera(CameraUpdateFactory.newLatLngBounds(b, pad), 500)
+            }
         }
     }
 
@@ -310,3 +397,6 @@ private const val LYR_LABELS = "job-points-labels"
 private const val START_ZOOM = 21.0  // po prvním fixu
 private const val MAX_ZOOM = 22.0
 private const val SRC_TRAIL = "rover-trail"
+private const val SRC_NAV = "nav"
+private const val LYR_NAV_LINE = "nav-line"
+private const val LYR_NAV_TARGET = "nav-target"

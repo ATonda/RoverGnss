@@ -3,6 +3,7 @@ package cz.antonin.rovergnss.ui
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
@@ -24,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -33,6 +35,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import cz.antonin.rovergnss.service.RoverController
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 private data class Tab(val title: String, val icon: ImageVector)
 
@@ -54,14 +58,22 @@ private val Colors = lightColorScheme(
 fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermissions: () -> Unit) {
     MaterialTheme(colorScheme = Colors) {
         var tab by rememberSaveable { mutableIntStateOf(0) }
+        var mapFull by rememberSaveable { mutableStateOf(controller.prefs.mapFull) }
         val snackbar = remember { SnackbarHostState() }
         LaunchedEffect(Unit) {
             controller.messages.collect { snackbar.showSnackbar(it) }
         }
+        // navigace k bodu a začátek měření přepnou na mapu
+        LaunchedEffect(Unit) {
+            controller.navTarget.collect { if (it != null) tab = 1 }
+        }
+        LaunchedEffect(Unit) {
+            controller.measure.map { it != null }.distinctUntilChanged().collect { if (it) tab = 1 }
+        }
         Scaffold(
             snackbarHost = { SnackbarHost(snackbar) },
             bottomBar = {
-                NavigationBar {
+                if (!(tab == 1 && mapFull)) NavigationBar {
                     TABS.forEachIndexed { i, t ->
                         NavigationBarItem(
                             selected = tab == i,
@@ -73,7 +85,9 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
                 }
             },
         ) { inner ->
-            Box(Modifier.padding(inner).fillMaxSize()) {
+          Column(Modifier.padding(inner).fillMaxSize()) {
+            if (permissionsOk) MeasureBanner(controller)
+            Box(Modifier.weight(1f).fillMaxWidth()) {
                 if (!permissionsOk) {
                     Column(
                         Modifier.fillMaxSize().padding(24.dp),
@@ -87,13 +101,17 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
                 } else {
                     when (tab) {
                         0 -> ConnectScreen(controller)
-                        1 -> LiveScreen(controller)
+                        1 -> LiveScreen(controller, mapFull) {
+                            mapFull = it
+                            controller.prefs.mapFull = it
+                        }
                         2 -> PointsScreen(controller)
                         3 -> TrackScreen(controller)
                         4 -> SatScreen(controller)
                     }
                 }
             }
+          }
         }
     }
 }

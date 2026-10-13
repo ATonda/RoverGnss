@@ -50,6 +50,9 @@ interface PointDao {
 
     @Query("SELECT * FROM point WHERE jobId = :jobId ORDER BY name")
     suspend fun listByJob(jobId: Long): List<Point>
+
+    @Query("SELECT * FROM point WHERE id = :id")
+    suspend fun get(id: Long): Point?
 }
 
 @Dao
@@ -91,12 +94,40 @@ interface TrackDao {
     suspend fun diag(trackId: Long): List<TrackDiag>
 }
 
-// Verze 4: body zakázek. Starší databáze se smaže (vývojová fáze).
-@Database(entities = [Job::class, Track::class, TrackPoint::class, TrackDiag::class, Point::class], version = 4, exportSchema = true)
+@Dao
+interface MeasurementDao {
+    @Insert
+    suspend fun insert(m: Measurement): Long
+
+    @Update
+    suspend fun update(m: Measurement)
+
+    @Query("SELECT * FROM measurement WHERE id = :id")
+    suspend fun get(id: Long): Measurement?
+
+    @Query("DELETE FROM measurement WHERE id = :id")
+    suspend fun delete(id: Long)
+
+    @Query("SELECT * FROM measurement WHERE pointId = :pointId ORDER BY startMs")
+    fun byPoint(pointId: Long): Flow<List<Measurement>>
+
+    @Query("SELECT * FROM measurement WHERE pointId = :pointId ORDER BY startMs")
+    suspend fun byPointList(pointId: Long): List<Measurement>
+
+    @Query("SELECT m.* FROM measurement m JOIN point p ON p.id = m.pointId WHERE p.jobId = :jobId ORDER BY p.name, m.startMs")
+    suspend fun listByJob(jobId: Long): List<Measurement>
+}
+
+// Verze 5: kontrolní body a měření. Starší databáze se smaže (vývojová fáze).
+@Database(
+    entities = [Job::class, Track::class, TrackPoint::class, TrackDiag::class, Point::class, Measurement::class],
+    version = 5, exportSchema = true,
+)
 abstract class AppDb : RoomDatabase() {
     abstract fun jobs(): JobDao
     abstract fun tracks(): TrackDao
     abstract fun points(): PointDao
+    abstract fun measurements(): MeasurementDao
 
     companion object {
         fun create(context: Context): AppDb =
