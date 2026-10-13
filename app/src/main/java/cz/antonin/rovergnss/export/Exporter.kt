@@ -160,6 +160,52 @@ object Exporter {
         return n
     }
 
+    /** Body do KML (Google Earth, mapy): ETRS89, výška elipsoidu; v popisu S-JTSK a Bpv. */
+    fun pointsKml(name: String, points: List<Point>, out: OutputStream): Int {
+        val w = out.bufferedWriter(Charsets.UTF_8)
+        w.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<kml xmlns=\"http://www.opengis.net/kml/2.2\"><Document>\n")
+        w.write("<name>${xml(name)}</name>\n")
+        var n = 0
+        for (p in points) {
+            if (p.lat == null || p.lon == null) continue
+            val desc = listOfNotNull(
+                p.kind.ifEmpty { null },
+                if (p.y != null && p.x != null) "Y ${f(p.y, 3)} X ${f(p.x, 3)}" else null,
+                p.bpv?.let { "Bpv ${f(it, 3)}" },
+                p.note.ifEmpty { null },
+            ).joinToString(", ")
+            w.write("<Placemark><name>${xml(p.name)}</name><description>${xml(desc)}</description>")
+            w.write("<Point><coordinates>${f(p.lon, 9)},${f(p.lat, 9)},${f(p.hEll ?: 0.0, 3)}</coordinates></Point></Placemark>\n")
+            n++
+        }
+        w.write("</Document></kml>\n")
+        w.flush()
+        return n
+    }
+
+    /** Protokol vytyčení: dané souřadnice, vytyčená poloha a odchylka vytyčeno − dané. */
+    fun stakeCsv(points: List<Point>, out: OutputStream): Int {
+        val fmt = iso()
+        val w = out.bufferedWriter(Charsets.UTF_8)
+        w.write("bod;druh;y_jtsk;x_jtsk;bpv;lat_etrs89;lon_etrs89;vytyceno_utc;lat_vytyceno;lon_vytyceno;h_ell_vytyceno;" +
+            "dN;dE;d2D;dY;dX;dH\r\n")
+        var n = 0
+        for (p in points) {
+            val d2 = if (p.stakeDN != null && p.stakeDE != null) Math.hypot(p.stakeDN, p.stakeDE) else null
+            w.write(
+                listOf(
+                    p.name, p.kind, f(p.y, 3), f(p.x, 3), f(p.bpv, 3), f(p.lat, 9), f(p.lon, 9),
+                    p.stakeMs?.let { fmt.format(it) } ?: "", f(p.stakeLat, 9), f(p.stakeLon, 9), f(p.stakeH, 4),
+                    f(p.stakeDN, 4), f(p.stakeDE, 4), f(d2, 4), f(p.stakeDY, 4), f(p.stakeDX, 4), f(p.stakeDH, 4),
+                ).joinToString(";") { it.replace(";", ",") }
+            )
+            w.write("\r\n")
+            n++
+        }
+        w.flush()
+        return n
+    }
+
     private fun gpxFix(q: Int) = when (q) {
         2, 3, 4, 5 -> "dgps"
         1 -> "3d"

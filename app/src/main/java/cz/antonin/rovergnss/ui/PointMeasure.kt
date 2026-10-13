@@ -50,6 +50,7 @@ import cz.antonin.rovergnss.data.Point
 import cz.antonin.rovergnss.export.Exporter
 import cz.antonin.rovergnss.link.LinkState
 import cz.antonin.rovergnss.link.Quality
+import cz.antonin.rovergnss.service.MeasureMode
 import cz.antonin.rovergnss.service.MeasureState
 import cz.antonin.rovergnss.service.RoverController
 import kotlinx.coroutines.Dispatchers
@@ -132,7 +133,7 @@ fun PointExtras(c: RoverController, p: Point, onClose: () -> Unit) {
 
     Text("Měření bodu", style = MaterialTheme.typography.titleSmall)
     Text(
-        "Postav anténu na značku bodu. Výška antény ${fmt(c.prefs.antennaH, 3)} m (nastavení v Trasách). " +
+        "Postav anténu na značku bodu. Výška antény ${fmt(c.prefs.antennaH, 3)} m (uživatelský profil v Nastavení). " +
             "Měří se průměr epoch bez pohybu a porovná s danými souřadnicemi bodu; ty se nemění.",
         style = MaterialTheme.typography.bodySmall,
     )
@@ -218,14 +219,27 @@ fun MeasureStatus(m: MeasureState, onStop: () -> Unit, onCancel: () -> Unit, mod
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            val title = when (m.mode) {
+                MeasureMode.SURVEY -> "Zaměření"
+                MeasureMode.STAKE -> "Vytyčení"
+                else -> "Měření"
+            }
             Text(
-                "Měření ${m.point.name}  ${mmss(el)}" + if (m.plannedSec > 0) " / ${mmss(m.plannedSec.toLong())}" else "",
+                "$title ${m.point.name}  ${mmss(el)}" + if (m.plannedSec > 0) " / ${mmss(m.plannedSec.toLong())}" else "",
                 style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f),
             )
             TextButton(onClick = onCancel) { Text("Zrušit") }
-            Button(onClick = onStop) { Text("Ukončit") }
+            Button(onClick = onStop) { Text(if (m.mode == MeasureMode.CONTROL) "Ukončit" else "Uložit") }
         }
-        Text(
+        if (m.mode == MeasureMode.SURVEY) {
+            val r0 = m.result
+            val hs = if (r0?.sN != null && r0.sE != null) kotlin.math.sqrt(r0.sN * r0.sN + r0.sE * r0.sE) else null
+            Text(
+                "σ vodorovně ${fmt(hs, 3)} m (cíl ≤ ${fmt(m.sigmaLimit, 3)} m, aspoň ${m.minEpochs} epoch)" +
+                    if (m.staticModel) " · statický model" else "",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        } else if (m.mode == MeasureMode.CONTROL) Text(
             (if (m.staticModel) "X20 statický model" else "model z profilu") +
                 (if (m.raw) " · RAWX ${m.rawFrames} rámců" else ""),
             style = MaterialTheme.typography.bodySmall,
@@ -238,7 +252,7 @@ fun MeasureStatus(m: MeasureState, onStop: () -> Unit, onCancel: () -> Unit, mod
                     "  σ N/E/U ${fmt(r.sN, 3)}/${fmt(r.sE, 3)}/${fmt(r.sU, 3)} m",
                 fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall,
             )
-            if (o != null) Text(
+            if (o != null && m.mode != MeasureMode.SURVEY) Text(
                 "odchylka 2D ${fmt(o.d2, 3)} m (N ${signed(o.dN, 3)} E ${signed(o.dE, 3)})" +
                     ((o.dH ?: o.dU)?.let { "  výška ${signed(it, 3)}" } ?: ""),
                 fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall,

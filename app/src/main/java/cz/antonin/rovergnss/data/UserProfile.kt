@@ -1,0 +1,55 @@
+package cz.antonin.rovergnss.data
+
+import org.json.JSONArray
+import org.json.JSONObject
+
+/**
+ * Uživatelský profil – sada nastavení pro způsob práce (např. „Výtyčka 2,000 m“, „Stativ 1,532 m“).
+ * Přepíná se v Živě; při výběru se přepne i profil roveru ([roverProfile] ≥ 0).
+ */
+data class UserProfile(
+    val name: String,
+    val antennaH: Double = 0.0,      // výška antény nad značkou [m]
+    val recordEvery: Int = 1,        // záznam trasy: každá n-tá epocha
+    val recordRaw: Boolean = true,   // záznam trasy: i surový proud
+    val measureSec: Int = 180,       // měření kontrolního bodu [s], 0 = ručně
+    val measStatic: Boolean = true,  // X20 při měření ve statickém modelu
+    val measRaw: Boolean = false,    // RAWX/SFRBX do .ubx
+    val surveyMaxSec: Int = 60,      // zaměření bodu: nejdéle [s]
+    val surveySigma: Double = 0.02,  // zaměření bodu: konec při σ vodorovně ≤ [m]
+    val surveyMinEpochs: Int = 10,   // zaměření bodu: aspoň epoch
+    val stakeSec: Int = 5,           // vytyčení: průměrování polohy [s]
+    val roverProfile: Int = -1,      // profil roveru (index), -1 = neměnit
+) {
+    fun toJson(): JSONObject = JSONObject()
+        .put("name", name).put("antennaH", antennaH).put("recordEvery", recordEvery).put("recordRaw", recordRaw)
+        .put("measureSec", measureSec).put("measStatic", measStatic).put("measRaw", measRaw)
+        .put("surveyMaxSec", surveyMaxSec).put("surveySigma", surveySigma).put("surveyMinEpochs", surveyMinEpochs)
+        .put("stakeSec", stakeSec).put("roverProfile", roverProfile)
+
+    companion object {
+        fun fromJson(o: JSONObject) = UserProfile(
+            name = o.optString("name", "Profil"),
+            antennaH = o.optDouble("antennaH", 0.0),
+            recordEvery = o.optInt("recordEvery", 1),
+            recordRaw = o.optBoolean("recordRaw", true),
+            measureSec = o.optInt("measureSec", 180),
+            measStatic = o.optBoolean("measStatic", true),
+            measRaw = o.optBoolean("measRaw", false),
+            surveyMaxSec = o.optInt("surveyMaxSec", 60),
+            surveySigma = o.optDouble("surveySigma", 0.02),
+            surveyMinEpochs = o.optInt("surveyMinEpochs", 10),
+            stakeSec = o.optInt("stakeSec", 5),
+            roverProfile = o.optInt("roverProfile", -1),
+        )
+
+        fun listToJson(list: List<UserProfile>): String = JSONArray().also { a -> list.forEach { a.put(it.toJson()) } }.toString()
+
+        fun listFromJson(s: String): List<UserProfile> = try {
+            val a = JSONArray(s)
+            (0 until a.length()).map { fromJson(a.getJSONObject(it)) }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+}

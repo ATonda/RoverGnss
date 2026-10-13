@@ -118,7 +118,7 @@ fun TrackScreen(c: RoverController) {
                 }
                 Text(
                     "Výška antény ${fmt(c.prefs.antennaH, 3)} m, každá ${c.prefs.recordEvery}. epocha" +
-                        (if (c.prefs.recordRaw) ", se surovým proudem" else "") + " – mění se v Nastavení. " +
+                        (if (c.prefs.recordRaw) ", se surovým proudem" else "") + " – mění se v uživatelském profilu (Nastavení). " +
                         "K trase se ukládá i diagnostika 1 Hz (stav roveru, satelity, BT, NTRIP).",
                     style = MaterialTheme.typography.bodySmall,
                 )

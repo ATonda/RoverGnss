@@ -132,10 +132,21 @@ val MIGRATION_5_6 = object : Migration(5, 6) {
     }
 }
 
-// Verze 6. Od verze 5 se převádí (MIGRATION_5_6), starší databáze se smaže.
+/** 6 → 7: u bodů vytyčování – data zůstávají. */
+val MIGRATION_6_7 = object : Migration(6, 7) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE point ADD COLUMN stakeSel INTEGER NOT NULL DEFAULT 0")
+        for (c in listOf("stakeMs INTEGER", "stakeLat REAL", "stakeLon REAL", "stakeH REAL", "stakeDN REAL", "stakeDE REAL",
+            "stakeDH REAL", "stakeDY REAL", "stakeDX REAL")) {
+            db.execSQL("ALTER TABLE point ADD COLUMN $c")
+        }
+    }
+}
+
+// Verze 7. Od verze 5 se převádí (MIGRATION_5_6, MIGRATION_6_7), starší databáze se smaže.
 @Database(
     entities = [Job::class, Track::class, TrackPoint::class, TrackDiag::class, Point::class, Measurement::class],
-    version = 6, exportSchema = true,
+    version = 7, exportSchema = true,
 )
 abstract class AppDb : RoomDatabase() {
     abstract fun jobs(): JobDao
@@ -146,7 +157,7 @@ abstract class AppDb : RoomDatabase() {
     companion object {
         fun create(context: Context): AppDb =
             Room.databaseBuilder(context, AppDb::class.java, "rovergnss.db")
-                .addMigrations(MIGRATION_5_6)
+                .addMigrations(MIGRATION_5_6, MIGRATION_6_7)
                 .fallbackToDestructiveMigration()
                 .build()
     }

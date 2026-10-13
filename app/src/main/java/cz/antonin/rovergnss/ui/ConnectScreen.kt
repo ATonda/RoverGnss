@@ -59,7 +59,7 @@ fun ConnectScreen(c: RoverController) {
 // ---------------------------------------------------------------------- rover
 @SuppressLint("MissingPermission")
 @Composable
-private fun RoverSection(c: RoverController) {
+internal fun RoverSection(c: RoverController) {
     val link by c.linkState.collectAsStateWithLifecycle()
     val info by c.info.collectAsStateWithLifecycle()
     val sta by c.sta.collectAsStateWithLifecycle()
@@ -124,7 +124,6 @@ private fun RoverSection(c: RoverController) {
                 }
             }
         }
-        ExitButton(c)
     }
 }
 
@@ -193,7 +192,7 @@ private fun X20ResetMenu(c: RoverController) {
 
 // ---------------------------------------------------------------------- NTRIP
 @Composable
-private fun NtripSection(c: RoverController) {
+internal fun NtripSection(c: RoverController) {
     val state by c.ntripState.collectAsStateWithLifecycle()
     val sta by c.sta.collectAsStateWithLifecycle()
     val link by c.linkState.collectAsStateWithLifecycle()

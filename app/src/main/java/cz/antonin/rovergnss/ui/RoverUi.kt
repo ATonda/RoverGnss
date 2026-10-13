@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Settings
@@ -40,7 +39,6 @@ import kotlinx.coroutines.flow.map
 private data class Tab(val title: String, val icon: ImageVector)
 
 private val TABS = listOf(
-    Tab("Připojení", Icons.Filled.Bluetooth),
     Tab("Živě", Icons.Filled.Map),
     Tab("Body", Icons.Filled.Place),
     Tab("Nastavení", Icons.Filled.Settings),
@@ -63,15 +61,15 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
         }
         // navigace k bodu a začátek měření přepnou na mapu
         LaunchedEffect(Unit) {
-            controller.navTarget.collect { if (it != null) tab = 1 }
+            controller.navTarget.collect { if (it != null) tab = 0 }
         }
         LaunchedEffect(Unit) {
-            controller.measure.map { it != null }.distinctUntilChanged().collect { if (it) tab = 1 }
+            controller.measure.map { it != null }.distinctUntilChanged().collect { if (it) tab = 0 }
         }
         Scaffold(
             snackbarHost = { SnackbarHost(snackbar) },
             bottomBar = {
-                if (!(tab == 1 && mapFull)) NavigationBar {
+                if (!(tab == 0 && mapFull)) NavigationBar {
                     TABS.forEachIndexed { i, t ->
                         NavigationBarItem(
                             selected = tab == i,
@@ -98,13 +96,12 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
                     }
                 } else {
                     when (tab) {
-                        0 -> ConnectScreen(controller)
-                        1 -> LiveScreen(controller, mapFull) {
+                        0 -> LiveScreen(controller, mapFull) {
                             mapFull = it
                             controller.prefs.mapFull = it
                         }
-                        2 -> SiteScreen(controller)
-                        3 -> SettingsScreen(controller)
+                        1 -> SiteScreen(controller)
+                        2 -> SettingsScreen(controller)
                     }
                 }
             }

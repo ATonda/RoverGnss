@@ -172,6 +172,17 @@ data class Point(
     val url: String? = null,      // geodetické údaje
     val createdMs: Long = System.currentTimeMillis(),
     val control: Boolean = false, // kontrolní (kalibrační) bod – opakovaná měření přijímače
+    // vytyčování (verze 7): výběr do seznamu a výsledek – vytyčená poloha a odchylka vytyčeno − dané
+    val stakeSel: Boolean = false,
+    val stakeMs: Long? = null,       // čas vytyčení, null = nevytyčeno
+    val stakeLat: Double? = null,
+    val stakeLon: Double? = null,
+    val stakeH: Double? = null,      // h elipsoidu (anténa odečtena)
+    val stakeDN: Double? = null,
+    val stakeDE: Double? = null,
+    val stakeDH: Double? = null,     // výška: Bpv, když je dané Bpv, jinak elipsoid
+    val stakeDY: Double? = null,
+    val stakeDX: Double? = null,
 )
 
 /**

@@ -92,6 +92,20 @@ fun PointsScreen(c: RoverController) {
             c.postMessage(if (n >= 0) "Exportováno $n měření" else "Soubor nelze zapsat")
         }
     }
+    var exportMenu by remember { mutableStateOf(false) }
+    val kmlLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.google-earth.kml+xml")) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val n = withContext(Dispatchers.IO) {
+                try {
+                    context.contentResolver.openOutputStream(uri)?.use { Exporter.pointsKml(job?.name ?: "Body", points, it) } ?: -1
+                } catch (e: Exception) {
+                    -1
+                }
+            }
+            c.postMessage(if (n >= 0) "Exportováno $n bodů (KML)" else "Soubor nelze zapsat")
+        }
+    }
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
@@ -115,10 +129,21 @@ fun PointsScreen(c: RoverController) {
                 }
             }) { Text("Nový bod") }
             OutlinedButton(onClick = { importLauncher.launch(arrayOf("text/*", "application/octet-stream")) }) { Text("Import") }
-            OutlinedButton(onClick = {
-                val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                exportLauncher.launch("RG_${stamp}_body_lokality.csv")
-            }, enabled = points.isNotEmpty()) { Text("Export") }
+            androidx.compose.foundation.layout.Box {
+                OutlinedButton(onClick = { exportMenu = true }, enabled = points.isNotEmpty()) { Text("Export") }
+                androidx.compose.material3.DropdownMenu(expanded = exportMenu, onDismissRequest = { exportMenu = false }) {
+                    androidx.compose.material3.DropdownMenuItem(text = { Text("CSV (S-JTSK, ETRS89, Bpv)") }, onClick = {
+                        exportMenu = false
+                        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+                        exportLauncher.launch("RG_${stamp}_body_lokality.csv")
+                    })
+                    androidx.compose.material3.DropdownMenuItem(text = { Text("KML (Google Earth, mapy)") }, onClick = {
+                        exportMenu = false
+                        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+                        kmlLauncher.launch("RG_${stamp}_body_lokality.kml")
+                    })
+                }
+            }
         }
         if (points.any { it.control }) Row(Modifier.padding(horizontal = 12.dp)) {
             OutlinedButton(onClick = {

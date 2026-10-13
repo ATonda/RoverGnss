@@ -2,6 +2,7 @@ package cz.antonin.rovergnss.ui
 
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,14 +12,18 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -27,131 +32,206 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import cz.antonin.rovergnss.geo.Sjtsk
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import cz.antonin.rovergnss.data.UserProfile
 import cz.antonin.rovergnss.service.RoverController
 
 private val MEASURE_SEC = listOf(60 to "1 min", 180 to "3 min", 600 to "10 min", 1800 to "30 min", 0 to "ručně")
-private val ROTATE_NAMES = listOf("sever nahoře", "směr pohybu", "volně")
+private val SURVEY_MAX = listOf(10 to "10 s", 30 to "30 s", 60 to "1 min", 120 to "2 min", 300 to "5 min")
+private val SURVEY_SIGMA = listOf(0.01 to "1 cm", 0.02 to "2 cm", 0.05 to "5 cm", 0.10 to "10 cm", 0.50 to "50 cm")
+private val STAKE_SEC = listOf(3 to "3 s", 5 to "5 s", 10 to "10 s", 20 to "20 s")
 
-/** Karta Nastavení: anténa, záznam, měření bodu, mapa, souřadnice, aplikace. */
+/** Karta Nastavení: rover, korekce NTRIP, uživatelské profily, aplikace. */
 @Composable
 fun SettingsScreen(c: RoverController) {
-    val context = LocalContext.current
-    var antH by remember { mutableStateOf(fmtInput(c.prefs.antennaH)) }
-    var every by remember { mutableStateOf(c.prefs.recordEvery.toString()) }
-    var raw by remember { mutableStateOf(c.prefs.recordRaw) }
-    var measSec by remember { mutableIntStateOf(c.prefs.measureSec) }
-    var measStatic by remember { mutableStateOf(c.prefs.measStatic) }
-    var measRaw by remember { mutableStateOf(c.prefs.measRaw) }
-    var style by remember { mutableIntStateOf(c.prefs.mapStyle) }
-    var rotate by remember { mutableIntStateOf(c.prefs.mapRotate) }
-    val antErr = antH.isNotBlank() && antH.replace(',', '.').toDoubleOrNull()?.takeIf { it in 0.0..10.0 } == null
-    val everyErr = every.toIntOrNull()?.takeIf { it in 1..50 } == null
-
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        Section("Anténa") {
-            OutlinedTextField(
-                antH, {
-                    antH = it
-                    it.replace(',', '.').toDoubleOrNull()?.takeIf { v -> v in 0.0..10.0 }?.let { v -> c.prefs.antennaH = v }
-                },
-                label = { Text("Výška antény nad značkou [m]") }, singleLine = true, isError = antErr,
-                modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-            )
-            Text(
-                "Odečítá se v živém panelu, navigaci, při měření bodu a v exportu tras (ukládá se k nové trase a měření).",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        Section("Záznam trasy") {
-            OutlinedTextField(
-                every, {
-                    every = it
-                    it.toIntOrNull()?.takeIf { v -> v in 1..50 }?.let { v -> c.prefs.recordEvery = v }
-                },
-                label = { Text("Ukládat každou n-tou epochu (1–50)") }, singleLine = true, isError = everyErr,
-                modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(raw, {
-                    raw = it
-                    c.prefs.recordRaw = it
-                })
-                Text("ukládat i surový proud z roveru (~10 MB/h)")
-            }
-            Text("Měření bodu ukládá vždy každou epochu.", style = MaterialTheme.typography.bodySmall)
-        }
-        Section("Měření bodu") {
-            Text("Výchozí délka měření", style = MaterialTheme.typography.bodyMedium)
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                MEASURE_SEC.forEach { (s, label) ->
-                    FilterChip(selected = measSec == s, onClick = {
-                        measSec = s
-                        c.prefs.measureSec = s
-                    }, label = { Text(label) })
-                }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(measStatic, {
-                    measStatic = it
-                    c.prefs.measStatic = it
-                })
-                Text("X20 během měření ve statickém modelu")
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(measRaw, {
-                    measRaw = it
-                    c.prefs.measRaw = it
-                })
-                Text("ukládat surová data RAWX/SFRBX (.ubx, ~1,5 kB/s)")
-            }
-            Text(
-                "Vyžaduje firmware 0.9.0+. Po měření rover vrátí model z profilu. Soubor .ubx je pro dodatečné " +
-                    "zpracování (PPK, např. RTKLIB) – export u měření bodu.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        Section("Mapa") {
-            Text("Podklad", style = MaterialTheme.typography.bodyMedium)
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                MapStyles.NAMES.forEachIndexed { i, n ->
-                    FilterChip(selected = style == i, onClick = {
-                        style = i
-                        c.prefs.mapStyle = i
-                    }, label = { Text(n) })
-                }
-            }
-            Text("Natočení", style = MaterialTheme.typography.bodyMedium)
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                ROTATE_NAMES.forEachIndexed { i, n ->
-                    FilterChip(selected = rotate == i, onClick = {
-                        rotate = i
-                        c.prefs.mapRotate = i
-                    }, label = { Text(n) })
-                }
-            }
-        }
-        Section("Souřadnice") {
-            KeyValue("Převod S-JTSK", if (Sjtsk.ready) "ČÚZK, tabulka v1710" else "7 parametrů (tabulky nenačtené)", mono = false)
-            KeyValue("Výška Bpv", if (Sjtsk.ready) "kvazigeoid CR-2005" else "–", mono = false)
-            Text(
-                "Postup podle metodiky ČÚZK (ETRF2000 ↔ S-JTSK/05 ↔ S-JTSK), přesnost ~1–2 cm. Mimo ČR 7 parametrů (~0,4 m).",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        Section("Aplikace") {
-            val version = remember {
-                try {
-                    context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
-                } catch (e: Exception) {
-                    "?"
-                }
-            }
-            KeyValue("Verze", version)
-            ExitButton(c)
-        }
+        RoverSection(c)
+        NtripSection(c)
+        UserProfileSection(c)
+        AppSection(c)
         Spacer(Modifier.height(12.dp))
     }
 }
 
-private fun fmtInput(v: Double): String = if (v == 0.0) "0" else v.toString().replace('.', ',')
+/** Uživatelské profily: výběr, nový, přejmenování, smazání a hodnoty aktivního profilu. */
+@Composable
+private fun UserProfileSection(c: RoverController) {
+    val users by c.users.collectAsStateWithLifecycle()
+    val u by c.user.collectAsStateWithLifecycle()
+    val roverProfiles by c.roverProfiles.collectAsStateWithLifecycle()
+    var menu by remember { mutableStateOf(false) }
+    var dialog by remember { mutableStateOf<String?>(null) }   // new / rename / delete
+    var text by remember { mutableStateOf("") }
+    val idx = c.prefs.userIndex.coerceIn(0, (users.size - 1).coerceAtLeast(0))
+
+    Section("Uživatelský profil") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) {
+                TextButton(onClick = { menu = true }) { Text("Profil: ${u.name} ▾", style = MaterialTheme.typography.titleSmall) }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    users.forEachIndexed { i, p ->
+                        DropdownMenuItem(text = { Text(p.name + if (i == idx) "  ✓" else "") }, onClick = {
+                            menu = false
+                            c.selectUser(i)
+                        })
+                    }
+                }
+            }
+        }
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            OutlinedButton(onClick = {
+                text = ""
+                dialog = "new"
+            }) { Text("Nový") }
+            OutlinedButton(onClick = {
+                text = u.name
+                dialog = "rename"
+            }) { Text("Přejmenovat") }
+            OutlinedButton(onClick = { dialog = "delete" }, enabled = users.size > 1) { Text("Smazat") }
+        }
+        Text("Nový profil je kopie aktivního. Přepínat lze i štítkem na mapě v Živě.", style = MaterialTheme.typography.bodySmall)
+
+        // key = profil: při přepnutí se pole naplní znovu
+        androidx.compose.runtime.key(idx, u.name) {
+            UserProfileEditor(u, roverProfiles) { c.updateUser(it) }
+        }
+    }
+
+    when (dialog) {
+        "new", "rename" -> AlertDialog(
+            onDismissRequest = { dialog = null },
+            title = { Text(if (dialog == "new") "Nový profil" else "Přejmenovat profil") },
+            text = { OutlinedTextField(text, { text = it }, singleLine = true, label = { Text("Název, např. Výtyčka 2,000 m") }) },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (dialog == "new") c.addUser(text) else c.updateUser(u.copy(name = text.trim()))
+                    dialog = null
+                }, enabled = text.isNotBlank()) { Text("Uložit") }
+            },
+            dismissButton = { TextButton(onClick = { dialog = null }) { Text("Zrušit") } },
+        )
+        "delete" -> AlertDialog(
+            onDismissRequest = { dialog = null },
+            title = { Text("Smazat profil?") },
+            text = { Text(u.name) },
+            confirmButton = {
+                TextButton(onClick = {
+                    c.deleteUser(idx)
+                    dialog = null
+                }) { Text("Smazat") }
+            },
+            dismissButton = { TextButton(onClick = { dialog = null }) { Text("Zrušit") } },
+        )
+    }
+}
+
+@Composable
+private fun UserProfileEditor(u: UserProfile, roverProfiles: List<String>, onChange: (UserProfile) -> Unit) {
+    var antH by remember { mutableStateOf(if (u.antennaH == 0.0) "0" else u.antennaH.toString().replace('.', ',')) }
+    var every by remember { mutableStateOf(u.recordEvery.toString()) }
+    var minEp by remember { mutableStateOf(u.surveyMinEpochs.toString()) }
+    var rpMenu by remember { mutableStateOf(false) }
+    val antErr = antH.replace(',', '.').toDoubleOrNull()?.takeIf { it in 0.0..10.0 } == null
+    val everyErr = every.toIntOrNull()?.takeIf { it in 1..50 } == null
+    val minErr = minEp.toIntOrNull()?.takeIf { it in 1..1000 } == null
+
+    Text("Anténa", style = MaterialTheme.typography.titleSmall)
+    OutlinedTextField(
+        antH, {
+            antH = it
+            it.replace(',', '.').toDoubleOrNull()?.takeIf { v -> v in 0.0..10.0 }?.let { v -> onChange(u.copy(antennaH = v)) }
+        },
+        label = { Text("Výška antény nad značkou [m]") }, singleLine = true, isError = antErr,
+        modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+    )
+
+    Text("Profil roveru", style = MaterialTheme.typography.titleSmall)
+    Box {
+        val label = if (u.roverProfile < 0) "neměnit"
+        else roverProfiles.getOrNull(u.roverProfile)?.let { "${u.roverProfile + 1}: $it" } ?: "profil ${u.roverProfile + 1}"
+        OutlinedButton(onClick = { rpMenu = true }) { Text("Při výběru přepnout: $label") }
+        DropdownMenu(expanded = rpMenu, onDismissRequest = { rpMenu = false }) {
+            DropdownMenuItem(text = { Text("neměnit") }, onClick = {
+                rpMenu = false
+                onChange(u.copy(roverProfile = -1))
+            })
+            roverProfiles.forEachIndexed { i, n ->
+                DropdownMenuItem(text = { Text("${i + 1}: $n") }, onClick = {
+                    rpMenu = false
+                    onChange(u.copy(roverProfile = i))
+                })
+            }
+        }
+    }
+    if (roverProfiles.isEmpty()) Text("Seznam profilů roveru se načte po připojení roveru.", style = MaterialTheme.typography.bodySmall)
+
+    Text("Záznam trasy", style = MaterialTheme.typography.titleSmall)
+    OutlinedTextField(
+        every, {
+            every = it
+            it.toIntOrNull()?.takeIf { v -> v in 1..50 }?.let { v -> onChange(u.copy(recordEvery = v)) }
+        },
+        label = { Text("Ukládat každou n-tou epochu (1–50)") }, singleLine = true, isError = everyErr,
+        modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+    )
+    CheckRow("ukládat i surový proud z roveru (~10 MB/h)", u.recordRaw) { onChange(u.copy(recordRaw = it)) }
+
+    Text("Zaměření bodu (tlačítko na mapě)", style = MaterialTheme.typography.titleSmall)
+    Text("Konec, co nastane dřív: ustálení σ, nebo nejdelší doba. Kdykoli lze uložit ručně.", style = MaterialTheme.typography.bodySmall)
+    Text("Ustálení – σ vodorovně do", style = MaterialTheme.typography.bodyMedium)
+    Chips(SURVEY_SIGMA, u.surveySigma) { onChange(u.copy(surveySigma = it)) }
+    Text("Nejdéle", style = MaterialTheme.typography.bodyMedium)
+    Chips(SURVEY_MAX, u.surveyMaxSec) { onChange(u.copy(surveyMaxSec = it)) }
+    OutlinedTextField(
+        minEp, {
+            minEp = it
+            it.toIntOrNull()?.takeIf { v -> v in 1..1000 }?.let { v -> onChange(u.copy(surveyMinEpochs = v)) }
+        },
+        label = { Text("Aspoň epoch pro ustálení") }, singleLine = true, isError = minErr,
+        modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+    )
+
+    Text("Vytyčení – průměrování polohy", style = MaterialTheme.typography.titleSmall)
+    Chips(STAKE_SEC, u.stakeSec) { onChange(u.copy(stakeSec = it)) }
+
+    Text("Měření kontrolního bodu", style = MaterialTheme.typography.titleSmall)
+    Chips(MEASURE_SEC, u.measureSec) { onChange(u.copy(measureSec = it)) }
+    CheckRow("X20 během měření ve statickém modelu", u.measStatic) { onChange(u.copy(measStatic = it)) }
+    CheckRow("ukládat surová data RAWX/SFRBX (.ubx, ~1,5 kB/s)", u.measRaw) { onChange(u.copy(measRaw = it)) }
+    Text(
+        "Statický model a RAWX vyžadují firmware 0.9.0+. Statický model platí i pro zaměření bodu. " +
+            "Soubor .ubx je pro dodatečné zpracování (PPK, např. RTKLIB) – export u měření bodu.",
+        style = MaterialTheme.typography.bodySmall,
+    )
+}
+
+@Composable
+private fun <T> Chips(items: List<Pair<T, String>>, selected: T, onSelect: (T) -> Unit) {
+    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        items.forEach { (v, label) -> FilterChip(selected = v == selected, onClick = { onSelect(v) }, label = { Text(label) }) }
+    }
+}
+
+@Composable
+private fun CheckRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Checkbox(checked, onChange)
+        Text(label)
+    }
+}
+
+@Composable
+private fun AppSection(c: RoverController) {
+    val context = LocalContext.current
+    Section("Aplikace") {
+        val version = remember {
+            try {
+                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
+            } catch (e: Exception) {
+                "?"
+            }
+        }
+        KeyValue("Verze", version)
+        ExitButton(c)
+    }
+}

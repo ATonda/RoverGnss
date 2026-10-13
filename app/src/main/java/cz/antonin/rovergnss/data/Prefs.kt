@@ -39,20 +39,8 @@ class Prefs(context: Context) {
         get() = sp.getInt("mapRotate", 0)
         set(v) = sp.edit().putInt("mapRotate", v).apply()
 
-    /** Délka posledního měření bodu [s] (0 = ručně) */
-    var measureSec: Int
-        get() = sp.getInt("measureSec", 180)
-        set(v) = sp.edit().putInt("measureSec", v).apply()
 
-    /** Měření bodu: X20 ve statickém modelu (FW 0.9.0+) */
-    var measStatic: Boolean
-        get() = sp.getBoolean("measStatic", true)
-        set(v) = sp.edit().putBoolean("measStatic", v).apply()
 
-    /** Měření bodu: surová data RAWX/SFRBX do souboru .ubx (FW 0.9.0+) */
-    var measRaw: Boolean
-        get() = sp.getBoolean("measRaw", false)
-        set(v) = sp.edit().putBoolean("measRaw", v).apply()
 
     /** Vrstva bodových polí ČÚZK na mapě */
     var showCuzk: Boolean
@@ -68,19 +56,70 @@ class Prefs(context: Context) {
         get() = sp.getInt("mapStyle", 0)
         set(v) = sp.edit().putInt("mapStyle", v).apply()
 
-    /** Záznam trasy: každá n-tá epocha roveru (1 = všechny) */
-    var recordEvery: Int
-        get() = sp.getInt("recordEvery", 1)
-        set(v) = sp.edit().putInt("recordEvery", v).apply()
 
-    /** Při záznamu trasy ukládat i surový proud z roveru */
-    var recordRaw: Boolean
-        get() = sp.getBoolean("recordRaw", true)
-        set(v) = sp.edit().putBoolean("recordRaw", v).apply()
 
+
+    // ---------------------------------------------------------------- uživatelské profily
+    /** Uživatelské profily; při prvním spuštění se založí „Výchozí“ z dřívějších samostatných hodnot. */
+    var userProfiles: List<UserProfile>
+        get() {
+            val l = sp.getString("userProfiles", null)?.let { UserProfile.listFromJson(it) } ?: emptyList()
+            if (l.isNotEmpty()) return l
+            return listOf(
+                UserProfile(
+                    name = "Výchozí",
+                    antennaH = sp.getFloat("antennaH", 0f).toDouble(),
+                    recordEvery = sp.getInt("recordEvery", 1),
+                    recordRaw = sp.getBoolean("recordRaw", true),
+                    measureSec = sp.getInt("measureSec", 180),
+                    measStatic = sp.getBoolean("measStatic", true),
+                    measRaw = sp.getBoolean("measRaw", false),
+                )
+            )
+        }
+        set(v) = sp.edit().putString("userProfiles", UserProfile.listToJson(v)).apply()
+
+    var userIndex: Int
+        get() = sp.getInt("userIndex", 0)
+        set(v) = sp.edit().putInt("userIndex", v).apply()
+
+    /** Aktivní uživatelský profil. */
+    val user: UserProfile
+        get() = userProfiles.let { it.getOrElse(userIndex) { _ -> it.first() } }
+
+    /** Změna aktivního profilu. */
+    fun updateUser(f: (UserProfile) -> UserProfile) {
+        val l = userProfiles.toMutableList()
+        val i = userIndex.coerceIn(0, l.size - 1)
+        l[i] = f(l[i])
+        userProfiles = l
+    }
+
+    // hodnoty z aktivního uživatelského profilu (čtení i zápis)
     var antennaH: Double
-        get() = sp.getFloat("antennaH", 0f).toDouble()
-        set(v) = sp.edit().putFloat("antennaH", v.toFloat()).apply()
+        get() = user.antennaH
+        set(v) = updateUser { it.copy(antennaH = v) }
+    var recordEvery: Int
+        get() = user.recordEvery
+        set(v) = updateUser { it.copy(recordEvery = v) }
+    var recordRaw: Boolean
+        get() = user.recordRaw
+        set(v) = updateUser { it.copy(recordRaw = v) }
+    var measureSec: Int
+        get() = user.measureSec
+        set(v) = updateUser { it.copy(measureSec = v) }
+    val measStatic: Boolean get() = user.measStatic
+    val measRaw: Boolean get() = user.measRaw
+
+    /** Poslední název zaměřeného bodu (pro číslování dalšího). */
+    var lastSurveyName: String?
+        get() = sp.getString("lastSurveyName", null)
+        set(v) = sp.edit().putString("lastSurveyName", v).apply()
+
+    /** Pořadí vytyčování: 0 podle názvu, 1 nejbližší další. */
+    var stakeOrder: Int
+        get() = sp.getInt("stakeOrder", 0)
+        set(v) = sp.edit().putInt("stakeOrder", v).apply()
 
     var ntripProfiles: List<NtripProfile>
         get() {

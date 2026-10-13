@@ -14,6 +14,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AddLocationAlt
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Fullscreen
@@ -44,6 +45,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
@@ -122,6 +124,14 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
     var styleMenu by remember { mutableStateOf(false) }
     var moreMenu by remember { mutableStateOf(false) }
     var showSats by remember { mutableStateOf(false) }
+    var surveyName by remember { mutableStateOf<String?>(null) }   // dialog zaměření bodu
+    var userMenu by remember { mutableStateOf(false) }
+    val user by c.user.collectAsStateWithLifecycle()
+    val users by c.users.collectAsStateWithLifecycle()
+    val stake by c.stake.collectAsStateWithLifecycle()
+    val meas by c.measure.collectAsStateWithLifecycle()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val onStaked: (Point) -> Unit = { t -> c.startStakeCheck(t) }
     var showCuzk by rememberSaveable { mutableStateOf(c.prefs.showCuzk) }
     var editing by remember { mutableStateOf<Point?>(null) }
     var cuzkAt by remember { mutableStateOf<MapTap?>(null) }
@@ -174,9 +184,40 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
                 Modifier.align(Alignment.TopStart).padding(8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                if (full) StatusStrip(p, ni, nav, Modifier)
+                // uživatelský profil (výška antény, …) – přepnutí jedním klepnutím
+                Box {
+                    androidx.compose.material3.AssistChip(
+                        onClick = { userMenu = true },
+                        label = { Text(user.name) },
+                        colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(
+                            containerColor = Color.White.copy(alpha = 0.9f),
+                        ),
+                    )
+                    DropdownMenu(expanded = userMenu, onDismissRequest = { userMenu = false }) {
+                        users.forEachIndexed { i, u ->
+                            DropdownMenuItem(
+                                text = { Text(u.name + " (anténa ${fmt(u.antennaH, 3)} m)" + if (u == user) "  ✓" else "") },
+                                onClick = {
+                                    userMenu = false
+                                    c.selectUser(i)
+                                },
+                            )
+                        }
+                    }
+                }
+                if (full) StatusStrip(
+                    p, ni, nav, Modifier,
+                    onStaked = nav?.let { t -> { onStaked(t) } }.takeIf { meas == null },
+                    onSkip = if (stake != null && meas == null) ({ c.skipStake(); Unit }) else null,
+                )
                 SmallFloatingActionButton(onClick = { showSats = true }) {
                     Icon(Icons.Filled.SatelliteAlt, contentDescription = "Satelity")
+                }
+                // zaměření bodu „tady“
+                SmallFloatingActionButton(onClick = {
+                    if (meas == null) scope.launch { surveyName = c.nextSurveyName() }
+                }) {
+                    Icon(Icons.Filled.AddLocationAlt, contentDescription = "Zaměřit bod")
                 }
             }
             ScaleBar(camZoom, camLat, Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 34.dp))
@@ -282,7 +323,15 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             LinkMeter(lq)
-            nav?.let { t -> NavPanel(t, ni, onEnd = { c.navigateTo(null) }) }
+            nav?.let { t ->
+                NavPanel(
+                    t, ni,
+                    onEnd = { if (stake != null) c.stopStake() else c.navigateTo(null) },
+                    onStaked = if (meas == null) ({ onStaked(t) }) else null,
+                    onSkip = if (stake != null && meas == null) ({ c.skipStake(); Unit }) else null,
+                    stakeInfo = stake?.let { s -> "vytyčování: ${s.ids.size} bodů" + if (s.skipped.isNotEmpty()) ", přeskočeno ${s.skipped.size}" else "" },
+                )
+            }
             if (p == null) {
                 Text("Žádná data z roveru.")
                 return@Column
@@ -330,6 +379,12 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
             extra = { PointExtras(c, pt, onClose = { editing = null }) },
         )
     }
+    surveyName?.let { initial ->
+        SurveyDialog(initial, user, onStart = {
+            surveyName = null
+            c.startSurvey(it)
+        }, onDismiss = { surveyName = null })
+    }
     if (showSats) {
         BackHandler { showSats = false }
         Surface(Modifier.fillMaxSize()) {
@@ -347,9 +402,16 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
     }
 }
 
-/** Proužek se stavem v režimu celé obrazovky. */
+/** Proužek se stavem v režimu celé obrazovky (při navigaci i Vytyčeno / Přeskočit). */
 @Composable
-private fun StatusStrip(p: Pos?, ni: NavInfo?, nav: Point?, modifier: Modifier) {
+private fun StatusStrip(
+    p: Pos?,
+    ni: NavInfo?,
+    nav: Point?,
+    modifier: Modifier,
+    onStaked: (() -> Unit)? = null,
+    onSkip: (() -> Unit)? = null,
+) {
     Column(
         modifier
             .background(Color.White.copy(alpha = 0.85f), RoundedCornerShape(8.dp))
@@ -369,12 +431,26 @@ private fun StatusStrip(p: Pos?, ni: NavInfo?, nav: Point?, modifier: Modifier) 
             else "${nav.name}: ${fmtDist(ni.dist)}  ${fmt(ni.az, 0)}°  N ${signed(ni.dN, 2)}  E ${signed(ni.dE, 2)}",
             color = Color.Black, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall,
         )
+        if (nav != null && (onStaked != null || onSkip != null)) Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            if (onStaked != null) TextButton(onClick = onStaked) { Text("Vytyčeno") }
+            if (onSkip != null) TextButton(onClick = onSkip) { Text("Přeskočit") }
+        }
     }
 }
 
-/** Navigace k bodu v panelu údajů: kam a o kolik se posunout. */
+/**
+ * Navigace k bodu v panelu údajů: kam a o kolik se posunout.
+ * [onStaked] „Vytyčeno“ – krátké průměrování a uložení odchylky; [onSkip] přeskočit bod (při vytyčování).
+ */
 @Composable
-private fun NavPanel(t: Point, ni: NavInfo?, onEnd: () -> Unit) {
+private fun NavPanel(
+    t: Point,
+    ni: NavInfo?,
+    onEnd: () -> Unit,
+    onStaked: (() -> Unit)?,
+    onSkip: (() -> Unit)?,
+    stakeInfo: String?,
+) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -383,8 +459,16 @@ private fun NavPanel(t: Point, ni: NavInfo?, onEnd: () -> Unit) {
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Navigace k bodu ${t.name}", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            Text(
+                (if (stakeInfo != null) "Vytyčit bod " else "Navigace k bodu ") + t.name,
+                style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f),
+            )
             TextButton(onClick = onEnd) { Text("Konec") }
+        }
+        stakeInfo?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (onStaked != null) androidx.compose.material3.Button(onClick = onStaked) { Text("Vytyčeno") }
+            if (onSkip != null) androidx.compose.material3.OutlinedButton(onClick = onSkip) { Text("Přeskočit") }
         }
         if (ni == null) {
             Text(if (t.lat == null) "Bod nemá souřadnice." else "Čekám na polohu roveru.")
@@ -395,4 +479,29 @@ private fun NavPanel(t: Point, ni: NavInfo?, onEnd: () -> Unit) {
         if (ni.dY != null && ni.dX != null) KeyValue("K cíli ΔY / ΔX", "${signed(ni.dY, 3)} / ${signed(ni.dX, 3)} m")
         if (ni.dH != null) KeyValue(if (ni.hBpv) "K cíli výška Bpv" else "K cíli výška (elipsoid)", "${signed(ni.dH, 3)} m")
     }
+}
+
+/** Zaměření bodu „tady“: název (navržený další v řadě) a podmínky konce z uživatelského profilu. */
+@Composable
+private fun SurveyDialog(initial: String, u: cz.antonin.rovergnss.data.UserProfile, onStart: (String) -> Unit, onDismiss: () -> Unit) {
+    var name by remember { mutableStateOf(initial) }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Zaměřit bod") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                androidx.compose.material3.OutlinedTextField(
+                    name, { name = it }, singleLine = true, label = { Text("Název / číslo") }, modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "Konec po ustálení (σ vodorovně ≤ ${fmt(u.surveySigma * 100, 0)} cm, aspoň ${u.surveyMinEpochs} epoch), " +
+                        "nejdéle ${u.surveyMaxSec} s. Kdykoli „Uložit“ – uloží se, co je, s přesností. " +
+                        "Anténa ${fmt(u.antennaH, 3)} m (profil ${u.name}).",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onStart(name.trim()) }, enabled = name.isNotBlank()) { Text("Měřit") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Zrušit") } },
+    )
 }
