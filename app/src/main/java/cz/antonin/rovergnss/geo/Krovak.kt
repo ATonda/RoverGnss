@@ -14,8 +14,11 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.math.tan
 
-/** Rovinné souřadnice S-JTSK [m] (Y, X kladné) a elipsoidická výška na Besselu. */
-data class Jtsk(val y: Double, val x: Double, val hBessel: Double)
+/**
+ * Rovinné souřadnice S-JTSK [m] (Y, X kladné), elipsoidická výška na Besselu,
+ * výška Bpv (s kvazigeoidem CR-2005, jinak null) a příznak přesného převodu ČÚZK ([Sjtsk]).
+ */
+data class Jtsk(val y: Double, val x: Double, val hBessel: Double, val bpv: Double? = null, val precise: Boolean = false)
 
 /**
  * S-JTSK (Křovákovo zobrazení) <-> ETRS89 přes 7prvkovou Helmertovu transformaci.

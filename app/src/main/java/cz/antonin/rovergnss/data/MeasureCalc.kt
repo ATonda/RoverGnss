@@ -1,6 +1,6 @@
 package cz.antonin.rovergnss.data
 
-import cz.antonin.rovergnss.geo.Krovak
+import cz.antonin.rovergnss.geo.Sjtsk
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -35,6 +35,7 @@ data class MeasureOffset(
     val dY: Double?,
     val dX: Double?,
     val refDerived: Boolean,
+    val dH: Double? = null,       // výška Bpv (měřeno přes kvazigeoid − dané Bpv)
 ) {
     val d2: Double? get() = if (dN != null && dE != null) sqrt(dN * dN + dE * dE) else null
 }
@@ -99,7 +100,7 @@ object MeasureCalc {
 
     /**
      * Odchylka od daného bodu. ETRS89: z daných φ, λ (případně dopočtených ze S-JTSK – [MeasureOffset.refDerived]),
-     * výška jen s daným h elipsoidu. S-JTSK: měření převedené 7 parametry proti daným Y, X.
+     * výška elipsoidu jen s daným h. S-JTSK a Bpv: měření převedené přesným převodem ČÚZK proti daným Y, X, Bpv.
      */
     fun offset(lat: Double?, lon: Double?, h: Double?, p: Point): MeasureOffset {
         if (lat == null || lon == null) return MeasureOffset(null, null, null, null, null, p.etrsDerived)
@@ -110,15 +111,17 @@ object MeasureCalc {
             dN = (lat - p.lat) * kN
             dE = (lon - p.lon) * kE
         }
-        // h dopočtené ze S-JTSK vychází z Bpv bez kvazigeoidu – pro výšku nepoužitelné
+        // h dopočtené z Bpv je kvazigeoid + Bpv – výška elipsoidu jen z daného h
         val dU = if (h != null && p.hEll != null && !p.etrsDerived) h - p.hEll else null
         var dY: Double? = null
         var dX: Double? = null
+        var dH: Double? = null
+        val j = Sjtsk.fromEtrs(lat, lon, h ?: (p.hEll ?: 400.0))
         if (p.y != null && p.x != null && !p.jtskDerived) {
-            val j = Krovak.fromEtrs(lat, lon, h ?: (p.hEll ?: 400.0))
             dY = j.y - p.y
             dX = j.x - p.x
         }
-        return MeasureOffset(dN, dE, dU, dY, dX, p.etrsDerived)
+        if (h != null && p.bpv != null && j.bpv != null) dH = j.bpv - p.bpv
+        return MeasureOffset(dN, dE, dU, dY, dX, p.etrsDerived, dH)
     }
 }

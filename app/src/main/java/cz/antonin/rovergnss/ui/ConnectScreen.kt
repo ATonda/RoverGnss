@@ -130,7 +130,7 @@ private fun RoverSection(c: RoverController) {
 
 /** Úplné ukončení aplikace (služba na popředí jinak drží spojení i po zavření okna). */
 @Composable
-private fun ExitButton(c: RoverController) {
+internal fun ExitButton(c: RoverController) {
     val rec by c.recording.collectAsStateWithLifecycle()
     var ask by remember { mutableStateOf(false) }
     Spacer(Modifier.height(8.dp))

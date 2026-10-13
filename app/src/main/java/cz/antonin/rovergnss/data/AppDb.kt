@@ -8,6 +8,8 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Update
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -116,12 +118,24 @@ interface MeasurementDao {
 
     @Query("SELECT m.* FROM measurement m JOIN point p ON p.id = m.pointId WHERE p.jobId = :jobId ORDER BY p.name, m.startMs")
     suspend fun listByJob(jobId: Long): List<Measurement>
+
+    @Query("SELECT m.* FROM measurement m JOIN point p ON p.id = m.pointId WHERE p.jobId = :jobId ORDER BY m.startMs")
+    fun byJob(jobId: Long): Flow<List<Measurement>>
 }
 
-// Verze 5: kontrolní body a měření. Starší databáze se smaže (vývojová fáze).
+/** 5 → 6: u měření výška Bpv, statický model a surová data – data zůstávají. */
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE measurement ADD COLUMN dH REAL")
+        db.execSQL("ALTER TABLE measurement ADD COLUMN staticModel INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE measurement ADD COLUMN rawUbx TEXT")
+    }
+}
+
+// Verze 6. Od verze 5 se převádí (MIGRATION_5_6), starší databáze se smaže.
 @Database(
     entities = [Job::class, Track::class, TrackPoint::class, TrackDiag::class, Point::class, Measurement::class],
-    version = 5, exportSchema = true,
+    version = 6, exportSchema = true,
 )
 abstract class AppDb : RoomDatabase() {
     abstract fun jobs(): JobDao
@@ -132,6 +146,7 @@ abstract class AppDb : RoomDatabase() {
     companion object {
         fun create(context: Context): AppDb =
             Room.databaseBuilder(context, AppDb::class.java, "rovergnss.db")
+                .addMigrations(MIGRATION_5_6)
                 .fallbackToDestructiveMigration()
                 .build()
     }

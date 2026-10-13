@@ -140,7 +140,7 @@ fun PointEditor(
                 NumField(hEll, { hEll = it }, "h elipsoidická [m]", Modifier.fillMaxWidth(), if (initial.etrsDerived) num(initial.hEll, 2) else "")
                 if (initial.etrsDerived && lat.isEmpty()) Text("ETRS89 dopočteno ze S-JTSK (šedě)", style = MaterialTheme.typography.bodySmall)
                 Text(
-                    "Stačí jeden systém, druhý se dopočte (7 parametrů, ~0,4 m). Prázdná pole = dopočtená.",
+                    "Stačí jeden systém, druhý se dopočte převodem ČÚZK (~1–2 cm, h elipsoidu z Bpv přes kvazigeoid). Prázdná pole = dopočtená.",
                     style = MaterialTheme.typography.bodySmall,
                 )
 

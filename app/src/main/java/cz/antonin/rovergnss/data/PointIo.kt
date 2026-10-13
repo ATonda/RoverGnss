@@ -1,23 +1,25 @@
 package cz.antonin.rovergnss.data
 
 import cz.antonin.rovergnss.geo.Angles
-import cz.antonin.rovergnss.geo.Krovak
+import cz.antonin.rovergnss.geo.Sjtsk
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.Locale
 
-/** Doplnění druhého systému souřadnic (7 parametrů; po etapě 2c přesná transformace). */
+/**
+ * Doplnění druhého systému souřadnic přesným převodem ČÚZK ([Sjtsk], ~1–2 cm; bez tabulek 7 parametrů ~0,4 m).
+ * h elipsoidu z Bpv přes kvazigeoid CR-2005, Bpv z h elipsoidu jen když chybí.
+ */
 object PointCoords {
     fun complete(p: Point): Point {
         var q = p
         if (q.lat == null && q.y != null && q.x != null) {
-            // výška nad Besselem ≈ Bpv (ověřeno na TB 10: 648,84 vs 648,46 m); h elipsoidu GRS80 jen s Bpv
-            val g = Krovak.toEtrs(q.y!!, q.x!!, q.bpv ?: 400.0)
+            val (g, _) = Sjtsk.toEtrs(q.y!!, q.x!!, q.bpv)
             q = q.copy(lat = g.lat, lon = g.lon, hEll = q.hEll ?: if (q.bpv != null) g.h else null, etrsDerived = true)
         }
         if (q.y == null && q.lat != null && q.lon != null) {
-            val j = Krovak.fromEtrs(q.lat!!, q.lon!!, q.hEll ?: 400.0)
-            q = q.copy(y = j.y, x = j.x, jtskDerived = true)
+            val j = Sjtsk.fromEtrs(q.lat!!, q.lon!!, q.hEll ?: 400.0)
+            q = q.copy(y = j.y, x = j.x, jtskDerived = true, bpv = q.bpv ?: if (q.hEll != null) j.bpv else null)
         }
         return q
     }

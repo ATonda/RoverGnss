@@ -95,9 +95,9 @@ private class MapHolder {
 }
 
 /**
- * Mapa MapLibre s polohou roveru (barva podle kvality), stopou, body zakázky a vrstvou bodových polí ČÚZK.
+ * Mapa MapLibre s polohou roveru (barva podle kvality), stopou, body lokality a vrstvou bodových polí ČÚZK.
  * @param pos [lat, lon] v ETRS89, null = bez polohy
- * @param onClick klepnutí a bod zakázky pod prstem (nebo null)
+ * @param onClick klepnutí a bod lokality pod prstem (nebo null)
  * @param rotate natočení ([MapRotate]), [course] = kurz pro „směr pohybu nahoře“ (null = držet poslední)
  * @param navTarget [lat, lon] cíle navigace – čára od roveru a značka cíle
  * @param fitTrail při změně (> 0) přiblíží mapu na celou stopu

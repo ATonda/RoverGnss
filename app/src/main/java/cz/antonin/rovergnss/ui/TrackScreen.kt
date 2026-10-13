@@ -52,10 +52,15 @@ fun TrackScreen(c: RoverController) {
     val tracksFlow = remember(job?.id) { job?.let { c.db.tracks().byJob(it.id) } ?: kotlinx.coroutines.flow.emptyFlow() }
     val tracks by tracksFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     val rec by c.recording.collectAsStateWithLifecycle()
-
-    var raw by remember { mutableStateOf(c.prefs.recordRaw) }
-    var every by remember { mutableStateOf(c.prefs.recordEvery.toString()) }
-    var antH by remember { mutableStateOf(c.prefs.antennaH.toString()) }
+    // trasy měření bodů („M …“): trasa → název bodu
+    val measFlow = remember(job?.id) { job?.let { c.db.measurements().byJob(it.id) } ?: kotlinx.coroutines.flow.emptyFlow() }
+    val meas by measFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    val pointsFlow = remember(job?.id) { job?.let { c.db.points().byJob(it.id) } ?: kotlinx.coroutines.flow.emptyFlow() }
+    val points by pointsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    val trackPoint = remember(meas, points) {
+        val names = points.associate { it.id to it.name }
+        meas.filter { it.trackId != null }.associate { it.trackId!! to (names[it.pointId] ?: "?") }
+    }
     var onlyFix by remember { mutableStateOf(false) }
     var skipMoving by remember { mutableStateOf(false) }
     var maxHAcc by remember { mutableStateOf("") }
@@ -105,41 +110,15 @@ fun TrackScreen(c: RoverController) {
     val rawLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { export(it) }
 
     LazyColumn(Modifier.fillMaxSize()) {
-        item { JobBar(c) }
         item {
             Section("Záznam") {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (rec == null) Button(onClick = { c.startRecording() }) { Text("Spustit záznam") }
                     else Button(onClick = { c.stopRecording() }) { Text("Ukončit (${rec?.points} b.)") }
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        every, {
-                            every = it
-                            it.toIntOrNull()?.takeIf { v -> v in 1..50 }?.let { v -> c.prefs.recordEvery = v }
-                        },
-                        label = { Text("Každá n-tá epocha") }, singleLine = true, modifier = Modifier.weight(1f),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    OutlinedTextField(
-                        antH, {
-                            antH = it
-                            it.replace(',', '.').toDoubleOrNull()?.takeIf { v -> v in 0.0..10.0 }?.let { v -> c.prefs.antennaH = v }
-                        },
-                        label = { Text("Výška antény [m]") }, singleLine = true, modifier = Modifier.weight(1f),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    )
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(raw, {
-                        raw = it
-                        c.prefs.recordRaw = it
-                    })
-                    Text("ukládat i surový proud z roveru (~10 MB/h)")
-                }
                 Text(
-                    "Rover posílá polohu frekvencí profilu (5 Hz). Výška antény se uloží k nové trase a odečte při exportu. " +
+                    "Výška antény ${fmt(c.prefs.antennaH, 3)} m, každá ${c.prefs.recordEvery}. epocha" +
+                        (if (c.prefs.recordRaw) ", se surovým proudem" else "") + " – mění se v Nastavení. " +
                         "K trase se ukládá i diagnostika 1 Hz (stav roveru, satelity, BT, NTRIP).",
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -159,7 +138,7 @@ fun TrackScreen(c: RoverController) {
                     modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 )
                 Text(
-                    "CSV: ETRS89 (HAS přepočteno z ITRF2020), S-JTSK (7 parametrů, ~0,4 m), oddělovač ';'. GPX: ETRS89, výška nad geoidem u-blox.",
+                    "CSV: ETRS89 (HAS přepočteno z ITRF2020), S-JTSK a Bpv převodem ČÚZK, oddělovač ';'. GPX: ETRS89, výška nad geoidem u-blox.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -171,6 +150,7 @@ fun TrackScreen(c: RoverController) {
         items(tracks, key = { it.id }) { t ->
             val df = remember { SimpleDateFormat("d. M. yyyy HH:mm:ss", Locale.getDefault()) }
             Section(t.name) {
+                trackPoint[t.id]?.let { Text("měření bodu $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
                 val dur = ((t.endMs ?: System.currentTimeMillis()) - t.startMs) / 1000
                 Text(
                     "${df.format(Date(t.startMs))}, ${dur / 60} min ${dur % 60} s, " +

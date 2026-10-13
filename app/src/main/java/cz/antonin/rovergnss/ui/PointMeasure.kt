@@ -210,7 +210,7 @@ fun MeasureStatus(m: MeasureState, onStop: () -> Unit, onCancel: () -> Unit, mod
             )
             if (o != null) Text(
                 "odchylka 2D ${fmt(o.d2, 3)} m (N ${signed(o.dN, 3)} E ${signed(o.dE, 3)})" +
-                    (o.dU?.let { "  výška ${signed(it, 3)}" } ?: ""),
+                    ((o.dH ?: o.dU)?.let { "  výška ${signed(it, 3)}" } ?: ""),
                 fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall,
             )
             if (r.epochs > r.used) Text(
@@ -243,12 +243,14 @@ private fun MeasureRow(m: Measurement, expanded: Boolean, onClick: () -> Unit, o
             style = MaterialTheme.typography.bodyMedium,
         )
         Text(
-            "2D ${fmt(d2, 3)} m  N ${signed(m.dN, 3)}  E ${signed(m.dE, 3)}" + (m.dU?.let { "  výška ${signed(it, 3)}" } ?: ""),
+            "2D ${fmt(d2, 3)} m  N ${signed(m.dN, 3)}  E ${signed(m.dE, 3)}" +
+                ((m.dH ?: m.dU)?.let { "  výška ${signed(it, 3)}" } ?: ""),
             fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall,
         )
         if (expanded) {
             val t = MaterialTheme.typography.bodySmall
-            if (m.dY != null && m.dX != null) Text("ΔY ${signed(m.dY, 3)}  ΔX ${signed(m.dX, 3)} m (S-JTSK, 7 parametrů)", fontFamily = FontFamily.Monospace, style = t)
+            if (m.dY != null && m.dX != null) Text("ΔY ${signed(m.dY, 3)}  ΔX ${signed(m.dX, 3)} m (S-JTSK)", fontFamily = FontFamily.Monospace, style = t)
+            if (m.dH != null) Text("ΔH Bpv ${signed(m.dH, 3)} m (kvazigeoid CR-2005)", fontFamily = FontFamily.Monospace, style = t)
             Text("σ N/E/U ${fmt(m.sN, 3)} / ${fmt(m.sE, 3)} / ${fmt(m.sU, 3)} m", fontFamily = FontFamily.Monospace, style = t)
             Text(
                 "epoch ${m.used} z ${m.epochs}: fix ${m.nFix}, float ${m.nFloat}, HAS ${m.nHas}, SBAS ${m.nDgnss}, 3D ${m.nOther}",
@@ -259,7 +261,7 @@ private fun MeasureRow(m: Measurement, expanded: Boolean, onClick: () -> Unit, o
                 fontFamily = FontFamily.Monospace, style = t,
             )
             Text("anténa ${fmt(m.antennaH, 3)} m · profil ${m.profile.ifEmpty { "–" }}", style = t)
-            if (m.refDerived) Text("Dané ETRS89 bodu dopočtené ze S-JTSK (7 parametrů, ~0,4 m) – odchylka obsahuje i chybu přepočtu.", style = t)
+            if (m.refDerived) Text("Dané ETRS89 bodu dopočtené ze S-JTSK (převod ČÚZK, ~1–2 cm) – odchylka obsahuje i chybu převodu.", style = t)
             TextButton(onClick = onDelete) { Text("Smazat měření", color = MaterialTheme.colorScheme.error) }
         }
         HorizontalDivider()
@@ -300,7 +302,7 @@ private fun MeasureCharts(list: List<Measurement>) {
     // vývoj v čase: 2D (modře) a výška (oranžově), osa x = pořadí měření
     if (pts.size >= 2) {
         val d2 = pts.map { hypot(it.dN!!, it.dE!!) }
-        val du = pts.map { it.dU }
+        val du = pts.map { it.dH ?: it.dU }
         val vals = d2 + du.filterNotNull()
         val lo = minOf(0.0, vals.min())
         val hi = max(vals.max(), lo + 0.01)

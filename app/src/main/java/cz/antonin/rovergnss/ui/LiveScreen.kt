@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material.icons.filled.North
 import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.SatelliteAlt
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -32,6 +33,7 @@ import androidx.compose.material3.FilledIconToggleButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -53,7 +55,7 @@ import cz.antonin.rovergnss.data.MeasureCalc
 import cz.antonin.rovergnss.data.Point
 import cz.antonin.rovergnss.geo.Etrs
 import cz.antonin.rovergnss.geo.Geodetic
-import cz.antonin.rovergnss.geo.Krovak
+import cz.antonin.rovergnss.geo.Sjtsk
 import cz.antonin.rovergnss.link.Pos
 import cz.antonin.rovergnss.link.Quality
 import cz.antonin.rovergnss.service.RoverController
@@ -66,8 +68,14 @@ fun Pos.etrs(): Geodetic? {
     else Geodetic(lat!!, lon!!, h)
 }
 
-/** Navigace k bodu: posun z roveru (anténa odečtena) k cíli [m], vzdálenost a směrník. */
-data class NavInfo(val dN: Double, val dE: Double, val dist: Double, val az: Double, val dH: Double?, val dY: Double?, val dX: Double?)
+/**
+ * Navigace k bodu: posun z roveru (anténa odečtena) k cíli [m], vzdálenost a směrník.
+ * [dH] výška k cíli – v Bpv, když má cíl Bpv a je kvazigeoid ([hBpv] = true), jinak výška elipsoidu.
+ */
+data class NavInfo(
+    val dN: Double, val dE: Double, val dist: Double, val az: Double,
+    val dH: Double?, val hBpv: Boolean, val dY: Double?, val dX: Double?,
+)
 
 fun navInfo(g: Geodetic, antennaH: Double, t: Point): NavInfo? {
     if (t.lat == null || t.lon == null) return null
@@ -75,16 +83,17 @@ fun navInfo(g: Geodetic, antennaH: Double, t: Point): NavInfo? {
     val dN = (t.lat - g.lat) * kN
     val dE = (t.lon - g.lon) * kE
     val h = g.h - antennaH
-    val dH = if (t.hEll != null && !t.etrsDerived) t.hEll - h else null
+    val j = Sjtsk.fromEtrs(g.lat, g.lon, h)
+    val dBpv = if (t.bpv != null && j.bpv != null) t.bpv - j.bpv else null
+    val dH = dBpv ?: if (t.hEll != null && !t.etrsDerived) t.hEll - h else null
     var dY: Double? = null
     var dX: Double? = null
     if (t.y != null && t.x != null && !t.jtskDerived) {
-        val j = Krovak.fromEtrs(g.lat, g.lon, h)
         dY = t.y - j.y
         dX = t.x - j.x
     }
     val az = (Math.toDegrees(kotlin.math.atan2(dE, dN)) + 360) % 360
-    return NavInfo(dN, dE, kotlin.math.hypot(dN, dE), az, dH, dY, dX)
+    return NavInfo(dN, dE, kotlin.math.hypot(dN, dE), az, dH, dBpv != null, dY, dX)
 }
 
 private fun signed(v: Double?, dec: Int) = if (v == null) "–" else (if (v >= 0) "+" else "") + fmt(v, dec)
@@ -112,6 +121,7 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
     var fitTrail by remember { mutableIntStateOf(0) }
     var styleMenu by remember { mutableStateOf(false) }
     var moreMenu by remember { mutableStateOf(false) }
+    var showSats by remember { mutableStateOf(false) }
     var showCuzk by rememberSaveable { mutableStateOf(c.prefs.showCuzk) }
     var editing by remember { mutableStateOf<Point?>(null) }
     var cuzkAt by remember { mutableStateOf<MapTap?>(null) }
@@ -128,7 +138,7 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
     LaunchedEffect(p?.timeMs) {
         if (p != null && p.hasFix && p.speed > 0.5) course = p.heading
     }
-    BackHandler(enabled = full && editing == null) { onFull(false) }
+    BackHandler(enabled = full && editing == null && !showSats) { onFull(false) }
 
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -160,11 +170,19 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
                 navTarget = nav?.let { t -> if (t.lat != null && t.lon != null) doubleArrayOf(t.lat, t.lon) else null },
                 fitTrail = fitTrail,
             )
-            if (full) StatusStrip(p, ni, nav, Modifier.align(Alignment.TopStart).padding(8.dp))
+            Column(
+                Modifier.align(Alignment.TopStart).padding(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if (full) StatusStrip(p, ni, nav, Modifier)
+                SmallFloatingActionButton(onClick = { showSats = true }) {
+                    Icon(Icons.Filled.SatelliteAlt, contentDescription = "Satelity")
+                }
+            }
             ScaleBar(camZoom, camLat, Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 34.dp))
             Column(
                 Modifier.align(Alignment.TopEnd).padding(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Box {
                     SmallFloatingActionButton(onClick = { styleMenu = true }) {
@@ -243,7 +261,7 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
             }
             ExtendedFloatingActionButton(
                 onClick = { if (rec == null) c.startRecording() else c.stopRecording() },
-                modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
+                modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp),
                 containerColor = if (rec == null) MaterialTheme.colorScheme.primaryContainer else Color(0xFFC62828),
                 contentColor = if (rec == null) MaterialTheme.colorScheme.onPrimaryContainer else Color.White,
                 icon = {
@@ -284,13 +302,13 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
                 KeyValue("φ ETRS89", dms(g.lat, true))
                 KeyValue("λ ETRS89", dms(g.lon, false))
                 KeyValue("h elipsoid", fmt(g.h, 3, " m"))
-                val j = Krovak.fromEtrs(g.lat, g.lon, g.h)
-                KeyValue("S-JTSK Y / X", "${fmt(j.y, 2)} / ${fmt(j.x, 2)}")
-                KeyValue("H (u-blox geoid)", fmt(p.hMsl, 2, " m"))
-                if (p.itrf) Text(
-                    "Bez RTCM: přepočet ITRF2020 → ETRS89. S-JTSK zatím 7 parametry (~0,4 m).",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                val j = Sjtsk.fromEtrs(g.lat, g.lon, g.h - antH)
+                KeyValue("S-JTSK Y / X", "${fmt(j.y, 3)} / ${fmt(j.x, 3)}")
+                if (j.bpv != null) KeyValue("H Bpv (CR-2005)", fmt(j.bpv, 3, " m"))
+                else KeyValue("H (u-blox geoid)", fmt(p.hMsl, 2, " m"))
+                if (!j.precise) Text("S-JTSK 7 parametry (~0,4 m) – tabulky ČÚZK nenačtené nebo mimo ČR.", style = MaterialTheme.typography.bodySmall)
+                if (p.itrf) Text("Bez RTCM: přepočet ITRF2020 → ETRS89.", style = MaterialTheme.typography.bodySmall)
+                if (antH != 0.0) Text("S-JTSK a Bpv na značce (anténa ${fmt(antH, 3)} m odečtena).", style = MaterialTheme.typography.bodySmall)
             }
             KeyValue("Rychlost / kurz", "${fmt(p.speed * 3.6, 1)} km/h / ${fmt(p.heading, 0)}°")
             sta?.let { s -> KeyValue("Baterie roveru", batteryText(s)) }
@@ -311,6 +329,18 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
             onDismiss = { editing = null },
             extra = { PointExtras(c, pt, onClose = { editing = null }) },
         )
+    }
+    if (showSats) {
+        BackHandler { showSats = false }
+        Surface(Modifier.fillMaxSize()) {
+            Column(Modifier.fillMaxSize()) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Satelity", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { showSats = false }) { Text("Zavřít") }
+                }
+                SatScreen(c)
+            }
+        }
     }
     cuzkAt?.let { tap ->
         CuzkDialog(tap, onTake = { c.takeCuzkPoint(it) }, onDismiss = { cuzkAt = null })
@@ -363,10 +393,6 @@ private fun NavPanel(t: Point, ni: NavInfo?, onEnd: () -> Unit) {
         KeyValue("Vzdálenost / směr", "${fmtDist(ni.dist)} / ${fmt(ni.az, 0)}°")
         KeyValue("K cíli sever / východ", "${signed(ni.dN, 3)} / ${signed(ni.dE, 3)} m")
         if (ni.dY != null && ni.dX != null) KeyValue("K cíli ΔY / ΔX", "${signed(ni.dY, 3)} / ${signed(ni.dX, 3)} m")
-        if (ni.dH != null) KeyValue("K cíli výška", "${signed(ni.dH, 3)} m")
-        if (t.etrsDerived) Text(
-            "ETRS89 cíle dopočtené ze S-JTSK (7 parametrů, ~0,4 m).",
-            style = MaterialTheme.typography.bodySmall,
-        )
+        if (ni.dH != null) KeyValue(if (ni.hBpv) "K cíli výška Bpv" else "K cíli výška (elipsoid)", "${signed(ni.dH, 3)} m")
     }
 }

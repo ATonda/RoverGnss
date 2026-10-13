@@ -52,6 +52,9 @@ fun PointsScreen(c: RoverController) {
     val pos by c.pos.collectAsStateWithLifecycle()
     val pointsFlow = remember(job?.id) { job?.let { c.db.points().byJob(it.id) } ?: emptyFlow() }
     val points by pointsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    val measFlow = remember(job?.id) { job?.let { c.db.measurements().byJob(it.id) } ?: emptyFlow() }
+    val meas by measFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    val measByPoint = remember(meas) { meas.filter { it.endMs != null }.groupBy { it.pointId } }
     var editing by remember { mutableStateOf<Point?>(null) }
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -104,7 +107,6 @@ fun PointsScreen(c: RoverController) {
     }
 
     Column(Modifier.fillMaxSize()) {
-        JobBar(c)
         Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = {
                 scope.launch {
@@ -115,7 +117,7 @@ fun PointsScreen(c: RoverController) {
             OutlinedButton(onClick = { importLauncher.launch(arrayOf("text/*", "application/octet-stream")) }) { Text("Import") }
             OutlinedButton(onClick = {
                 val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                exportLauncher.launch("RG_${stamp}_body_zakazky.csv")
+                exportLauncher.launch("RG_${stamp}_body_lokality.csv")
             }, enabled = points.isNotEmpty()) { Text("Export") }
         }
         if (points.any { it.control }) Row(Modifier.padding(horizontal = 12.dp)) {
@@ -131,7 +133,7 @@ fun PointsScreen(c: RoverController) {
         )
         HorizontalDivider()
         if (points.isEmpty()) {
-            Text("Zakázka nemá žádné body.", modifier = Modifier.padding(16.dp))
+            Text("Lokalita nemá žádné body.", modifier = Modifier.padding(16.dp))
         }
         val g = pos?.etrs()
         LazyColumn(Modifier.fillMaxSize()) {
@@ -155,6 +157,15 @@ fun PointsScreen(c: RoverController) {
                     if (g != null && p.lat != null && p.lon != null) {
                         val (d, az) = Angles.distanceBearing(g.lat, g.lon, p.lat, p.lon)
                         Text("od roveru ${fmtDist(d)}, směr ${fmt(az, 0)}°", style = MaterialTheme.typography.bodySmall)
+                    }
+                    measByPoint[p.id]?.let { ms ->
+                        val last = ms.last()
+                        val d2 = if (last.dN != null && last.dE != null) kotlin.math.hypot(last.dN, last.dE) else null
+                        Text(
+                            "měření ${ms.size}×, poslední 2D ${fmt(d2, 3)} m" +
+                                ((last.dH ?: last.dU)?.let { ", výška ${fmt(it, 3)} m" } ?: ""),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                     p.url?.let { u ->
                         Text(

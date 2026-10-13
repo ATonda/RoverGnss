@@ -29,7 +29,7 @@ import cz.antonin.rovergnss.cuzk.CuzkPoint
 import cz.antonin.rovergnss.cuzk.CuzkPoints
 import cz.antonin.rovergnss.geo.Angles
 
-/** Body bodových polí ČÚZK v okolí klepnutí; „Převzít“ uloží bod do aktivní zakázky. */
+/** Body bodových polí ČÚZK v okolí klepnutí; „Převzít“ uloží bod do aktivní lokality. */
 @Composable
 fun CuzkDialog(tap: MapTap, onTake: (CuzkPoint) -> Unit, onDismiss: () -> Unit) {
     val lat = tap.lat
@@ -76,11 +76,12 @@ fun CuzkDialog(tap: MapTap, onTake: (CuzkPoint) -> Unit, onDismiss: () -> Unit) 
                                 fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall,
                             )
                             Text("${fmtDist(d)} od klepnutí", style = MaterialTheme.typography.bodySmall)
+                            // tlačítka pod sebou – do šířky dialogu se tři vedle sebe nevejdou
+                            Button(onClick = {
+                                onTake(p)
+                                taken = taken + key
+                            }, enabled = key !in taken, modifier = Modifier.fillMaxWidth()) { Text(if (key in taken) "Převzato" else "Převzít") }
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Button(onClick = {
-                                    onTake(p)
-                                    taken = taken + key
-                                }, enabled = key !in taken) { Text(if (key in taken) "Převzato" else "Převzít") }
                                 p.url?.let { u -> TextButton(onClick = { openUrl(context, u) }) { Text("Geod. údaje") } }
                                 TextButton(onClick = { expanded = if (expanded == key) null else key }) { Text("Pole") }
                             }

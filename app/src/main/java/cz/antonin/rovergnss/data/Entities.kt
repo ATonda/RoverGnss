@@ -146,7 +146,7 @@ object PointSource {
 
 /**
  * Bod zakázky. Souřadnice ETRS89 i S-JTSK; když je zadaný jen jeden systém, druhý se dopočte
- * a označí příznakem *Derived (přepočet 7 parametry ~0,4 m, po etapě 2c přesně).
+ * a označí příznakem *Derived (převod ČÚZK s opravnou tabulkou a kvazigeoidem, ~1–2 cm).
  */
 @Entity(
     tableName = "point",
@@ -216,6 +216,10 @@ data class Measurement(
     val dU: Double? = null,
     val dY: Double? = null,
     val dX: Double? = null,
-    val refDerived: Boolean = false, // dané ETRS89 dopočtené ze S-JTSK (7 parametrů, ~0,4 m)
+    val refDerived: Boolean = false, // dané ETRS89 dopočtené ze S-JTSK (převod ČÚZK)
     val note: String = "",
+    // verze 6
+    val dH: Double? = null,           // výška Bpv: měřeno (kvazigeoid CR-2005) − dané Bpv [m]
+    val staticModel: Boolean = false, // X20 během měření ve statickém modelu (FW 0.9.0+)
+    val rawUbx: String? = null,       // surová data RAWX/SFRBX měření (soubor v files/raw)
 )

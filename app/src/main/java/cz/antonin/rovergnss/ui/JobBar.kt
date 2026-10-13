@@ -28,7 +28,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import cz.antonin.rovergnss.data.Job
 import cz.antonin.rovergnss.service.RoverController
 
-/** Výběr aktivní zakázky: přepnutí, nová, přejmenování, smazání. */
+/** Výběr aktivní lokality (v datech „job“): přepnutí, nová, přejmenování, smazání. */
 @Composable
 fun JobBar(c: RoverController, modifier: Modifier = Modifier) {
     val job by c.activeJob.collectAsStateWithLifecycle()
@@ -42,7 +42,7 @@ fun JobBar(c: RoverController, modifier: Modifier = Modifier) {
         Icon(Icons.Filled.Folder, contentDescription = null)
         Box(Modifier.weight(1f)) {
             TextButton(onClick = { menu = true }) {
-                Text("Zakázka: ${job?.name ?: "…"}", style = MaterialTheme.typography.titleSmall)
+                Text("Lokalita: ${job?.name ?: "…"}", style = MaterialTheme.typography.titleSmall)
                 Icon(Icons.Filled.ArrowDropDown, contentDescription = null)
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -56,7 +56,7 @@ fun JobBar(c: RoverController, modifier: Modifier = Modifier) {
                     )
                 }
                 HorizontalDivider()
-                DropdownMenuItem(text = { Text("Nová zakázka…") }, onClick = {
+                DropdownMenuItem(text = { Text("Nová lokalita…") }, onClick = {
                     menu = false
                     text = ""
                     dialog = "new"
@@ -66,7 +66,7 @@ fun JobBar(c: RoverController, modifier: Modifier = Modifier) {
                     text = job?.name ?: ""
                     dialog = "rename"
                 })
-                DropdownMenuItem(text = { Text("Smazat zakázku…") }, enabled = job != null && jobs.size > 1, onClick = {
+                DropdownMenuItem(text = { Text("Smazat lokalitu…") }, enabled = job != null && jobs.size > 1, onClick = {
                     menu = false
                     dialog = "delete"
                 })
@@ -77,7 +77,7 @@ fun JobBar(c: RoverController, modifier: Modifier = Modifier) {
     when (dialog) {
         "new", "rename" -> AlertDialog(
             onDismissRequest = { dialog = null },
-            title = { Text(if (dialog == "new") "Nová zakázka" else "Přejmenovat zakázku") },
+            title = { Text(if (dialog == "new") "Nová lokalita" else "Přejmenovat lokalitu") },
             text = { OutlinedTextField(text, { text = it }, singleLine = true, label = { Text("Název") }) },
             confirmButton = {
                 TextButton(onClick = {
@@ -90,8 +90,8 @@ fun JobBar(c: RoverController, modifier: Modifier = Modifier) {
         "delete" -> job?.let { j: Job ->
             AlertDialog(
                 onDismissRequest = { dialog = null },
-                title = { Text("Smazat zakázku?") },
-                text = { Text("${j.name} – smažou se i všechny její body a trasy. Nelze vrátit.") },
+                title = { Text("Smazat lokalitu?") },
+                text = { Text("${j.name} – smažou se i všechny její body, měření a trasy. Nelze vrátit.") },
                 confirmButton = {
                     TextButton(onClick = {
                         c.deleteJob(j)

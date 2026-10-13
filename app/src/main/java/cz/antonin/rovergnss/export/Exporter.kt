@@ -7,7 +7,7 @@ import cz.antonin.rovergnss.data.TrackDiag
 import cz.antonin.rovergnss.data.TrackPoint
 import cz.antonin.rovergnss.geo.Etrs
 import cz.antonin.rovergnss.geo.Geodetic
-import cz.antonin.rovergnss.geo.Krovak
+import cz.antonin.rovergnss.geo.Sjtsk
 import cz.antonin.rovergnss.link.Quality
 import java.io.OutputStream
 import java.text.SimpleDateFormat
@@ -25,7 +25,7 @@ data class ExportFilter(
 
 /**
  * Export trasy. Souřadnice se převádějí do ETRS89 (HAS/SBAS z ITRF2020 podle epochy),
- * z ETRS89 do S-JTSK (7 parametrů, ~0,4 m). Výška se snižuje o výšku antény.
+ * z ETRS89 do S-JTSK a Bpv přesným převodem ČÚZK ([Sjtsk]). Výška se snižuje o výšku antény.
  * CSV: oddělovač ';', desetinná tečka (stejně jako exporty z roveru).
  */
 object Exporter {
@@ -42,7 +42,7 @@ object Exporter {
     fun csv(track: Track, points: List<TrackPoint>, filter: ExportFilter, out: OutputStream): Int {
         val fmt = iso()
         val w = out.bufferedWriter(Charsets.UTF_8)
-        w.write("cas_utc;gnss_ms;kvalita;carr_soln;zdroj_ramec;lat_etrs89;lon_etrs89;h_ell_etrs89;y_jtsk;x_jtsk;h_msl_ublox;" +
+        w.write("cas_utc;gnss_ms;kvalita;carr_soln;zdroj_ramec;lat_etrs89;lon_etrs89;h_ell_etrs89;y_jtsk;x_jtsk;h_bpv;jtsk_presne;h_msl_ublox;" +
             "sN;sE;sU;hAcc;vAcc;sv;pdop;rychlost;kurz;pohyb;stari_kor;rtcm;hp;latence_ms;mezera\r\n")
         val periodMs = periodMs(track, points)
         var n = 0
@@ -54,11 +54,12 @@ object Exporter {
             if (!filter.accept(p)) continue
             val g = etrs(p)
             val h = g.h - track.antennaH
-            val j = Krovak.fromEtrs(g.lat, g.lon, h)
+            val j = Sjtsk.fromEtrs(g.lat, g.lon, h)
             w.write(
                 listOf(
                     fmt.format(p.timeMs), p.timeMs.toString(), p.quality.toString(), p.carrSoln.toString(), if (p.itrf) "ITRF2020" else "ETRS89",
-                    f(g.lat, 9), f(g.lon, 9), f(h, 4), f(j.y, 3), f(j.x, 3), f(p.hMsl - track.antennaH, 3),
+                    f(g.lat, 9), f(g.lon, 9), f(h, 4), f(j.y, 3), f(j.x, 3), f(j.bpv, 3), if (j.precise) "1" else "0",
+                    f(p.hMsl - track.antennaH, 3),
                     f(p.sN, 4), f(p.sE, 4), f(p.sU, 4), f(p.hAcc, 4), f(p.vAcc, 4),
                     p.numSv.toString(), f(p.pdop, 2), f(p.speed, 3), f(p.heading, 1), if (p.moving) "1" else "0",
                     f(p.corrAge, 1), if (p.rtcm) "1" else "0", if (p.hp) "1" else "0",
@@ -135,7 +136,7 @@ object Exporter {
         val fmt = iso()
         val w = out.bufferedWriter(Charsets.UTF_8)
         w.write("bod;druh;zacatek_utc;konec_utc;delka_s;epoch;v_prumeru;kvalita_prumeru;fix;float;has;sbas;gnss3d;korekce;profil;" +
-            "vyska_anteny;lat_etrs89;lon_etrs89;h_ell_etrs89;sN;sE;sU;dN;dE;d2D;dU;dY;dX;dane_etrs_dopocteno\r\n")
+            "vyska_anteny;lat_etrs89;lon_etrs89;h_ell_etrs89;sN;sE;sU;dN;dE;d2D;dU;dY;dX;dH_bpv;dane_etrs_dopocteno;staticky_model\r\n")
         var n = 0
         for (m in list) {
             if (m.endMs == null) continue
@@ -149,7 +150,7 @@ object Exporter {
                     m.nFix.toString(), m.nFloat.toString(), m.nHas.toString(), m.nDgnss.toString(), m.nOther.toString(),
                     m.corr, m.profile, f(m.antennaH, 3), f(m.lat, 9), f(m.lon, 9), f(m.hEll, 4),
                     f(m.sN, 4), f(m.sE, 4), f(m.sU, 4), f(m.dN, 4), f(m.dE, 4), f(d2, 4), f(m.dU, 4), f(m.dY, 4), f(m.dX, 4),
-                    if (m.refDerived) "1" else "0",
+                    f(m.dH, 4), if (m.refDerived) "1" else "0", if (m.staticModel) "1" else "0",
                 ).joinToString(";") { it.replace(";", ",") }
             )
             w.write("\r\n")

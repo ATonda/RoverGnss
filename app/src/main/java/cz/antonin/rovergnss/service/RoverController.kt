@@ -226,7 +226,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     /** Smaže zakázku i s body a trasami; aktivní se stane jiná (nebo nová „Výchozí“). */
     fun deleteJob(j: Job) = scope.launch {
         if (_recording.value != null) {
-            _messages.tryEmit("Během záznamu nelze mazat zakázky")
+            _messages.tryEmit("Během záznamu nelze mazat lokality")
             return@launch
         }
         // trasy a body se smažou kaskádou, surové soubory tras ručně
@@ -334,7 +334,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                 endMs = System.currentTimeMillis(), epochs = res.epochs, used = res.used, usedQuality = res.usedQuality,
                 nFix = res.nFix, nFloat = res.nFloat, nHas = res.nHas, nDgnss = res.nDgnss, nOther = res.nOther,
                 corr = corr, lat = res.lat, lon = res.lon, hEll = res.h, sN = res.sN, sE = res.sE, sU = res.sU,
-                dN = off.dN, dE = off.dE, dU = off.dU, dY = off.dY, dX = off.dX, refDerived = off.refDerived,
+                dN = off.dN, dE = off.dE, dU = off.dU, dY = off.dY, dX = off.dX, refDerived = off.refDerived, dH = off.dH,
             )
         )
         _messages.tryEmit(
@@ -378,7 +378,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     fun takeCuzkPoint(c: CuzkPoint) = scope.launch {
         val j = ensureJob()
         db.points().insert(c.toPoint(j.id))
-        _messages.tryEmit("Bod ${c.name} převzat do zakázky ${j.name}")
+        _messages.tryEmit("Bod ${c.name} převzat do lokality ${j.name}")
     }
 
     init {

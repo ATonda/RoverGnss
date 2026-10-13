@@ -9,8 +9,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Place
-import androidx.compose.material.icons.filled.SatelliteAlt
-import androidx.compose.material.icons.filled.Timeline
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -44,8 +43,7 @@ private val TABS = listOf(
     Tab("Připojení", Icons.Filled.Bluetooth),
     Tab("Živě", Icons.Filled.Map),
     Tab("Body", Icons.Filled.Place),
-    Tab("Trasy", Icons.Filled.Timeline),
-    Tab("Satelity", Icons.Filled.SatelliteAlt),
+    Tab("Nastavení", Icons.Filled.Settings),
 )
 
 private val Colors = lightColorScheme(
@@ -105,9 +103,8 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
                             mapFull = it
                             controller.prefs.mapFull = it
                         }
-                        2 -> PointsScreen(controller)
-                        3 -> TrackScreen(controller)
-                        4 -> SatScreen(controller)
+                        2 -> SiteScreen(controller)
+                        3 -> SettingsScreen(controller)
                     }
                 }
             }
