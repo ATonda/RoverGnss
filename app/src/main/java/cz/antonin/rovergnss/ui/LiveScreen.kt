@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -29,7 +30,6 @@ import androidx.compose.material.icons.filled.SatelliteAlt
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilledIconToggleButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -54,6 +54,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import cz.antonin.rovergnss.data.MeasureCalc
@@ -113,7 +114,7 @@ private fun signed(v: Double?, dec: Int) = if (v == null) "–" else (if (v >= 0
  * @param full mapa přes celou obrazovku (panel skrytý, nahoře jen proužek se stavem)
  */
 @Composable
-fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
+fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: (Boolean) -> Unit) {
     val pos by c.pos.collectAsStateWithLifecycle()
     val sta by c.sta.collectAsStateWithLifecycle()
     val trail by c.trail.collectAsStateWithLifecycle()
@@ -133,6 +134,7 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
     var moreMenu by remember { mutableStateOf(false) }
     var showSats by remember { mutableStateOf(false) }
     var surveyName by remember { mutableStateOf<String?>(null) }   // dialog zaměření bodu
+    var recDialog by remember { mutableStateOf(false) }             // název trasy před záznamem
     var userMenu by remember { mutableStateOf(false) }
     val user by c.user.collectAsStateWithLifecycle()
     val users by c.users.collectAsStateWithLifecycle()
@@ -229,6 +231,7 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
                 }) {
                     Icon(Icons.Filled.AddLocationAlt, contentDescription = "Zaměřit bod")
                 }
+                RecButton(rec, onClick = { if (rec == null) recDialog = true else c.stopRecording() })
             }
             ScaleBar(camZoom, camLat, Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 34.dp))
             Column(
@@ -310,16 +313,6 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
                     }
                 }
             }
-            ExtendedFloatingActionButton(
-                onClick = { if (rec == null) c.startRecording() else c.stopRecording() },
-                modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp),
-                containerColor = if (rec == null) MaterialTheme.colorScheme.primaryContainer else Color(0xFFC62828),
-                contentColor = if (rec == null) MaterialTheme.colorScheme.onPrimaryContainer else Color.White,
-                icon = {
-                    Icon(if (rec == null) Icons.Filled.FiberManualRecord else Icons.Filled.Stop, contentDescription = null)
-                },
-                text = { Text(rec?.let { "Stop (${it.points})" } ?: "Záznam") },
-            )
         }
 
         // panel s údaji
@@ -348,7 +341,7 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
             }
             ModeHeader(
                 avgMode, { avgMode = it; c.prefs.liveAverage = it },
-                avg, p, onReset = { c.resetLiveAverage() },
+                avg, p, onReset = { c.resetLiveAverage() }, onTarget = onTarget,
             )
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 QualityBadge(
@@ -406,6 +399,10 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
             extra = { PointExtras(c, pt, onClose = { editing = null }) },
         )
     }
+    if (recDialog) TrackNameDialog(onStart = { name ->
+        recDialog = false
+        c.startRecording(name)
+    }, onDismiss = { recDialog = false })
     surveyName?.let { initial ->
         SurveyDialog(initial, user, avg?.takeIf { it.result.used >= MeasureCalc.MIN_EPOCHS }, onStart = { name, take ->
             surveyName = null
@@ -519,7 +516,14 @@ private fun duration(ms: Long): String {
  * a čas poslední epochy se stářím (vlastní tikání – nepřekresluje mapu).
  */
 @Composable
-private fun ModeHeader(avgMode: Boolean, onMode: (Boolean) -> Unit, avg: LiveAverage?, p: Pos, onReset: () -> Unit) {
+private fun ModeHeader(
+    avgMode: Boolean,
+    onMode: (Boolean) -> Unit,
+    avg: LiveAverage?,
+    p: Pos,
+    onReset: () -> Unit,
+    onTarget: () -> Unit,
+) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -530,7 +534,10 @@ private fun ModeHeader(avgMode: Boolean, onMode: (Boolean) -> Unit, avg: LiveAve
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         FilterChip(selected = !avgMode, onClick = { onMode(false) }, label = { Text("Okamžitě") })
         FilterChip(selected = avgMode, onClick = { onMode(true) }, label = { Text("Průměr") })
-        if (avgMode) TextButton(onClick = onReset) { Text("Vynulovat") }
+        if (avgMode) {
+            TextButton(onClick = onTarget) { Text("Terč") }
+            TextButton(onClick = onReset) { Text("Vynulovat") }
+        }
     }
     Text(
         if (!avgMode) "Okamžité hodnoty (poslední epocha)"
@@ -597,6 +604,55 @@ private fun SurveyDialog(
                 }
             }
         },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Zrušit") } },
+    )
+}
+
+/** Záznam trasy: malé červené REC / STOP s uplynulým časem, bez velkého rámu. */
+@Composable
+private fun RecButton(rec: cz.antonin.rovergnss.service.RecordingState?, onClick: () -> Unit) {
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(rec != null) {
+        while (rec != null) {
+            now = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
+    val red = Color(0xFFC62828)
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(8.dp),
+        color = Color.White.copy(alpha = 0.85f),
+        shadowElevation = 2.dp,
+    ) {
+        Row(Modifier.padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                if (rec == null) Icons.Filled.FiberManualRecord else Icons.Filled.Stop,
+                contentDescription = null, tint = red, modifier = Modifier.size(18.dp),
+            )
+            Text(
+                if (rec == null) " REC" else " STOP ${duration(now - rec.startMs)}",
+                color = red, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge,
+            )
+        }
+    }
+}
+
+/** Název trasy před startem záznamu; prázdný = automaticky „T číslo datum čas“. */
+@Composable
+private fun TrackNameDialog(onStart: (String?) -> Unit, onDismiss: () -> Unit) {
+    var name by remember { mutableStateOf("") }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Záznam trasy") },
+        text = {
+            androidx.compose.material3.OutlinedTextField(
+                name, { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                label = { Text("Název") },
+                placeholder = { Text("prázdné = T číslo, datum a čas") },
+            )
+        },
+        confirmButton = { TextButton(onClick = { onStart(name.trim().ifEmpty { null }) }) { Text("Spustit") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Zrušit") } },
     )
 }

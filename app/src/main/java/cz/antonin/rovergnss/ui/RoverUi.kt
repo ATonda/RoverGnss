@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import cz.antonin.rovergnss.service.RoverController
+import cz.antonin.rovergnss.service.TargetSource
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
@@ -66,6 +67,8 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
         LaunchedEffect(Unit) {
             controller.measure.map { it != null }.distinctUntilChanged().collect { if (it) tab = 0 }
         }
+        var target by rememberSaveable { mutableIntStateOf(-1) }   // terč: -1 zavřený, jinak TargetSource
+        Box(Modifier.fillMaxSize()) {
         Scaffold(
             snackbarHost = { SnackbarHost(snackbar) },
             bottomBar = {
@@ -82,7 +85,7 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
             },
         ) { inner ->
           Column(Modifier.padding(inner).fillMaxSize()) {
-            if (permissionsOk) MeasureBanner(controller)
+            if (permissionsOk) MeasureBanner(controller, onTarget = { target = TargetSource.MEASURE })
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 if (!permissionsOk) {
                     Column(
@@ -96,7 +99,7 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
                     }
                 } else {
                     when (tab) {
-                        0 -> LiveScreen(controller, mapFull) {
+                        0 -> LiveScreen(controller, mapFull, onTarget = { target = TargetSource.LIVE }) {
                             mapFull = it
                             controller.prefs.mapFull = it
                         }
@@ -106,6 +109,8 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
                 }
             }
           }
+        }
+        if (target >= 0) TargetScreen(controller, target, onClose = { target = -1 })
         }
     }
 }

@@ -200,7 +200,13 @@ fun PointExtras(c: RoverController, p: Point, onClose: () -> Unit) {
 
 /** Průběh měření: čas, epochy, rozptyl a odchylka od bodu. */
 @Composable
-fun MeasureStatus(m: MeasureState, onStop: () -> Unit, onCancel: () -> Unit, modifier: Modifier = Modifier) {
+fun MeasureStatus(
+    m: MeasureState,
+    onStop: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+    onTarget: (() -> Unit)? = null,
+) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(m.measurementId) {
         while (true) {
@@ -228,6 +234,7 @@ fun MeasureStatus(m: MeasureState, onStop: () -> Unit, onCancel: () -> Unit, mod
                 "$title ${m.point.name}  ${mmss(el)}" + if (m.plannedSec > 0) " / ${mmss(m.plannedSec.toLong())}" else "",
                 style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f),
             )
+            if (onTarget != null) TextButton(onClick = onTarget) { Text("Terč") }
             TextButton(onClick = onCancel) { Text("Zrušit") }
             Button(onClick = onStop) { Text(if (m.mode == MeasureMode.CONTROL) "Ukončit" else "Uložit") }
         }
@@ -267,12 +274,13 @@ fun MeasureStatus(m: MeasureState, onStop: () -> Unit, onCancel: () -> Unit, mod
 
 /** Pruh probíhajícího měření nad obsahem aplikace (na všech kartách). */
 @Composable
-fun MeasureBanner(c: RoverController) {
+fun MeasureBanner(c: RoverController, onTarget: () -> Unit) {
     val m by c.measure.collectAsStateWithLifecycle()
     m?.let { s ->
         MeasureStatus(
             s, onStop = { c.stopMeasurement() }, onCancel = { c.stopMeasurement(save = false) },
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            onTarget = onTarget,
         )
     }
 }

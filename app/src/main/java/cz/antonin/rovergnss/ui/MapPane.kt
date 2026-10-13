@@ -42,6 +42,7 @@ import org.maplibre.geojson.Point
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.android.style.expressions.Expression
+import org.maplibre.android.style.sources.GeoJsonOptions
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.RasterLayer
 import org.maplibre.android.style.layers.SymbolLayer
@@ -219,14 +220,30 @@ fun MapPane(
                     PropertyFactory.textAllowOverlap(false),
                 ).also { it.minZoom = 15f }
             )
-            st.addSource(GeoJsonSource(SRC_TRAIL))
+            // stopa bez zjednodušení geometrie i při největším přiblížení (výchozí maxzoom zdroje je 18)
+            val fine = GeoJsonOptions().withMaxZoom(MAX_ZOOM.toInt()).withTolerance(0f)
+            st.addSource(GeoJsonSource(SRC_TRAIL, fine))
+            st.addSource(GeoJsonSource(SRC_TRAIL_PTS, fine))
             st.addSource(GeoJsonSource(SRC_POS))
             st.addSource(GeoJsonSource(SRC_NAV))
             st.addLayer(
                 LineLayer(SRC_TRAIL, SRC_TRAIL).withProperties(
                     PropertyFactory.lineColor(android.graphics.Color.rgb(255, 193, 7)),
-                    PropertyFactory.lineWidth(3f),
+                    PropertyFactory.lineWidth(2f),
                 )
+            )
+            // jednotlivé epochy stopy obarvené podle kvality (od přiblížení 19 – detail statického měření)
+            st.addLayer(
+                CircleLayer(SRC_TRAIL_PTS, SRC_TRAIL_PTS).withProperties(
+                    PropertyFactory.circleRadius(3f),
+                    PropertyFactory.circleColor(
+                        Expression.match(
+                            Expression.get("q"), Expression.color(qualityColorArgb(0)),
+                            *(1..6).map { Expression.stop(it, Expression.color(qualityColorArgb(it))) }.toTypedArray(),
+                        )
+                    ),
+                    PropertyFactory.circleOpacity(0.8f),
+                ).also { it.minZoom = 19f }
             )
             // navigace: čárkovaná čára rover → cíl a kroužek na cíli
             st.addLayer(
@@ -349,6 +366,11 @@ fun MapPane(
         } else {
             src.setGeoJson(LineString.fromLngLats(trail.map { Point.fromLngLat(it[1], it[0]) }))
         }
+        st.getSourceAs<GeoJsonSource>(SRC_TRAIL_PTS)?.setGeoJson(
+            FeatureCollection.fromFeatures(trail.map { t ->
+                Feature.fromGeometry(Point.fromLngLat(t[1], t[0])).also { it.addNumberProperty("q", t[2].toInt()) }
+            })
+        )
     }
 
     AndroidView(factory = { mapView }, modifier = modifier)
@@ -395,8 +417,9 @@ private const val SRC_POINTS = "job-points"
 private const val LYR_POINTS = "job-points"
 private const val LYR_LABELS = "job-points-labels"
 private const val START_ZOOM = 21.0  // po prvním fixu
-private const val MAX_ZOOM = 22.0
+private const val MAX_ZOOM = 24.0  // ~0,6 cm/px; podklad se nad svou úroveň jen zvětšuje
 private const val SRC_TRAIL = "rover-trail"
+private const val SRC_TRAIL_PTS = "rover-trail-pts"
 private const val SRC_NAV = "nav"
 private const val LYR_NAV_LINE = "nav-line"
 private const val LYR_NAV_TARGET = "nav-target"

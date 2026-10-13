@@ -85,6 +85,12 @@ object MeasureMode {
     const val STAKE = 2    // vytyčení daného bodu – krátké průměrování
 }
 
+/** Zdroj epoch pro terč. */
+object TargetSource {
+    const val LIVE = 0     // průběžný průměr v Živě
+    const val MEASURE = 1  // probíhající měření bodu
+}
+
 /** Probíhající měření bodu (průběžný výpočet 1× za sekundu). */
 data class MeasureState(
     val measurementId: Long,  // CONTROL: řádek měření, jinak 0
@@ -642,6 +648,14 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     private var liveCalcMs = 0L
     private var liveResetReason: String? = null
     private var liveResetMs = 0L
+
+    /**
+     * Epochy pro terč: [TargetSource.LIVE] průběžný průměr (poloha antény), [TargetSource.MEASURE] probíhající
+     * měření bodu (anténa odečtena). Výška jde jen jako rozdíl od průměru, anténa na tvar nemá vliv.
+     */
+    fun targetEpochs(source: Int): List<MeasureEpoch> =
+        if (source == TargetSource.LIVE) synchronized(liveEps) { liveEps.toList() }
+        else synchronized(measEpochs) { ArrayList(measEpochs) }
 
     /** Ruční vynulování průměru. */
     fun resetLiveAverage() = synchronized(liveEps) { liveReset("ručně") }
