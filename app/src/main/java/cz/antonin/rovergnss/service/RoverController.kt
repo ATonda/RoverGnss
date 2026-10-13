@@ -103,6 +103,19 @@ data class MeasureState(
     val minEpochs: Int = 0,           // SURVEY: a aspoň tolik epoch
 )
 
+/**
+ * Průběžný průměr polohy od posledního ustálení (panel Živě). Poloha antény (bez odečtení výšky antény).
+ * [resetReason] proč byl průměr naposledy vynulován, [resetMs] kdy.
+ */
+data class LiveAverage(
+    val startMs: Long,
+    val lastMs: Long,
+    val quality: Quality,
+    val result: MeasureResult,
+    val resetReason: String? = null,
+    val resetMs: Long = 0,
+)
+
 /** Údaje o roveru z odpovědi na `get info`. */
 data class RoverInfo(
     val fw: String,
@@ -396,7 +409,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
      * Zaměření nového bodu „tady“: průměr nejlepších epoch bez pohybu. Konec, co nastane dřív:
      * σ vodorovně ≤ mez profilu a aspoň N epoch, nebo nejdelší doba; kdykoli ručně (uloží se, co je).
      */
-    fun startSurvey(name: String) = scope.launch {
+    fun startSurvey(name: String, takeAverage: Boolean = false) = scope.launch {
         if (_measure.value != null) return@launch
         if (link.state.value !is LinkState.Connected) {
             _messages.tryEmit("Rover není připojený")
@@ -409,16 +422,27 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             return@launch
         }
         val u = prefs.user
-        synchronized(measEpochs) { measEpochs.clear() }
+        // převzetí průběžného průměru: jeho epochy (s odečtenou anténou) a začátek
+        var startMs = System.currentTimeMillis()
+        val taken = if (takeAverage) synchronized(liveEps) {
+            if (liveEps.isNotEmpty()) startMs = liveStartMs
+            liveEps.map { it.copy(h = it.h - u.antennaH) }
+        } else emptyList()
+        synchronized(measEpochs) {
+            measEpochs.clear()
+            measEpochs.addAll(taken)
+        }
         measLastCalc = 0
         autoStopping = false
         val (static, _) = roverMeasStart(u.measStatic, false)
         prefs.lastSurveyName = n
         _measure.value = MeasureState(
-            0, 0, Point(jobId = j.id, name = n), System.currentTimeMillis(), u.surveyMaxSec, u.antennaH,
+            0, 0, Point(jobId = j.id, name = n), startMs, u.surveyMaxSec, u.antennaH,
             staticModel = static, mode = MeasureMode.SURVEY, sigmaLimit = u.surveySigma, minEpochs = u.surveyMinEpochs,
         )
-        startTimer(u.surveyMaxSec)
+        // nejdelší doba počítaná od začátku převzatého průměru (aspoň 3 s na doměření)
+        val elapsed = ((System.currentTimeMillis() - startMs) / 1000).toInt()
+        startTimer(maxOf(u.surveyMaxSec - elapsed, 3))
     }
 
     /** Vytyčení: krátké průměrování polohy na vytyčovaném bodě, uloží odchylku a pokračuje dalším bodem. */
@@ -605,6 +629,73 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                 autoStopping = true
                 stopMeasurement()
             }
+        }
+    }
+
+    // ------------------------------------------------------------------ průběžný průměr (panel Živě)
+    private val _liveAvg = MutableStateFlow<LiveAverage?>(null)
+    val liveAvg: StateFlow<LiveAverage?> = _liveAvg.asStateFlow()
+    private val liveEps = ArrayDeque<MeasureEpoch>()   // poloha antény, jedna kvalita, bez pohybu
+    private var liveStartMs = 0L
+    private var liveLastMs = 0L
+    private var liveQuality = Quality.NONE
+    private var liveCalcMs = 0L
+    private var liveResetReason: String? = null
+    private var liveResetMs = 0L
+
+    /** Ruční vynulování průměru. */
+    fun resetLiveAverage() = synchronized(liveEps) { liveReset("ručně") }
+
+    private fun liveReset(reason: String?) {
+        liveEps.clear()
+        liveStartMs = 0
+        liveQuality = Quality.NONE
+        if (reason != null) {
+            liveResetReason = reason
+            liveResetMs = System.currentTimeMillis()
+        }
+        _liveAvg.value = null
+    }
+
+    /**
+     * Epocha do průběžného průměru. Nuluje se při pohybu (IMU), změně kvality, skoku polohy nad šum
+     * (4× hAcc, aspoň 0,1 m) a výpadku dat delším než [LIVE_GAP_MS]. Drží nejvýš [LIVE_MAX] posledních epoch.
+     */
+    private fun liveEpoch(p: Pos) {
+        if (!p.hasFix || p.timeMs == null) return
+        val now = System.currentTimeMillis()
+        synchronized(liveEps) {
+            if (p.moving) {
+                if (liveEps.isNotEmpty()) liveReset("pohyb")
+                return
+            }
+            val g = if (p.itrf) Etrs.itrfToEtrs(p.lat!!, p.lon!!, p.hEll ?: 0.0, Etrs.epochYear(p.timeMs))
+            else Geodetic(p.lat!!, p.lon!!, p.hEll ?: 0.0)
+            if (liveEps.isNotEmpty()) {
+                val avg = _liveAvg.value?.result
+                val jump = if (avg?.lat != null && avg.lon != null) {
+                    val (kN, kE) = MeasureCalc.metersPerDeg(avg.lat)
+                    kotlin.math.hypot((g.lat - avg.lat) * kN, (g.lon - avg.lon) * kE)
+                } else 0.0
+                when {
+                    p.quality != liveQuality -> liveReset("změna kvality ${liveQuality.label} → ${p.quality.label}")
+                    now - liveLastMs > LIVE_GAP_MS -> liveReset("výpadek dat")
+                    jump > maxOf(4 * p.hAcc, 0.1) -> liveReset(String.format(Locale.US, "posun %.2f m", jump))
+                }
+            }
+            if (liveEps.isEmpty()) {
+                liveStartMs = now
+                liveQuality = p.quality
+                liveCalcMs = 0
+            }
+            liveEps.addLast(MeasureEpoch(g.lat, g.lon, g.h, p.quality.code, false, p.rtcm))
+            while (liveEps.size > LIVE_MAX) liveEps.removeFirst()
+            liveLastMs = now
+            if (now - liveCalcMs < 1000 && _liveAvg.value != null) return
+            liveCalcMs = now
+            _liveAvg.value = LiveAverage(
+                liveStartMs, now, liveQuality, MeasureCalc.compute(liveEps.toList()), liveResetReason, liveResetMs,
+            )
         }
     }
 
@@ -1045,6 +1136,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                 onEpoch(p)
                 record(p)
                 measureEpoch(p)
+                liveEpoch(p)
                 val now = System.currentTimeMillis()
                 if (p.hasFix && now - lastTrailMs >= 1000) {
                     lastTrailMs = now
@@ -1172,5 +1264,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     companion object {
         private const val TAG = "RoverController"
         const val TRAIL_MAX = 7200  // 2 h při 1 Hz
+        const val LIVE_MAX = 3600   // průběžný průměr: nejvýš posledních 3600 epoch
+        const val LIVE_GAP_MS = 5000L
     }
 }

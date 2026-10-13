@@ -31,6 +31,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilledIconToggleButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SmallFloatingActionButton
@@ -41,10 +42,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,7 +63,12 @@ import cz.antonin.rovergnss.geo.Geodetic
 import cz.antonin.rovergnss.geo.Sjtsk
 import cz.antonin.rovergnss.link.Pos
 import cz.antonin.rovergnss.link.Quality
+import cz.antonin.rovergnss.service.LiveAverage
 import cz.antonin.rovergnss.service.RoverController
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 /** Poloha v ETRS89 (HAS/SBAS přepočtené z ITRF2020). */
 fun Pos.etrs(): Geodetic? {
@@ -138,6 +146,8 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
     val job by c.activeJob.collectAsStateWithLifecycle()
     val pointsFlow = remember(job?.id) { job?.let { c.db.points().byJob(it.id) } ?: kotlinx.coroutines.flow.emptyFlow() }
     val points by pointsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    val avg by c.liveAvg.collectAsStateWithLifecycle()
+    var avgMode by remember { mutableStateOf(c.prefs.liveAverage) }
 
     val p = pos
     val g = p?.etrs()
@@ -336,6 +346,10 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
                 Text("Žádná data z roveru.")
                 return@Column
             }
+            ModeHeader(
+                avgMode, { avgMode = it; c.prefs.liveAverage = it },
+                avg, p, onReset = { c.resetLiveAverage() },
+            )
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 QualityBadge(
                     p.quality,
@@ -344,10 +358,23 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
                 Text("SV ${p.numSv}  PDOP ${fmt(p.pdop, 1)}")
                 if (p.moving) Text("pohyb", color = Color(0xFFEF6C00))
             }
-            KeyValue("hAcc / vAcc", "${fmt(p.hAcc, 3)} / ${fmt(p.vAcc, 3)} m")
-            KeyValue("σ N / E / U", "${fmt(p.sN, 3)} / ${fmt(p.sE, 3)} / ${fmt(p.sU, 3)} m")
+            val ar = avg?.result
+            // zobrazená poloha: okamžitá epocha, nebo průměr (poloha antény)
+            val gShow = if (avgMode) ar?.let { r -> if (r.lat != null && r.lon != null) Geodetic(r.lat, r.lon, r.h ?: 0.0) else null } else g
+            if (avgMode) {
+                if (ar?.sN != null && ar.sE != null) {
+                    KeyValue("σ N / E / U (rozptyl)", "${fmt(ar.sN, 3)} / ${fmt(ar.sE, 3)} / ${fmt(ar.sU, 3)} m")
+                    KeyValue("σ vodorovně", fmt(kotlin.math.hypot(ar.sN, ar.sE), 3, " m"))
+                }
+                KeyValue("hAcc / vAcc (okamžitě)", "${fmt(p.hAcc, 3)} / ${fmt(p.vAcc, 3)} m")
+            } else {
+                KeyValue("hAcc / vAcc", "${fmt(p.hAcc, 3)} / ${fmt(p.vAcc, 3)} m")
+                KeyValue("σ N / E / U", "${fmt(p.sN, 3)} / ${fmt(p.sE, 3)} / ${fmt(p.sU, 3)} m")
+            }
             if (p.corrAge != null) KeyValue("Stáří korekcí", "≤ ${fmt(p.corrAge, 0)} s")
-            if (g != null) {
+            if (gShow == null && avgMode && g != null) Text("Průměr: čekám na epochu bez pohybu.")
+            if (gShow != null) {
+                val g = gShow
                 KeyValue("φ ETRS89", dms(g.lat, true))
                 KeyValue("λ ETRS89", dms(g.lon, false))
                 KeyValue("h elipsoid", fmt(g.h, 3, " m"))
@@ -380,9 +407,9 @@ fun LiveScreen(c: RoverController, full: Boolean, onFull: (Boolean) -> Unit) {
         )
     }
     surveyName?.let { initial ->
-        SurveyDialog(initial, user, onStart = {
+        SurveyDialog(initial, user, avg?.takeIf { it.result.used >= MeasureCalc.MIN_EPOCHS }, onStart = { name, take ->
             surveyName = null
-            c.startSurvey(it)
+            c.startSurvey(name, take)
         }, onDismiss = { surveyName = null })
     }
     if (showSats) {
@@ -481,9 +508,59 @@ private fun NavPanel(
     }
 }
 
-/** Zaměření bodu „tady“: název (navržený další v řadě) a podmínky konce z uživatelského profilu. */
+private fun duration(ms: Long): String {
+    val s = (ms / 1000).coerceAtLeast(0)
+    return if (s >= 3600) String.format(Locale.US, "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
+    else String.format(Locale.US, "%02d:%02d", s / 60, s % 60)
+}
+
+/**
+ * Hlavička panelu: přepínač Okamžitě | Průměr, co se zobrazuje, proč byl průměr vynulován
+ * a čas poslední epochy se stářím (vlastní tikání – nepřekresluje mapu).
+ */
 @Composable
-private fun SurveyDialog(initial: String, u: cz.antonin.rovergnss.data.UserProfile, onStart: (String) -> Unit, onDismiss: () -> Unit) {
+private fun ModeHeader(avgMode: Boolean, onMode: (Boolean) -> Unit, avg: LiveAverage?, p: Pos, onReset: () -> Unit) {
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            now = System.currentTimeMillis()
+            delay(500)
+        }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        FilterChip(selected = !avgMode, onClick = { onMode(false) }, label = { Text("Okamžitě") })
+        FilterChip(selected = avgMode, onClick = { onMode(true) }, label = { Text("Průměr") })
+        if (avgMode) TextButton(onClick = onReset) { Text("Vynulovat") }
+    }
+    Text(
+        if (!avgMode) "Okamžité hodnoty (poslední epocha)"
+        else if (avg == null) "Průměr: čekám na epochy bez pohybu"
+        else "Průměr ${duration(avg.lastMs - avg.startMs)} · ${avg.result.used} epoch · ${avg.quality.label}",
+        style = MaterialTheme.typography.titleSmall,
+    )
+    val reason = avg?.resetReason
+    if (avgMode && reason != null && now - avg.resetMs < 10_000) {
+        Text("vynulováno: $reason", color = Color(0xFFEF6C00), style = MaterialTheme.typography.bodySmall)
+    }
+    val age = (now - p.rxMs).coerceAtLeast(0)
+    val utc = p.timeMs?.let {
+        SimpleDateFormat("HH:mm:ss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date(it)) + " UTC"
+    } ?: "čas neplatný"
+    KeyValue(
+        "Epocha", "$utc · stáří ${fmt(age / 1000.0, 1)} s",
+        valueColor = if (age > 3000) Color(0xFFC62828) else null,
+    )
+}
+
+/** Zaměření bodu „tady“: název (navržený další v řadě), podmínky konce z profilu, případně převzetí průměru. */
+@Composable
+private fun SurveyDialog(
+    initial: String,
+    u: cz.antonin.rovergnss.data.UserProfile,
+    avg: LiveAverage?,
+    onStart: (String, Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
     var name by remember { mutableStateOf(initial) }
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
@@ -499,9 +576,27 @@ private fun SurveyDialog(initial: String, u: cz.antonin.rovergnss.data.UserProfi
                         "Anténa ${fmt(u.antennaH, 3)} m (profil ${u.name}).",
                     style = MaterialTheme.typography.bodySmall,
                 )
+                if (avg != null) {
+                    val r = avg.result
+                    val hs = if (r.sN != null && r.sE != null) kotlin.math.hypot(r.sN, r.sE) else null
+                    Text(
+                        "Převzít průměr (${duration(avg.lastMs - avg.startMs)}, ${r.used} epoch, ${avg.quality.label}" +
+                            (hs?.let { ", σH ${fmt(it, 3)} m" } ?: "") + ")? Měření pak pokračuje do ustálení.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
             }
         },
-        confirmButton = { TextButton(onClick = { onStart(name.trim()) }, enabled = name.isNotBlank()) { Text("Měřit") } },
+        confirmButton = {
+            Row {
+                if (avg != null) {
+                    TextButton(onClick = { onStart(name.trim(), false) }, enabled = name.isNotBlank()) { Text("Měřit znovu") }
+                    TextButton(onClick = { onStart(name.trim(), true) }, enabled = name.isNotBlank()) { Text("Převzít") }
+                } else {
+                    TextButton(onClick = { onStart(name.trim(), false) }, enabled = name.isNotBlank()) { Text("Měřit") }
+                }
+            }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Zrušit") } },
     )
 }

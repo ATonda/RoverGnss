@@ -116,6 +116,11 @@ class Prefs(context: Context) {
         get() = sp.getString("lastSurveyName", null)
         set(v) = sp.edit().putString("lastSurveyName", v).apply()
 
+    /** Panel Živě: false = okamžité hodnoty, true = průměr od posledního ustálení. */
+    var liveAverage: Boolean
+        get() = sp.getBoolean("liveAverage", false)
+        set(v) = sp.edit().putBoolean("liveAverage", v).apply()
+
     /** Pořadí vytyčování: 0 podle názvu, 1 nejbližší další. */
     var stakeOrder: Int
         get() = sp.getInt("stakeOrder", 0)

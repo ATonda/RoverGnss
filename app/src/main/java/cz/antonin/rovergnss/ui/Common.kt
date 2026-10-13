@@ -65,13 +65,14 @@ fun Section(title: String, modifier: Modifier = Modifier, content: @Composable (
 }
 
 @Composable
-fun KeyValue(key: String, value: String, mono: Boolean = true) {
+fun KeyValue(key: String, value: String, mono: Boolean = true, valueColor: Color? = null) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(key, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(
             value,
             style = MaterialTheme.typography.bodyMedium,
             fontFamily = if (mono) FontFamily.Monospace else FontFamily.Default,
+            color = valueColor ?: Color.Unspecified,
         )
     }
 }
