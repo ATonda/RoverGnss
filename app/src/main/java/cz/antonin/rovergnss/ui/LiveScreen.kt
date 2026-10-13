@@ -2,6 +2,7 @@ package cz.antonin.rovergnss.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -531,12 +532,17 @@ private fun ModeHeader(
             delay(500)
         }
     }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        FilterChip(selected = !avgMode, onClick = { onMode(false) }, label = { Text("Okamžitě") })
-        FilterChip(selected = avgMode, onClick = { onMode(true) }, label = { Text("Průměr") })
+    // všechna tlačítka v rámečku na jednom řádku (při úzkém displeji posun prstem)
+    Row(
+        Modifier.horizontalScroll(rememberScrollState()),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        FilterChip(selected = !avgMode, onClick = { onMode(false) }, label = { Text("Okamžitě", maxLines = 1) })
+        FilterChip(selected = avgMode, onClick = { onMode(true) }, label = { Text("Průměr", maxLines = 1) })
         if (avgMode) {
-            TextButton(onClick = onTarget) { Text("Terč") }
-            TextButton(onClick = onReset) { Text("Vynulovat") }
+            androidx.compose.material3.AssistChip(onClick = onTarget, label = { Text("Terč", maxLines = 1) })
+            androidx.compose.material3.AssistChip(onClick = onReset, label = { Text("Vynulovat", maxLines = 1) })
         }
     }
     Text(
