@@ -713,6 +713,75 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         }
     }
 
+    // ------------------------------------------------------------------ zásobník roveru (výpadek BT)
+    // Při záznamu trasy nebo měření bodu rover při výpadku BT ukládá epochy (FW 0.10.0+). Po připojení je pošle
+    // ($PRVR,BUF); berou se jen epochy z mezer v živých datech (rover posílá i pár epoch před výpadkem).
+    private val gaps = ArrayList<LongArray>()        // [od, do] času GNSS; do = Long.MAX_VALUE = mezera trvá
+    private val bufSeen = HashSet<Long>()
+    @Volatile private var lastLiveGnssMs = 0L
+    @Volatile private var bufAccepted = 0
+    @Volatile private var roverRecSent: Boolean? = null
+
+    private fun roverRecWanted() = _recording.value != null || _measure.value != null
+
+    /** Živá epocha: uzavře otevřenou mezeru. */
+    private fun liveGnss(t: Long) {
+        synchronized(gaps) {
+            gaps.lastOrNull()?.let { g -> if (g[1] == Long.MAX_VALUE) g[1] = t }
+        }
+        lastLiveGnssMs = t
+    }
+
+    /** Výpadek spojení při záznamu: otevře mezeru od poslední živé epochy. */
+    private fun linkLost() {
+        if (!roverRecWanted() || lastLiveGnssMs == 0L) return
+        synchronized(gaps) {
+            if (gaps.lastOrNull()?.get(1) != Long.MAX_VALUE) gaps.add(longArrayOf(lastLiveGnssMs, Long.MAX_VALUE))
+        }
+    }
+
+    /** Rover má / nemá ukládat epochy při výpadku (záznam trasy nebo měření bodu). */
+    private suspend fun syncRoverRec(force: Boolean = false) {
+        val want = roverRecWanted()
+        if (!want) synchronized(gaps) {
+            gaps.clear()
+            bufSeen.clear()
+        }
+        if (link.state.value !is LinkState.Connected) return
+        if (!force && roverRecSent == want) return
+        val r = command(JSONObject().put("cmd", "rec").put("op", if (want) "start" else "stop"), 3000)
+        if (r != null && r.optBoolean("ok")) roverRecSent = want
+    }
+
+    /** Po připojení: znovu nastavit záznam v roveru a vyžádat uložené epochy. */
+    private suspend fun fetchRoverBuffer() {
+        syncRoverRec(force = true)
+        if (!roverRecWanted()) return
+        bufAccepted = 0
+        val r = command(JSONObject().put("cmd", "buf").put("op", "get"), 3000) ?: return
+        val n = r.optInt("n")
+        if (r.optBoolean("ok") && n > 0) _messages.tryEmit("Rover posílá $n epoch z výpadku spojení…")
+    }
+
+    private fun onBufEpoch(p: Pos) {
+        val t = p.timeMs ?: return
+        if (!roverRecWanted()) return
+        val ok = synchronized(gaps) {
+            gaps.any { t > it[0] && t < it[1] } && bufSeen.add(t)
+        }
+        if (!ok) return
+        bufAccepted++
+        record(p)
+        val m = _measure.value
+        if (m != null && t >= m.startMs - 2000) measureEpoch(p)
+    }
+
+    private fun onBufEnd() {
+        val n = bufAccepted
+        if (n > 0) _messages.tryEmit("Doplněno $n epoch z paměti roveru")
+        scope.launch { command(JSONObject().put("cmd", "buf").put("op", "clear"), 3000) }
+    }
+
     // ------------------------------------------------------------------ vytyčování
     /** Vytyčování: body v seznamu, pořadí 0 = podle názvu, 1 = nejbližší další; přeskočené body. */
     data class StakeSession(val ids: List<Long>, val order: Int, val skipped: Set<Long> = emptySet())
@@ -877,9 +946,12 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             link.state.collect { st ->
                 if (st is LinkState.Connected) {
                     delay(300)
-                    requestInfo()
-                } else if (st is LinkState.Idle) {
-                    _info.value = null
+                    requestInfo().join()
+                    fetchRoverBuffer()
+                } else {
+                    linkLost()
+                    roverRecSent = null
+                    if (st is LinkState.Idle) _info.value = null
                 }
             }
         }
@@ -908,6 +980,11 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                     lastPosRxMs = 0
                 }
             }
+        }
+        // Záznam trasy / měření bodu → rover ukládá epochy při výpadku BT
+        scope.launch {
+            combine(_recording, _measure) { r, m -> r != null || m != null }
+                .distinctUntilChanged().collect { syncRoverRec() }
         }
         // Zápis bodů trasy do databáze po dávkách
         scope.launch {
@@ -1146,6 +1223,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         val f = body.split(',')
         when (f.getOrNull(1)) {
             "POS" -> RoverProtocol.parsePos(f)?.let { p ->
+                p.timeMs?.let { liveGnss(it) }
                 _pos.value = p
                 onEpoch(p)
                 record(p)
@@ -1162,6 +1240,8 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                     _trail.value = (if (t.size >= TRAIL_MAX) t.drop(t.size - TRAIL_MAX + 1) else t) + listOf(pt)
                 }
             }
+            "BUF" -> RoverProtocol.parsePos(f)?.let { onBufEpoch(it) }
+            "BUFEND" -> onBufEnd()
             "STA" -> RoverProtocol.parseSta(f)?.let {
                 _sta.value = it
                 recordDiag(it)
