@@ -229,3 +229,9 @@ Cíl: kratší studený start X20 po delším vypnutí bez účtu a bez internet
   - Test doby do fixu: „první poloha“ (i vložená z asistence – po smazání dat 1–2 s při 1 družici) zvlášť od „fixu“ s aspoň 4 družicemi v řešení; hlášená přesnost fixu; čas do hlášené přesnosti < 10 / < 5 m (bez fixu roveru pokus končí podle ní); chyba vůči roveru jen u poloh se 4+ družicemi.
   - Družice v řešení se u telefonu počítají jako různé družice (dvoupásmová = 1), signály zvlášť.
   - Záložka „Srovnání“.
+- **0.7.2 (14. 10.):** po jízdě autem (nepravidelná stopa telefonu, mezi tím telefonní hovor).
+  - Stopa telefonu na mapě ze všech poloh, i nespárovaných s roverem (dřív jen spárované – výpadek BT nebo párování = mezera ve stopě).
+  - U každého zdroje počet poloh, frekvence za posledních 60 s, mezery > 3 s, nejdelší a poslední mezera s časem.
+  - Stav služby na popředí s typem „poloha“ (poloha se zhasnutým displejem) a tlačítko Obnovit.
+  - Test doby do fixu: u studeného startu se Fused a Network během pokusu vypnou (drží čip v chodu; test 9:10–9:15 dal fix za 0,1–1,1 s); fix se 4+ družicemi do 5 s = neplatný studený start, označí se a do statistiky nejde.
+  - Otevřené: posun času GNSS čipu telefonu proti roveru přesně 1000 ms (hodiny telefonu − čas GNSS −115 ms) – rozhodne zpoždění dat z roveru, pak oprava v párování nebo ve FW.

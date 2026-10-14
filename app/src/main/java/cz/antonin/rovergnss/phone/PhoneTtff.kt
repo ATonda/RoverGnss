@@ -46,6 +46,7 @@ data class TtffResult(
     val svAtFix: Int?,
     val svMax: Int,
     val timedOut: Boolean,
+    val invalidCold: Boolean = false, // studený start s fixem do 5 s – čip nebyl vypnutý (jiná aplikace s polohou)
 )
 
 data class TtffState(
@@ -99,7 +100,11 @@ class PhoneTtff(
         }
         if (variant == TtffVariant.COLD_AGNSS && !on) return message("Studený start s A-GNSS potřebuje internet")
         if (PhoneSource.GNSS !in phone.enabled.value) phone.setEnabled(PhoneSource.GNSS, true)
-        withFused = PhoneSource.FUSED in phone.enabled.value
+        // Fused (Google Play služby) a Network drží čip v chodu – u studeného startu se během pokusu vypnou
+        val cold = variant != TtffVariant.HOT
+        val hadFused = PhoneSource.FUSED in phone.enabled.value
+        val hadNetwork = PhoneSource.NETWORK in phone.enabled.value
+        withFused = !cold && hadFused
         job = scope.launch {
             try {
                 for (k in 1..repeats) {
@@ -109,7 +114,8 @@ class PhoneTtff(
                     var inj: Boolean? = null
                     withContext(Dispatchers.Main) {
                         phone.stopSource(PhoneSource.GNSS)
-                        if (withFused) phone.stopSource(PhoneSource.FUSED)
+                        if (hadFused) phone.stopSource(PhoneSource.FUSED)
+                        if (cold && hadNetwork) phone.stopSource(PhoneSource.NETWORK)
                         if (variant != TtffVariant.HOT) del = phone.extraCommand("delete_aiding_data")
                         if (variant == TtffVariant.COLD_AGNSS) {
                             val psds = phone.extraCommand("force_psds_injection")
@@ -149,7 +155,11 @@ class PhoneTtff(
                             break
                         }
                     }
-                    val res = (cur ?: r0).copy(timedOut = timedOut)
+                    val res0 = cur ?: r0
+                    val res = res0.copy(
+                        timedOut = timedOut,
+                        invalidCold = cold && res0.firstFix != null && res0.firstFix < INVALID_COLD_S,
+                    )
                     cur = null
                     _results.value = _results.value + res
                     if (k < repeats) {
@@ -162,7 +172,8 @@ class PhoneTtff(
                 _state.value = TtffState()
                 withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
                     phone.startSource(PhoneSource.GNSS)
-                    if (withFused) phone.startSource(PhoneSource.FUSED)
+                    if (hadFused) phone.startSource(PhoneSource.FUSED)
+                    if (hadNetwork) phone.startSource(PhoneSource.NETWORK)
                 }
             }
         }
@@ -207,6 +218,7 @@ class PhoneTtff(
 
     companion object {
         const val MIN_SV = 4
+        const val INVALID_COLD_S = 5.0
 
         fun csv(list: List<TtffResult>, out: OutputStream): Int {
             val df = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
@@ -215,7 +227,7 @@ class PhoneTtff(
             val w = out.bufferedWriter(Charsets.UTF_8)
             w.write("pokus;varianta;start;internet;delete_aiding_data;injekce;prvni_poloha_s;prvni_fix_4sv_s;presnost_fixu_m;" +
                 "hlasena_pod_10m_s;hlasena_pod_5m_s;chyba_pod_10m_s;chyba_pod_5m_s;" +
-                "fused_prvni_s;fused_pod_10m_s;sv_pri_fixu;sv_max;limit\r\n")
+                "fused_prvni_s;fused_pod_10m_s;sv_pri_fixu;sv_max;limit;neplatny_studeny\r\n")
             for (r in list) {
                 w.write(
                     listOf(
@@ -223,6 +235,7 @@ class PhoneTtff(
                         f(r.firstAny), f(r.firstFix), f(r.accAtFix), f(r.acc10), f(r.acc5), f(r.to10), f(r.to5),
                         f(r.fusedFirst), f(r.fusedTo10),
                         r.svAtFix?.toString() ?: "", r.svMax.toString(), if (r.timedOut) "1" else "0",
+                        if (r.invalidCold) "1" else "0",
                     ).joinToString(";")
                 )
                 w.write("\r\n")

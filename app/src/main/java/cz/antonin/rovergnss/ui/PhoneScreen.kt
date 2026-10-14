@@ -61,6 +61,7 @@ import cz.antonin.rovergnss.link.Quality
 import cz.antonin.rovergnss.phone.CompareStats
 import cz.antonin.rovergnss.phone.PhoneCompare
 import cz.antonin.rovergnss.phone.PhoneSource
+import cz.antonin.rovergnss.phone.SourceRate
 import cz.antonin.rovergnss.phone.PhoneTtff
 import cz.antonin.rovergnss.phone.TtffResult
 import cz.antonin.rovergnss.phone.TtffVariant
@@ -116,6 +117,7 @@ private fun CompareTab(c: RoverController) {
     val unpaired by c.phoneCompare.unpaired.collectAsStateWithLifecycle()
     val pairCounts by c.phoneCompare.pairCounts.collectAsStateWithLifecycle()
     val timeDiag by c.phoneCompare.timeDiag.collectAsStateWithLifecycle()
+    val rates by c.phoneCompare.rates.collectAsStateWithLifecycle()
     val session by c.phoneCompare.session.collectAsStateWithLifecycle()
     val pos by c.pos.collectAsStateWithLifecycle()
     val job by c.activeJob.collectAsStateWithLifecycle()
@@ -176,6 +178,20 @@ private fun CompareTab(c: RoverController) {
             info.hardware?.let { KeyValue("GNSS čip", it, mono = false) }
             KeyValue("Surová měření (RTKLIB)", info.measurements, mono = false)
             info.lastError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            val fgs by cz.antonin.rovergnss.service.RoverService.locationType.collectAsStateWithLifecycle()
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) {
+                    KeyValue(
+                        "Poloha se zhasnutým displejem", when (fgs) {
+                            true -> "ano (služba s polohou)"
+                            false -> "ne – služba bez polohy"
+                            null -> "služba neběží"
+                        }, mono = false,
+                        valueColor = if (fgs == false && enabled.isNotEmpty()) MaterialTheme.colorScheme.error else null,
+                    )
+                }
+                if (fgs == false && enabled.isNotEmpty()) TextButton(onClick = { c.phonePermissionChanged() }) { Text("Obnovit") }
+            }
         }
 
         Section("Reference – rover") {
@@ -208,7 +224,7 @@ private fun CompareTab(c: RoverController) {
         }
 
         PhoneSource.entries.filter { it in enabled }.forEach { s ->
-            LiveCard(s, live[s], stats[s])
+            LiveCard(s, live[s], stats[s], rates[s])
         }
 
         if (history.values.any { it.isNotEmpty() }) {
@@ -335,8 +351,16 @@ private fun OffField(label: String, value: String, error: Boolean, modifier: Mod
 }
 
 @Composable
-private fun LiveCard(s: PhoneSource, x: PhoneSample?, st: CompareStats?) {
+private fun LiveCard(s: PhoneSource, x: PhoneSample?, st: CompareStats?, rate: SourceRate?) {
     Section(s.label) {
+        rate?.let { r ->
+            KeyValue("Polohy / frekvence", "${r.n} / ${fmt(r.rateHz, 2, " Hz")}")
+            KeyValue("Mezery > 3 s / nejdelší", "${r.gaps} / ${fmt(r.maxGapS, 1, " s")}",
+                valueColor = if (r.gaps > 0) MaterialTheme.colorScheme.error else null)
+            r.lastGapEndMs?.let { t ->
+                KeyValue("Poslední mezera", "${fmt(r.lastGapS, 1, " s")} do ${SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(t))}")
+            }
+        }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Dot(sourceColor(s))
             Text(if (x == null) "čekám na spárovanou polohu…" else "n = ${st?.n ?: 0}", style = MaterialTheme.typography.bodySmall)
@@ -501,7 +525,9 @@ private fun TtffTab(c: RoverController) {
             Text(
                 "Příjem GNSS se vypne, podle varianty se smažou nebo stáhnou asistenční data čipu a měří se čas do první polohy " +
                     "s aspoň 4 družicemi, do hlášené přesnosti < 10 m / < 5 m a s fixem roveru i do skutečné chyby < 10 m / < 5 m. " +
-                "Bez fixu roveru pokus končí hlášenou přesností < 5 m. Podpora příkazů závisí na výrobci telefonu.",
+                "Bez fixu roveru pokus končí hlášenou přesností < 5 m. Podpora příkazů závisí na výrobci telefonu. " +
+                "U studeného startu se Fused a Network během pokusu vypnou (drží čip v chodu); vypni i jiné aplikace s polohou " +
+                "(mapy, navigace). Fix do 5 s = čip nebyl vypnutý, pokus se označí jako neplatný.",
                 style = MaterialTheme.typography.bodySmall,
             )
             KeyValue("Internet", if (online) "ano" else "ne", mono = false)
@@ -539,9 +565,12 @@ private fun TtffTab(c: RoverController) {
         if (results.isNotEmpty()) {
             Section("Výsledky") {
                 TtffVariant.entries.forEach { v ->
-                    val l = results.filter { it.variant == v }
-                    if (l.isEmpty()) return@forEach
-                    Text("${v.label} – ${l.size} pokusů", style = MaterialTheme.typography.titleSmall)
+                    val lAll = results.filter { it.variant == v }
+                    if (lAll.isEmpty()) return@forEach
+                    val bad = lAll.count { it.invalidCold }
+                    val l = lAll.filter { !it.invalidCold }
+                    Text("${v.label} – ${lAll.size} pokusů" + if (bad > 0) " ($bad neplatných, ve statistice nejsou)" else "",
+                        style = MaterialTheme.typography.titleSmall)
                     SummaryRow("první poloha", l.mapNotNull { it.firstAny })
                     SummaryRow("fix (4 SV)", l.mapNotNull { it.firstFix })
                     SummaryRow("hlášená < 10 m", l.mapNotNull { it.acc10 })
@@ -577,6 +606,7 @@ private fun ResultRow(r: TtffResult) {
             "hlášená <10/<5 m ${fmt(r.acc10, 1)}/${fmt(r.acc5, 1)} s, chyba <10/<5 m ${fmt(r.to10, 1)}/${fmt(r.to5, 1)} s" +
             (if (r.fusedFirst != null) ", Fused ${fmt(r.fusedFirst, 1)} s" else "") +
             ", SV ${r.svAtFix ?: "–"}/${r.svMax}" + (if (r.timedOut) ", limit" else "") +
+            (if (r.invalidCold) " · NEPLATNÝ studený start (čip nebyl vypnutý)" else "") +
             " · smazání ${b(r.deleteOk)}" + (if (r.variant == TtffVariant.COLD_AGNSS) ", stažení ${b(r.injectOk)}" else ""),
         style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace,
     )

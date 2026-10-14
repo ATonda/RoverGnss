@@ -69,6 +69,7 @@ class RoverService : LifecycleService() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             return try {
                 ServiceCompat.startForeground(this, NOTIF_ID, n, 0)
+                _locationType.value = true  // před Androidem 10 typ služby není potřeba
                 true
             } catch (e: Exception) {
                 Log.w(TAG, "startForeground odmítnuto: $e")
@@ -80,12 +81,14 @@ class RoverService : LifecycleService() {
         val withLoc = c.phone.enabled.value.isNotEmpty() && c.phone.hasPermission()
         if (withLoc) try {
             ServiceCompat.startForeground(this, NOTIF_ID, n, base or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+            _locationType.value = true
             return true
         } catch (e: Exception) {
             Log.w(TAG, "startForeground s polohou odmítnuto: $e")
         }
         return try {
             ServiceCompat.startForeground(this, NOTIF_ID, n, base)
+            _locationType.value = false
             true
         } catch (e: Exception) {
             Log.w(TAG, "startForeground odmítnuto: $e")
@@ -95,6 +98,7 @@ class RoverService : LifecycleService() {
 
     override fun onDestroy() {
         instance = null
+        _locationType.value = null
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         super.onDestroy()
@@ -171,6 +175,10 @@ class RoverService : LifecycleService() {
         }
 
         @Volatile private var instance: RoverService? = null
+
+        /** Služba na popředí: true s typem „poloha“, false bez něj, null neběží. */
+        private val _locationType = kotlinx.coroutines.flow.MutableStateFlow<Boolean?>(null)
+        val locationType: kotlinx.coroutines.flow.StateFlow<Boolean?> = _locationType
 
         /** Po zapnutí / vypnutí zdrojů polohy telefonu: obnovit typ služby na popředí (volat z popředí aplikace). */
         fun refreshType(context: Context) {
