@@ -235,3 +235,4 @@ Cíl: kratší studený start X20 po delším vypnutí bez účtu a bez internet
   - Stav služby na popředí s typem „poloha“ (poloha se zhasnutým displejem) a tlačítko Obnovit.
   - Test doby do fixu: u studeného startu se Fused a Network během pokusu vypnou (drží čip v chodu; test 9:10–9:15 dal fix za 0,1–1,1 s); fix se 4+ družicemi do 5 s = neplatný studený start, označí se a do statistiky nejde.
   - Otevřené: posun času GNSS čipu telefonu proti roveru přesně 1000 ms (hodiny telefonu − čas GNSS −115 ms) – rozhodne zpoždění dat z roveru, pak oprava v párování nebo ve FW.
+- **0.7.3 (14. 10.):** legenda mapy v Živě při zapnutých stopách telefonu (rover s barvou kvality, GNSS čip, Fused, Network), klepnutím sbalit / rozbalit.

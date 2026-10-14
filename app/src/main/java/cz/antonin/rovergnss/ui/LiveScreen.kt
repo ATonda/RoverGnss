@@ -2,6 +2,7 @@ package cz.antonin.rovergnss.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -226,6 +227,8 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
                     onStaked = nav?.let { t -> { onStaked(t) } }.takeIf { meas == null },
                     onSkip = if (stake != null && meas == null) ({ c.skipStake(); Unit }) else null,
                 )
+                // legenda barev, když jsou na mapě stopy telefonu
+                if (phoneTrails.isNotEmpty()) MapLegend(p?.quality, phoneTr.keys)
                 SmallFloatingActionButton(onClick = { showSats = true }) {
                     Icon(Icons.Filled.SatelliteAlt, contentDescription = "Satelity")
                 }
@@ -691,4 +694,32 @@ private fun TrackNameDialog(avg: LiveAverage?, onStart: (String?, Boolean) -> Un
         confirmButton = { TextButton(onClick = { onStart(name.trim().ifEmpty { null }, withAvg && avg != null) }) { Text("Spustit") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Zrušit") } },
     )
+}
+
+/** Legenda mapy: rover (barva podle kvality) a zdroje polohy telefonu. Klepnutím se sbalí / rozbalí. */
+@Composable
+private fun MapLegend(q: cz.antonin.rovergnss.link.Quality?, sources: Set<cz.antonin.rovergnss.phone.PhoneSource>) {
+    var open by rememberSaveable { mutableStateOf(true) }
+    val bg = Modifier
+        .background(Color.White.copy(alpha = 0.9f), androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+        .clickable { open = !open }
+        .padding(horizontal = 8.dp, vertical = 4.dp)
+    if (!open) {
+        Text("Legenda", style = MaterialTheme.typography.labelMedium, color = Color.Black, modifier = bg)
+        return
+    }
+    Column(bg, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        LegendRow(qualityColor(q ?: cz.antonin.rovergnss.link.Quality.NONE), "rover – ${q?.label ?: "bez fixu"}")
+        cz.antonin.rovergnss.phone.PhoneSource.entries.filter { it in sources }.forEach { s ->
+            LegendRow(sourceColor(s), "telefon – ${s.label}")
+        }
+    }
+}
+
+@Composable
+private fun LegendRow(color: Color, label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Box(Modifier.size(10.dp).background(color, androidx.compose.foundation.shape.CircleShape))
+        Text(label, style = MaterialTheme.typography.labelMedium, color = Color.Black)
+    }
 }
