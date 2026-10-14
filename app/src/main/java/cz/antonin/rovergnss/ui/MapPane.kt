@@ -120,6 +120,7 @@ fun MapPane(
     course: Double? = null,
     navTarget: DoubleArray? = null,
     fitTrail: Int = 0,
+    phoneTrails: List<Pair<Int, List<DoubleArray>>> = emptyList(),  // [barva ARGB, stopa [lat, lon] ETRS89] zdrojů telefonu
 ) {
     val clickCb by rememberUpdatedState(onClick)
     val cameraCb by rememberUpdatedState(onCamera)
@@ -261,6 +262,23 @@ fun MapPane(
                     PropertyFactory.circleStrokeWidth(3f),
                 ).withFilter(Expression.eq(Expression.geometryType(), Expression.literal("Point")))
             )
+            // stopy zdrojů polohy telefonu (porovnání s roverem) a jejich poslední poloha
+            st.addSource(GeoJsonSource(SRC_PHONE, fine))
+            st.addLayer(
+                LineLayer(LYR_PHONE_LINE, SRC_PHONE).withProperties(
+                    PropertyFactory.lineColor(Expression.toColor(Expression.get("c"))),
+                    PropertyFactory.lineWidth(1.5f),
+                    PropertyFactory.lineOpacity(0.8f),
+                ).withFilter(Expression.eq(Expression.geometryType(), Expression.literal("LineString")))
+            )
+            st.addLayer(
+                CircleLayer(LYR_PHONE_POS, SRC_PHONE).withProperties(
+                    PropertyFactory.circleRadius(6f),
+                    PropertyFactory.circleColor(Expression.toColor(Expression.get("c"))),
+                    PropertyFactory.circleStrokeColor(android.graphics.Color.WHITE),
+                    PropertyFactory.circleStrokeWidth(1.5f),
+                ).withFilter(Expression.eq(Expression.geometryType(), Expression.literal("Point")))
+            )
             st.addLayer(
                 CircleLayer(SRC_POS, SRC_POS).withProperties(
                     PropertyFactory.circleRadius(8f),
@@ -373,6 +391,21 @@ fun MapPane(
         )
     }
 
+    LaunchedEffect(phoneTrails, styleVersion) {
+        val st = holder.style ?: return@LaunchedEffect
+        val src = st.getSourceAs<GeoJsonSource>(SRC_PHONE) ?: return@LaunchedEffect
+        val feats = ArrayList<Feature>()
+        for ((argb, tr) in phoneTrails) {
+            if (tr.isEmpty()) continue
+            val col = String.format("#%06X", argb and 0xFFFFFF)
+            if (tr.size >= 2) feats += Feature.fromGeometry(LineString.fromLngLats(tr.map { Point.fromLngLat(it[1], it[0]) }))
+                .also { it.addStringProperty("c", col) }
+            val l = tr.last()
+            feats += Feature.fromGeometry(Point.fromLngLat(l[1], l[0])).also { it.addStringProperty("c", col) }
+        }
+        src.setGeoJson(FeatureCollection.fromFeatures(feats))
+    }
+
     AndroidView(factory = { mapView }, modifier = modifier)
 }
 
@@ -423,3 +456,6 @@ private const val SRC_TRAIL_PTS = "rover-trail-pts"
 private const val SRC_NAV = "nav"
 private const val LYR_NAV_LINE = "nav-line"
 private const val LYR_NAV_TARGET = "nav-target"
+private const val SRC_PHONE = "phone-trails"
+private const val LYR_PHONE_LINE = "phone-trails-line"
+private const val LYR_PHONE_POS = "phone-trails-pos"

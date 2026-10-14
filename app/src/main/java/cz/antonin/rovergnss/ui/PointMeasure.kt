@@ -133,7 +133,7 @@ fun PointExtras(c: RoverController, p: Point, onClose: () -> Unit) {
 
     Text("Měření bodu", style = MaterialTheme.typography.titleSmall)
     Text(
-        "Postav anténu na značku bodu. Výška antény ${fmt(c.prefs.antennaH, 3)} m (uživatelský profil v Nastavení). " +
+        "Postav anténu na značku bodu. Výška antény ${antCm(c.prefs.antennaH)} (uživatelský profil v Nastavení). " +
             "Měří se průměr epoch bez pohybu a porovná s danými souřadnicemi bodu; ty se nemění.",
         style = MaterialTheme.typography.bodySmall,
     )
@@ -313,7 +313,7 @@ private fun MeasureRow(m: Measurement, expanded: Boolean, onClick: () -> Unit, o
                 fontFamily = FontFamily.Monospace, style = t,
             )
             Text(
-                "anténa ${fmt(m.antennaH, 3)} m · profil ${m.profile.ifEmpty { "–" }}" +
+                "anténa ${antCm(m.antennaH)} · profil ${m.profile.ifEmpty { "–" }}" +
                     (if (m.staticModel) " · statický model" else ""),
                 style = t,
             )

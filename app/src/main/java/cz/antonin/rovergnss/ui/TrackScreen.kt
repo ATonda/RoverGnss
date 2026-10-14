@@ -117,7 +117,7 @@ fun TrackScreen(c: RoverController) {
                     else Button(onClick = { c.stopRecording() }) { Text("Ukončit (${rec?.points} b.)") }
                 }
                 Text(
-                    "Výška antény ${fmt(c.prefs.antennaH, 3)} m, každá ${c.prefs.recordEvery}. epocha" +
+                    "Výška antény ${antCm(c.prefs.antennaH)}, každá ${c.prefs.recordEvery}. epocha" +
                         (if (c.prefs.recordRaw) ", se surovým proudem" else "") + " – mění se v uživatelském profilu (Nastavení). " +
                         "K trase se ukládá i diagnostika 1 Hz (stav roveru, satelity, BT, NTRIP).",
                     style = MaterialTheme.typography.bodySmall,
@@ -155,7 +155,7 @@ fun TrackScreen(c: RoverController) {
                 Text(
                     "${df.format(Date(t.startMs))}, ${dur / 60} min ${dur % 60} s, " +
                         (if (t.endMs == null) "probíhá" else "${t.points} bodů") +
-                        if (t.antennaH != 0.0) ", anténa ${fmt(t.antennaH, 3)} m" else "",
+                        if (t.antennaH != 0.0) ", anténa ${antCm(t.antennaH)}" else "",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 // jména souborů podle začátku trasy: RG_20261012_191607_body.csv …

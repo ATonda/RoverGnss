@@ -234,3 +234,57 @@ data class Measurement(
     val staticModel: Boolean = false, // X20 během měření ve statickém modelu (FW 0.9.0+)
     val rawUbx: String? = null,       // surová data RAWX/SFRBX měření (soubor v files/raw)
 )
+
+/** Porovnání GNSS telefonu s roverem (verze 8). Odsazení telefonu od antény roveru [m]: telefon = anténa + odsazení. */
+@Entity(
+    tableName = "phone_session",
+    foreignKeys = [ForeignKey(entity = Job::class, parentColumns = ["id"], childColumns = ["jobId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("jobId")],
+)
+data class PhoneSession(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val jobId: Long,
+    val name: String,
+    val startMs: Long,
+    val endMs: Long? = null,
+    val offN: Double = 0.0,
+    val offE: Double = 0.0,
+    val offU: Double = 0.0,
+    val sources: String = "",     // zapnuté zdroje telefonu (např. „GNSS čip, Fused“)
+    val samples: Int = 0,
+    val note: String = "",
+)
+
+/**
+ * Jedna poloha telefonu spárovaná s epochou roveru. Souřadnice ETRS89 (telefon přepočten z WGS84 ≈ ITRF2020).
+ * Odchylka = telefon − (rover + odsazení). [source] = PhoneSource.code.
+ */
+@Entity(
+    tableName = "phone_sample",
+    foreignKeys = [ForeignKey(entity = PhoneSession::class, parentColumns = ["id"], childColumns = ["sessionId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index("sessionId")],
+)
+data class PhoneSample(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionId: Long,
+    val source: Int,
+    val timeMs: Long,         // čas polohy telefonu (UTC, hodiny telefonu)
+    val lat: Double,
+    val lon: Double,
+    val hEll: Double?,
+    val acc: Double?,         // hlášená přesnost vodorovně (68 %) [m]
+    val vAcc: Double?,        // hlášená přesnost svisle [m]
+    val ageMs: Long,          // stáří polohy při příjmu [ms]
+    val numSv: Int?,          // družice v řešení (jen GNSS čip)
+    val dN: Double,
+    val dE: Double,
+    val dU: Double?,
+    val refLat: Double,       // rover ETRS89 (anténa)
+    val refLon: Double,
+    val refH: Double,
+    val refQuality: Int,      // kvalita roveru (Quality.code)
+    val refRtcm: Boolean,
+)
+
+/** 2D odchylka telefonu od roveru [m] (mimo entitu – Room ji neukládá). */
+val PhoneSample.d2: Double get() = kotlin.math.sqrt(dN * dN + dE * dE)

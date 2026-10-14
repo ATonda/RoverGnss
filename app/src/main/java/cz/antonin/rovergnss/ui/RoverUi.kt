@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
@@ -43,6 +44,7 @@ private data class Tab(val title: String, val icon: ImageVector)
 private val TABS = listOf(
     Tab("Živě", Icons.Filled.Map),
     Tab("Body", Icons.Filled.Place),
+    Tab("Telefon", Icons.Filled.PhoneAndroid),
     Tab("Nastavení", Icons.Filled.Settings),
 )
 
@@ -105,7 +107,8 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
                             controller.prefs.mapFull = it
                         }
                         1 -> SiteScreen(controller)
-                        2 -> SettingsScreen(controller)
+                        2 -> PhoneScreen(controller)
+                        3 -> SettingsScreen(controller)
                     }
                 }
             }

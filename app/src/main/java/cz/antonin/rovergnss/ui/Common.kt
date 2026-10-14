@@ -37,6 +37,9 @@ fun qualityColorArgb(code: Int): Int = qualityColor(Quality.of(code)).let {
 fun fmt(v: Double?, dec: Int, unit: String = ""): String =
     if (v == null || v.isNaN()) "–" else String.format(Locale.US, "%.${dec}f", v) + unit
 
+/** Výška antény: uložená v m, zobrazená v cm (1 desetinné místo, desetinná čárka). */
+fun antCm(m: Double): String = String.format(Locale.US, "%.1f cm", m * 100).replace('.', ',')
+
 /** Úhel [°] jako 49°55′09,8368″ */
 fun dms(deg: Double, latitude: Boolean): String {
     val h = if (latitude) (if (deg >= 0) "N" else "S") else (if (deg >= 0) "E" else "W")

@@ -150,6 +150,9 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
     val points by pointsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     val avg by c.liveAvg.collectAsStateWithLifecycle()
     var avgMode by remember { mutableStateOf(c.prefs.liveAverage) }
+    // stopy zdrojů polohy telefonu (karta Telefon, volba „stopy telefonu na mapě“)
+    val phoneTr by c.phoneCompare.trails.collectAsStateWithLifecycle()
+    val phoneTrails = if (c.prefs.phoneOnMap) phoneTr.entries.sortedBy { it.key.code }.map { (s, l) -> s.color.toInt() to l } else emptyList()
 
     val p = pos
     val g = p?.etrs()
@@ -191,6 +194,7 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
                 course = course,
                 navTarget = nav?.let { t -> if (t.lat != null && t.lon != null) doubleArrayOf(t.lat, t.lon) else null },
                 fitTrail = fitTrail,
+                phoneTrails = phoneTrails,
             )
             Column(
                 Modifier.align(Alignment.TopStart).padding(8.dp),
@@ -208,7 +212,7 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
                     DropdownMenu(expanded = userMenu, onDismissRequest = { userMenu = false }) {
                         users.forEachIndexed { i, u ->
                             DropdownMenuItem(
-                                text = { Text(u.name + " (anténa ${fmt(u.antennaH, 3)} m)" + if (u == user) "  ✓" else "") },
+                                text = { Text(u.name + " (anténa ${antCm(u.antennaH)})" + if (u == user) "  ✓" else "") },
                                 onClick = {
                                     userMenu = false
                                     c.selectUser(i)
@@ -377,7 +381,7 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
                 else KeyValue("H (u-blox geoid)", fmt(p.hMsl, 2, " m"))
                 if (!j.precise) Text("S-JTSK 7 parametry (~0,4 m) – tabulky ČÚZK nenačtené nebo mimo ČR.", style = MaterialTheme.typography.bodySmall)
                 if (p.itrf) Text("Bez RTCM: přepočet ITRF2020 → ETRS89.", style = MaterialTheme.typography.bodySmall)
-                if (antH != 0.0) Text("S-JTSK a Bpv na značce (anténa ${fmt(antH, 3)} m odečtena).", style = MaterialTheme.typography.bodySmall)
+                if (antH != 0.0) Text("S-JTSK a Bpv na značce (anténa ${antCm(antH)} odečtena).", style = MaterialTheme.typography.bodySmall)
             }
             KeyValue("Rychlost / kurz", "${fmt(p.speed * 3.6, 1)} km/h / ${fmt(p.heading, 0)}°")
             sta?.let { s -> KeyValue("Baterie roveru", batteryText(s)) }
@@ -602,7 +606,7 @@ private fun SurveyDialog(
                 Text(
                     "Konec po ustálení (σ vodorovně ≤ ${fmt(u.surveySigma * 100, 0)} cm, aspoň ${u.surveyMinEpochs} epoch), " +
                         "nejdéle ${u.surveyMaxSec} s. Kdykoli „Uložit“ – uloží se, co je, s přesností. " +
-                        "Anténa ${fmt(u.antennaH, 3)} m (profil ${u.name}).",
+                        "Anténa ${antCm(u.antennaH)} (profil ${u.name}).",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 if (avg != null) {

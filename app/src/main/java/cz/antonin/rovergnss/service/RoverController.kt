@@ -34,6 +34,11 @@ import cz.antonin.rovergnss.ntrip.NtripClient
 import cz.antonin.rovergnss.ntrip.NtripProfile
 import cz.antonin.rovergnss.ntrip.NtripState
 import cz.antonin.rovergnss.ntrip.RtcmFramer
+import cz.antonin.rovergnss.phone.PhoneCompare
+import cz.antonin.rovergnss.phone.PhoneGnss
+import cz.antonin.rovergnss.phone.PhoneSource
+import cz.antonin.rovergnss.phone.PhoneTtff
+import cz.antonin.rovergnss.phone.X20Assist
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -183,6 +188,9 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         withContext(Dispatchers.IO) { flushLiveFile() }  // průměr zůstává v telefonu pro příští start
         ntrip.stop()
         link.disconnect()
+        phoneTtff.stop()
+        phoneCompare.stopSession().join()
+        phone.stopAll()
         RoverService.stop(context)
         _exit.tryEmit(Unit)
     }
@@ -225,6 +233,35 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     val rtcmFramer = RtcmFramer { frame -> link.send(frame) }
     val ntrip = NtripClient(scope, onRtcm = { synchronized(rtcmFramer) { rtcmFramer.feed(it) } }, ggaProvider = ::currentGga)
     val ntripState: StateFlow<NtripState> get() = ntrip.state
+
+    // ------------------------------------------------------------------ GNSS telefonu a asistence X20
+    /** Zdroje polohy telefonu (čip, Fused, Network) a jeho satelity. */
+    val phone = PhoneGnss(context)
+    /** Porovnání poloh telefonu s roverem. */
+    val phoneCompare = PhoneCompare(scope, db, prefs)
+    /** Test doby do fixu telefonu (vliv A-GNSS). */
+    val phoneTtff = PhoneTtff(context, scope, phone, errorOf = { phoneCompare.errorOf(it) }, message = { _messages.tryEmit(it) })
+    /** Asistence X20 z telefonu: MGA-INI a záloha databáze MGA-DBD (FW 0.11.0+). */
+    val assist = X20Assist(
+        context, scope, prefs,
+        send = { link.send(it) },
+        phoneFix = { phone.lastKnown() },
+        busy = { _measure.value != null },
+        message = { _messages.tryEmit(it) },
+    )
+
+    /** Zapne / vypne zdroj polohy telefonu (uloží se). */
+    fun setPhoneSource(s: PhoneSource, on: Boolean) {
+        phone.setEnabled(s, on)
+        prefs.phoneSources = phone.enabled.value.map { it.code }.toSet()
+        RoverService.refreshType(context)
+    }
+
+    /** Po udělení oprávnění k poloze. */
+    fun phonePermissionChanged() {
+        phone.refresh()
+        RoverService.refreshType(context)
+    }
 
     private val nextId = AtomicInteger(1)
     private val pending = ConcurrentHashMap<Int, CompletableDeferred<JSONObject>>()
@@ -608,6 +645,11 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
 
     /** Rámec UBX z roveru (RXM-RAWX / RXM-SFRBX během měření bodu) do souboru .ubx. */
     private fun onUbx(frame: ByteArray) {
+        // asistence X20 (MGA-ACK, výpis databáze MGA-DBD)
+        if (frame.size >= 4 && (frame[2].toInt() and 0xFF) == X20Assist.CLS_MGA) {
+            assist.onUbx(frame)
+            return
+        }
         if (ubxOut == null) return
         // jen RXM (RAWX/SFRBX); IMU z roveru (třída 0xF5) zůstává jen v surovém proudu trasy
         if (frame.size < 4 || (frame[2].toInt() and 0xFF) != 0x02) return
@@ -1122,6 +1164,12 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     }
 
     init {
+        // GNSS telefonu: polohy do porovnání a testu doby do fixu; zdroje zapnuté minule
+        phone.onFix = { f ->
+            phoneCompare.onPhone(f)
+            phoneTtff.onFix(f)
+        }
+        phone.setAll(prefs.phoneSources.mapNotNull { PhoneSource.of(it) }.toSet())
         scope.launch { ensureJob() }
         // Po připojení zjistit, co je na druhé straně
         scope.launch {
@@ -1132,6 +1180,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                     fetchRoverBuffer()
                 } else {
                     linkLost()
+                    assist.onDisconnected()
                     roverRecSent = null
                     if (st is LinkState.Idle) _info.value = null
                 }
@@ -1139,8 +1188,8 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         }
         // Služba na popředí běží, dokud je něco aktivní
         scope.launch {
-            combine(link.state, ntrip.state, _recording) { l, n, r ->
-                (l !is LinkState.Idle && l !is LinkState.Failed) || n !is NtripState.Off || r != null
+            combine(link.state, ntrip.state, _recording, phone.enabled) { l, n, r, ph ->
+                (l !is LinkState.Idle && l !is LinkState.Failed) || n !is NtripState.Off || r != null || ph.isNotEmpty()
             }.distinctUntilChanged().collect { active ->
                 if (active) RoverService.start(context) else RoverService.stop(context)
             }
@@ -1233,6 +1282,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         )
         requestRoverProfiles()
         applyUserRoverProfile()
+        assist.onInfo(r.optString("fw"))
     }
 
     fun setProfile(i: Int) = scope.launch {
@@ -1431,6 +1481,8 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                 record(p)
                 measureEpoch(p)
                 liveEpoch(p, line)
+                phoneCompare.onRover(p)
+                assist.onPos(p)
                 val now = System.currentTimeMillis()
                 if (p.hasFix && now - lastTrailMs >= 1000) {
                     lastTrailMs = now
@@ -1447,6 +1499,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             "STA" -> RoverProtocol.parseSta(f)?.let {
                 _sta.value = it
                 recordDiag(it)
+                assist.onSta(it)
             }
             "SAT" -> RoverProtocol.parseSat(f)?.let { part ->
                 // části musí jít po sobě; chybějící část = celá sada se zahodí (jinak se slijí dvě epochy)

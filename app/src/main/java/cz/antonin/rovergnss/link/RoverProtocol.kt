@@ -75,6 +75,13 @@ data class Sta(
     val appMode: Boolean = false, // rover je v režimu aplikace (NMEA jen GGA, RMC)
     val eoe: Boolean = false,     // X20 posílá konec epochy (HPPOSLLH u každé epochy)
     val hpCount: Long? = null,    // epochy s polohou z HPPOSLLH (od startu roveru)
+    // FW 0.11.0+ (asistence X20 z telefonu; starší firmware: null)
+    val ubxInOk: Long? = null,    // rámce UBX z mobilu se správným součtem
+    val ubxInBad: Long? = null,   // rámce UBX z mobilu vadné
+    val mgaAccepted: Long? = null, // UBX-MGA-ACK: přijato
+    val mgaRejected: Long? = null, // UBX-MGA-ACK: odmítnuto
+    val mgaDbd: Long? = null,     // UBX-MGA-DBD vyslané X20 (výpis databáze)
+    val ackAiding: Int? = null,   // CFG-NAVSPG-ACKAIDING: 1 OK, 0 NAK, -1 bez odpovědi
     val rxMs: Long = System.currentTimeMillis(),
 )
 
@@ -85,6 +92,7 @@ data class Sat(
     val elev: Int,            // [°]
     val azim: Int,            // [°]
     val used: Boolean,
+    val band: String? = null, // pásmo (jen satelity telefonu: L1, L5, E1, E5a, …)
 ) {
     val system: String
         get() = when (gnssId) {
@@ -164,6 +172,12 @@ object RoverProtocol {
             appMode = f.getOrNull(19) == "1",
             eoe = f.getOrNull(20) == "1",
             hpCount = f.getOrNull(21)?.let { l(it) },
+            ubxInOk = f.getOrNull(22)?.let { l(it) },
+            ubxInBad = f.getOrNull(23)?.let { l(it) },
+            mgaAccepted = f.getOrNull(24)?.let { l(it) },
+            mgaRejected = f.getOrNull(25)?.let { l(it) },
+            mgaDbd = f.getOrNull(26)?.let { l(it) },
+            ackAiding = f.getOrNull(27)?.let { i(it) },
         )
     }
 

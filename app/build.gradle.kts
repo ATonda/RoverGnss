@@ -13,8 +13,8 @@ android {
         applicationId = "cz.antonin.rovergnss"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
-        versionName = "0.6.0"
+        versionCode = 11
+        versionName = "0.7.0"
     }
 
     buildTypes {
@@ -56,5 +56,6 @@ dependencies {
     ksp(libs.androidx.room.compiler)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.maplibre.android)
+    implementation(libs.play.services.location)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

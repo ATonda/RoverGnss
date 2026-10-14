@@ -136,7 +136,7 @@ object Exporter {
         val fmt = iso()
         val w = out.bufferedWriter(Charsets.UTF_8)
         w.write("bod;druh;zacatek_utc;konec_utc;delka_s;epoch;v_prumeru;kvalita_prumeru;fix;float;has;sbas;gnss3d;korekce;profil;" +
-            "vyska_anteny;lat_etrs89;lon_etrs89;h_ell_etrs89;sN;sE;sU;dN;dE;d2D;dU;dY;dX;dH_bpv;dane_etrs_dopocteno;staticky_model\r\n")
+            "vyska_anteny_cm;lat_etrs89;lon_etrs89;h_ell_etrs89;sN;sE;sU;dN;dE;d2D;dU;dY;dX;dH_bpv;dane_etrs_dopocteno;staticky_model\r\n")
         var n = 0
         for (m in list) {
             if (m.endMs == null) continue
@@ -148,7 +148,7 @@ object Exporter {
                     ((m.endMs - m.startMs) / 1000).toString(), m.epochs.toString(), m.used.toString(),
                     if (m.usedQuality == 0) "smisena" else Quality.of(m.usedQuality).label,
                     m.nFix.toString(), m.nFloat.toString(), m.nHas.toString(), m.nDgnss.toString(), m.nOther.toString(),
-                    m.corr, m.profile, f(m.antennaH, 3), f(m.lat, 9), f(m.lon, 9), f(m.hEll, 4),
+                    m.corr, m.profile, f(m.antennaH * 100, 1), f(m.lat, 9), f(m.lon, 9), f(m.hEll, 4),
                     f(m.sN, 4), f(m.sE, 4), f(m.sU, 4), f(m.dN, 4), f(m.dE, 4), f(d2, 4), f(m.dU, 4), f(m.dY, 4), f(m.dX, 4),
                     f(m.dH, 4), if (m.refDerived) "1" else "0", if (m.staticModel) "1" else "0",
                 ).joinToString(";") { it.replace(";", ",") }

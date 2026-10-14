@@ -34,17 +34,12 @@ class RoverService : LifecycleService() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
-        try {
-            ServiceCompat.startForeground(
-                this, NOTIF_ID, build("Spouštím…"),
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0,
-            )
-        } catch (e: Exception) {
+        if (!startFg(build("Spouštím…"))) {
             // systém službu na popředí odmítl (oprávnění, start z pozadí) – aplikace běží dál bez ní
-            Log.w(TAG, "startForeground odmítnuto: $e")
             stopSelf()
             return
         }
+        instance = this
         // CPU musí běžet i při zhasnutém displeji (příjem BT, NTRIP, zápis trasy)
         wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RoverGnss:link").apply { acquire() }
@@ -66,7 +61,40 @@ class RoverService : LifecycleService() {
         super.onTaskRemoved(rootIntent)
     }
 
+    /**
+     * Služba na popředí: vždy „připojené zařízení“ (rover), s polohou telefonu navíc typ „poloha“ –
+     * jinak Android při zhasnutém displeji polohu telefonu nedodává. Když systém typ polohy odmítne, jen bez něj.
+     */
+    private fun startFg(n: Notification): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            return try {
+                ServiceCompat.startForeground(this, NOTIF_ID, n, 0)
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "startForeground odmítnuto: $e")
+                false
+            }
+        }
+        val c = (application as RoverApp).controller
+        val base = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        val withLoc = c.phone.enabled.value.isNotEmpty() && c.phone.hasPermission()
+        if (withLoc) try {
+            ServiceCompat.startForeground(this, NOTIF_ID, n, base or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+            return true
+        } catch (e: Exception) {
+            Log.w(TAG, "startForeground s polohou odmítnuto: $e")
+        }
+        return try {
+            ServiceCompat.startForeground(this, NOTIF_ID, n, base)
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "startForeground odmítnuto: $e")
+            false
+        }
+    }
+
     override fun onDestroy() {
+        instance = null
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         super.onDestroy()
@@ -140,6 +168,16 @@ class RoverService : LifecycleService() {
 
         fun stop(context: Context) {
             context.stopService(Intent(context, RoverService::class.java))
+        }
+
+        @Volatile private var instance: RoverService? = null
+
+        /** Po zapnutí / vypnutí zdrojů polohy telefonu: obnovit typ služby na popředí (volat z popředí aplikace). */
+        fun refreshType(context: Context) {
+            val s = instance ?: return
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                if (instance === s) s.startFg(s.build(s.statusText((s.application as RoverApp).controller)))
+            }
         }
     }
 }

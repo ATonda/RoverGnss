@@ -159,4 +159,51 @@ class Prefs(context: Context) {
             }
             sp.edit().putString("ntripProfiles", a.toString()).apply()
         }
+
+    // ------------------------------------------------------------------ GNSS telefonu (porovnání s roverem)
+    /** Zapnuté zdroje polohy telefonu (PhoneSource.code) */
+    var phoneSources: Set<Int>
+        get() = sp.getString("phoneSources", "")!!.split(',').mapNotNull { it.toIntOrNull() }.toSet()
+        set(v) = sp.edit().putString("phoneSources", v.sorted().joinToString(",")).apply()
+
+    /** Odsazení telefonu od antény roveru [m] (telefon = anténa + odsazení) */
+    var phoneOffN: Double
+        get() = sp.getFloat("phoneOffN", 0f).toDouble()
+        set(v) = sp.edit().putFloat("phoneOffN", v.toFloat()).apply()
+    var phoneOffE: Double
+        get() = sp.getFloat("phoneOffE", 0f).toDouble()
+        set(v) = sp.edit().putFloat("phoneOffE", v.toFloat()).apply()
+    var phoneOffU: Double
+        get() = sp.getFloat("phoneOffU", 0f).toDouble()
+        set(v) = sp.edit().putFloat("phoneOffU", v.toFloat()).apply()
+
+    /** Stopy zdrojů telefonu na mapě v Živě */
+    var phoneOnMap: Boolean
+        get() = sp.getBoolean("phoneOnMap", true)
+        set(v) = sp.edit().putBoolean("phoneOnMap", v).apply()
+
+    // ------------------------------------------------------------------ asistence X20 z telefonu (FW 0.11.0+)
+    /** Po připojení bez fixu poslat do X20 čas a přibližnou polohu (UBX-MGA-INI) */
+    var assistIni: Boolean
+        get() = sp.getBoolean("assistIni", true)
+        set(v) = sp.edit().putBoolean("assistIni", v).apply()
+
+    /** Zálohovat navigační databázi X20 (UBX-MGA-DBD) a vracet ji při studeném startu */
+    var assistDbd: Boolean
+        get() = sp.getBoolean("assistDbd", true)
+        set(v) = sp.edit().putBoolean("assistDbd", v).apply()
+
+    /** Poslední poloha roveru [lat, lon, h, čas UTC ms] – přibližná poloha pro MGA-INI, když telefon polohu nemá */
+    var lastRoverFix: DoubleArray?
+        get() = sp.getString("lastRoverFix", null)?.split(',')?.mapNotNull { it.toDoubleOrNull() }
+            ?.takeIf { it.size == 4 }?.toDoubleArray()
+        set(v) = sp.edit().putString("lastRoverFix", v?.joinToString(",")).apply()
+
+    /** Uložená databáze X20: čas zálohy [ms] a počet zpráv */
+    var dbdSavedMs: Long
+        get() = sp.getLong("dbdSavedMs", 0)
+        set(v) = sp.edit().putLong("dbdSavedMs", v).apply()
+    var dbdFrames: Int
+        get() = sp.getInt("dbdFrames", 0)
+        set(v) = sp.edit().putInt("dbdFrames", v).apply()
 }

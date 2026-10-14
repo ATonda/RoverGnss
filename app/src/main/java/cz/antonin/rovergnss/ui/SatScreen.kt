@@ -1,6 +1,7 @@
 package cz.antonin.rovergnss.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
@@ -11,10 +12,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -41,14 +46,30 @@ fun systemColor(gnssId: Int): Color = when (gnssId) {
 
 private val SYSTEM_NAMES = mapOf(0 to "GPS", 2 to "Galileo", 3 to "BeiDou", 6 to "GLONASS", 5 to "QZSS", 1 to "SBAS", 7 to "NavIC")
 
+/** Satelity roveru, nebo telefonu ([phoneFirst] = otevřít na telefonu). */
 @Composable
-fun SatScreen(c: RoverController) {
-    val sats by c.sats.collectAsStateWithLifecycle()
-    val sorted = sats.sortedWith(compareBy<Sat>({ it.gnssId }, { it.svId }))
+fun SatScreen(c: RoverController, phoneFirst: Boolean = false) {
+    var phone by rememberSaveable { mutableStateOf(phoneFirst) }
+    val roverSats by c.sats.collectAsStateWithLifecycle()
+    val phoneSats by c.phone.sats.collectAsStateWithLifecycle()
+    val sats = if (phone) phoneSats else roverSats
+    val sorted = sats.sortedWith(compareBy<Sat>({ it.gnssId }, { it.svId }, { it.band ?: "" }))
 
     LazyColumn(Modifier.fillMaxSize()) {
         item {
-            Section("Obloha") {
+            Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilterChip(selected = !phone, onClick = { phone = false }, label = { Text("Rover") })
+                FilterChip(selected = phone, onClick = { phone = true }, label = { Text("Telefon") })
+            }
+            if (phone && phoneSats.isEmpty()) {
+                Text(
+                    "Satelity telefonu se ukážou po zapnutí zdroje „GNSS čip“ (karta Telefon → Porovnání).",
+                    style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp),
+                )
+            }
+        }
+        item {
+            Section(if (phone) "Obloha – telefon" else "Obloha – rover") {
                 Skyplot(sats, Modifier.fillMaxWidth().aspectRatio(1f))
                 val bySys = sats.groupBy { it.gnssId }
                 Text(
@@ -58,12 +79,20 @@ fun SatScreen(c: RoverController) {
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Text(
-                    "Použité ${sats.count { it.used }} / sledované ${sats.size}. Plný kruh = v řešení.",
+                    "Použité ${sats.count { it.used }} / sledované ${sats.size}. Plný kruh = v řešení." +
+                        if (phone) " U telefonu je dvoupásmová družice uvedena pro každé pásmo zvlášť." else "",
                     style = MaterialTheme.typography.bodySmall,
                 )
+                if (phone) {
+                    val bands = sats.filter { it.used }.mapNotNull { it.band }.groupingBy { it }.eachCount()
+                    if (bands.isNotEmpty()) Text(
+                        "Pásma v řešení: " + bands.entries.sortedBy { it.key }.joinToString("  ") { "${it.key} ${it.value}" },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
         }
-        items(sorted, key = { it.gnssId * 1000 + it.svId }) { s -> SatRow(s) }
+        items(sorted, key = { "${it.gnssId}-${it.svId}-${it.band}" }) { s -> SatRow(s) }
     }
 }
 
@@ -74,6 +103,7 @@ private fun SatRow(s: Sat) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text("${s.system}${s.svId.toString().padStart(2, '0')}", fontFamily = FontFamily.Monospace, modifier = Modifier.width(48.dp))
+        if (s.band != null) Text(s.band, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(40.dp))
         Text("${s.elev}°", fontFamily = FontFamily.Monospace, modifier = Modifier.width(44.dp))
         Box(Modifier.weight(1f).height(14.dp)) {
             Canvas(Modifier.fillMaxSize()) {

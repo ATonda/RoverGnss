@@ -39,6 +39,7 @@ import cz.antonin.rovergnss.service.RoverController
 private val MEASURE_SEC = listOf(60 to "1 min", 180 to "3 min", 600 to "10 min", 1800 to "30 min", 0 to "ručně")
 private val SURVEY_MAX = listOf(10 to "10 s", 30 to "30 s", 60 to "1 min", 120 to "2 min", 300 to "5 min")
 private val SURVEY_SIGMA = listOf(0.01 to "1 cm", 0.02 to "2 cm", 0.05 to "5 cm", 0.10 to "10 cm", 0.50 to "50 cm")
+private const val ANT_MAX_CM = 300.0
 private val STAKE_SEC = listOf(3 to "3 s", 5 to "5 s", 10 to "10 s", 20 to "20 s")
 
 /** Karta Nastavení: rover, korekce NTRIP, uživatelské profily, aplikace. */
@@ -127,11 +128,13 @@ private fun UserProfileSection(c: RoverController) {
 
 @Composable
 private fun UserProfileEditor(u: UserProfile, roverProfiles: List<String>, onChange: (UserProfile) -> Unit) {
-    var antH by remember { mutableStateOf(if (u.antennaH == 0.0) "0" else u.antennaH.toString().replace('.', ',')) }
+    // výška antény se zadává v cm, ukládá v m
+    var antH by remember { mutableStateOf(String.format(java.util.Locale.US, "%.1f", u.antennaH * 100).removeSuffix(".0").replace('.', ',')) }
     var every by remember { mutableStateOf(u.recordEvery.toString()) }
     var minEp by remember { mutableStateOf(u.surveyMinEpochs.toString()) }
     var rpMenu by remember { mutableStateOf(false) }
-    val antErr = antH.replace(',', '.').toDoubleOrNull()?.takeIf { it in 0.0..10.0 } == null
+    val antCmVal = antH.replace(',', '.').toDoubleOrNull()
+    val antErr = antCmVal?.takeIf { it in 0.0..ANT_MAX_CM } == null
     val everyErr = every.toIntOrNull()?.takeIf { it in 1..50 } == null
     val minErr = minEp.toIntOrNull()?.takeIf { it in 1..1000 } == null
 
@@ -139,9 +142,16 @@ private fun UserProfileEditor(u: UserProfile, roverProfiles: List<String>, onCha
     OutlinedTextField(
         antH, {
             antH = it
-            it.replace(',', '.').toDoubleOrNull()?.takeIf { v -> v in 0.0..10.0 }?.let { v -> onChange(u.copy(antennaH = v)) }
+            it.replace(',', '.').toDoubleOrNull()?.takeIf { v -> v in 0.0..ANT_MAX_CM }?.let { v -> onChange(u.copy(antennaH = v / 100)) }
         },
-        label = { Text("Výška antény nad značkou [m]") }, singleLine = true, isError = antErr,
+        label = { Text("Výška antény nad značkou [cm]") }, singleLine = true, isError = antErr,
+        supportingText = {
+            when {
+                antErr -> Text("Rozsah 0–${ANT_MAX_CM.toInt()} cm")
+                antCmVal != null && antCmVal > 0 && antCmVal < 1 -> Text("Pod 1 cm – nezadal jsi výšku v metrech?")
+                else -> {}
+            }
+        },
         modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
     )
 
