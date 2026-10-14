@@ -22,6 +22,13 @@ import java.util.TimeZone
 import kotlin.math.abs
 import kotlin.math.sqrt
 
+/**
+ * Časy GNSS čipu telefonu [ms], medián.
+ * @param gnssVsRover čas GNSS v poloze telefonu − nejbližší epocha roveru (0 ± 100 = páruje se podle času GNSS)
+ * @param clockVsGnss hodiny telefonu (čas polohy) − čas GNSS v poloze telefonu
+ */
+data class TimeDiag(val gnssVsRover: Long?, val clockVsGnss: Long?, val n: Int)
+
 /** Statistika odchylek jednoho zdroje telefonu vůči roveru [m]. */
 data class CompareStats(
     val n: Int,
@@ -67,6 +74,16 @@ class PhoneCompare(private val scope: CoroutineScope, private val db: AppDb, pri
     private val _unpaired = MutableStateFlow(0)
     val unpaired: StateFlow<Int> = _unpaired.asStateFlow()
 
+    /** Spárované polohy podle způsobu: [0] čas GNSS telefonu (do 100 ms), [1] hodiny telefonu proti času GNSS roveru. */
+    private val _pairCounts = MutableStateFlow<Map<PhoneSource, IntArray>>(emptyMap())
+    val pairCounts: StateFlow<Map<PhoneSource, IntArray>> = _pairCounts.asStateFlow()
+
+    /** Posun času GNSS čipu telefonu (medián posledních 60 poloh). */
+    private val _timeDiag = MutableStateFlow<TimeDiag?>(null)
+    val timeDiag: StateFlow<TimeDiag?> = _timeDiag.asStateFlow()
+    private val dtGnss = ArrayDeque<Long>()
+    private val dtClock = ArrayDeque<Long>()
+
     private val _session = MutableStateFlow<PhoneSession?>(null)
     val session: StateFlow<PhoneSession?> = _session.asStateFlow()
 
@@ -95,22 +112,45 @@ class PhoneCompare(private val scope: CoroutineScope, private val db: AppDb, pri
         }
     }
 
-    private fun pair(f: PhoneFix): Ref? = synchronized(refs) {
+    /**
+     * Epocha roveru k poloze telefonu a způsob párování (0 čas GNSS telefonu, 1 hodiny telefonu).
+     * Čip podle svého času GNSS do 100 ms; když nesedí (některé telefony dávají do polohy jiný čas), podle hodin
+     * telefonu proti času GNSS roveru do 300 ms. Fused a Network podle hodin telefonu do 600 ms.
+     */
+    private fun pair(f: PhoneFix): Pair<Ref, Int>? = synchronized(refs) {
         if (refs.isEmpty()) return null
         if (f.gnssMs != null) {
             val best = refs.minByOrNull { abs(it.gnssMs - f.gnssMs) } ?: return null
-            if (abs(best.gnssMs - f.gnssMs) <= GNSS_TOL_MS) best else null
-        } else {
-            val best = refs.minByOrNull { abs(it.rxMs - f.wallMs) } ?: return null
-            if (abs(best.rxMs - f.wallMs) <= WALL_TOL_MS) best else null
+            if (abs(best.gnssMs - f.gnssMs) <= GNSS_TOL_MS) return best to 0
+        }
+        val tol = if (f.gnssMs != null) CLOCK_TOL_GNSS_MS else WALL_TOL_MS
+        val best = refs.minByOrNull { abs(it.gnssMs - f.wallMs) } ?: return null
+        if (abs(best.gnssMs - f.wallMs) <= tol) best to 1 else null
+    }
+
+    /** Posun času: čas GNSS telefonu − nejbližší epocha roveru, hodiny telefonu − čas GNSS telefonu. */
+    private fun timeDiagUpdate(f: PhoneFix) {
+        val g = f.gnssMs ?: return
+        val near = synchronized(refs) { refs.minByOrNull { abs(it.gnssMs - g) } }
+        synchronized(dtGnss) {
+            if (near != null && abs(near.gnssMs - g) <= 10_000) {
+                dtGnss.addLast(g - near.gnssMs)
+                if (dtGnss.size > 60) dtGnss.removeFirst()
+            }
+            dtClock.addLast(f.wallMs - g)
+            if (dtClock.size > 60) dtClock.removeFirst()
+            fun med(d: ArrayDeque<Long>): Long? = if (d.isEmpty()) null else d.sorted()[d.size / 2]
+            _timeDiag.value = TimeDiag(med(dtGnss), med(dtClock), dtClock.size)
         }
     }
 
     /** 2D odchylka polohy telefonu od roveru [m] (test doby do fixu), null = nelze spárovat. */
     fun errorOf(f: PhoneFix): Double? = sample(f)?.d2
 
-    private fun sample(f: PhoneFix): PhoneSample? {
-        val r = pair(f) ?: return null
+    private fun sample(f: PhoneFix): PhoneSample? = pairedSample(f)?.first
+
+    private fun pairedSample(f: PhoneFix): Pair<PhoneSample, Int>? {
+        val (r, method) = pair(f) ?: return null
         val t = f.gnssMs ?: f.wallMs
         val g = Etrs.itrfToEtrs(f.lat, f.lon, f.hEll ?: r.h, Etrs.epochYear(t))
         val (kN, kE) = MeasureCalc.metersPerDeg(r.lat)
@@ -126,17 +166,22 @@ class PhoneCompare(private val scope: CoroutineScope, private val db: AppDb, pri
             dE = (g.lon - r.lon) * kE - prefs.phoneOffE,
             dU = if (f.hEll != null) g.h - r.h - prefs.phoneOffU else null,
             refLat = r.lat, refLon = r.lon, refH = r.h, refQuality = r.q, refRtcm = r.rtcm,
-        )
+        ) to method
     }
 
     /** Poloha telefonu (hlavní vlákno). */
     fun onPhone(f: PhoneFix) {
-        val s = sample(f)
-        if (s == null) {
+        timeDiagUpdate(f)
+        val ps = pairedSample(f)
+        if (ps == null) {
             _unpaired.value = _unpaired.value + 1
             return
         }
+        val (s, method) = ps
         val src = f.source
+        val pc = _pairCounts.value[src]?.copyOf() ?: IntArray(2)
+        pc[method]++
+        _pairCounts.value = _pairCounts.value + (src to pc)
         _live.value = _live.value + (src to s)
         val h = _history.value[src].orEmpty()
         _history.value = _history.value + (src to (if (h.size >= HISTORY) h.drop(h.size - HISTORY + 1) else h) + listOf(s))
@@ -169,6 +214,12 @@ class PhoneCompare(private val scope: CoroutineScope, private val db: AppDb, pri
         _stats.value = emptyMap()
         _trails.value = emptyMap()
         _unpaired.value = 0
+        _pairCounts.value = emptyMap()
+        synchronized(dtGnss) {
+            dtGnss.clear()
+            dtClock.clear()
+        }
+        _timeDiag.value = null
     }
 
     /** Vzorky od vynulování (export bez uložení). */
@@ -204,6 +255,7 @@ class PhoneCompare(private val scope: CoroutineScope, private val db: AppDb, pri
     companion object {
         const val GNSS_TOL_MS = 100L
         const val WALL_TOL_MS = 600L
+        const val CLOCK_TOL_GNSS_MS = 300L
         const val REF_KEEP_MS = 120_000L
         const val HISTORY = 600       // 10 min při 1 Hz
         const val TRAIL = 1800

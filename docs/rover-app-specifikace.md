@@ -224,3 +224,8 @@ Cíl: kratší studený start X20 po delším vypnutí bez účtu a bez internet
   - Asistence X20 (FW 0.11.0+): po připojení bez fixu MGA-INI-TIME_UTC + POS_LLH (telefon, jinak poslední poloha roveru), záloha MGA-DBD každých 30 min při fixu (uloží se jen úplný výpis podle počítadla roveru), vrácení databáze mladší 7 dní; ruční tlačítka, studený start X20.
   - Oprávnění k poloze, služba na popředí s typem „poloha“ (poloha telefonu se zhasnutým displejem), knihovna `play-services-location` 21.3.0.
   - Kap. 7a: měření bodu už přepínače roveru nemá (statika a RAWX jsou v uživatelském profilu v Nastavení) a souhrn ukládá statiku podle potvrzení roveru – zbývalo zadání a zobrazení výšky antény v cm (rozsah 0–300 cm, varování pod 1 cm), export měření `vyska_anteny_cm`.
+- **0.7.1 (14. 10.):** úpravy po prvním testu (byt u okna, rover 3D).
+  - Párování GNSS čipu: když čas GNSS v poloze telefonu nesedí s roverem do 100 ms (Qualcomm GEN9: z 1230 poloh spárováno 2), páruje se podle hodin telefonu proti času GNSS roveru do 300 ms. Zobrazení posunu času (čas GNSS telefonu − rover, hodiny telefonu − čas GNSS, medián 60 poloh) a počtu párování podle způsobu.
+  - Test doby do fixu: „první poloha“ (i vložená z asistence – po smazání dat 1–2 s při 1 družici) zvlášť od „fixu“ s aspoň 4 družicemi v řešení; hlášená přesnost fixu; čas do hlášené přesnosti < 10 / < 5 m (bez fixu roveru pokus končí podle ní); chyba vůči roveru jen u poloh se 4+ družicemi.
+  - Družice v řešení se u telefonu počítají jako různé družice (dvoupásmová = 1), signály zvlášť.
+  - Záložka „Srovnání“.

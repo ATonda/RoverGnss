@@ -87,7 +87,7 @@ fun PhoneScreen(c: RoverController) {
     var sub by rememberSaveable { mutableIntStateOf(0) }
     Column(Modifier.fillMaxSize()) {
         TabRow(selectedTabIndex = sub) {
-            Tab(selected = sub == 0, onClick = { sub = 0 }, text = { Text("Porovnání") })
+            Tab(selected = sub == 0, onClick = { sub = 0 }, text = { Text("Srovnání") })
             Tab(selected = sub == 1, onClick = { sub = 1 }, text = { Text("Satelity") })
             Tab(selected = sub == 2, onClick = { sub = 2 }, text = { Text("Start") })
             Tab(selected = sub == 3, onClick = { sub = 3 }, text = { Text("X20") })
@@ -114,6 +114,8 @@ private fun CompareTab(c: RoverController) {
     val history by c.phoneCompare.history.collectAsStateWithLifecycle()
     val stats by c.phoneCompare.stats.collectAsStateWithLifecycle()
     val unpaired by c.phoneCompare.unpaired.collectAsStateWithLifecycle()
+    val pairCounts by c.phoneCompare.pairCounts.collectAsStateWithLifecycle()
+    val timeDiag by c.phoneCompare.timeDiag.collectAsStateWithLifecycle()
     val session by c.phoneCompare.session.collectAsStateWithLifecycle()
     val pos by c.pos.collectAsStateWithLifecycle()
     val job by c.activeJob.collectAsStateWithLifecycle()
@@ -192,6 +194,16 @@ private fun CompareTab(c: RoverController) {
                 }
             }
             if (unpaired > 0) Text("Nespárováno poloh telefonu: $unpaired", style = MaterialTheme.typography.bodySmall)
+            timeDiag?.let { t ->
+                KeyValue("Čas GNSS telefonu − rover", t.gnssVsRover?.let { "$it ms" } ?: "–")
+                KeyValue("Hodiny telefonu − čas GNSS", t.clockVsGnss?.let { "$it ms" } ?: "–")
+            }
+            if (pairCounts.isNotEmpty()) Text(
+                "Párování (čas GNSS / hodiny telefonu): " + PhoneSource.entries.mapNotNull { s ->
+                    pairCounts[s]?.let { "${s.label} ${it[0]}/${it[1]}" }
+                }.joinToString(", "),
+                style = MaterialTheme.typography.bodySmall,
+            )
             OffsetEditor(c)
         }
 
@@ -338,7 +350,7 @@ private fun LiveCard(s: PhoneSource, x: PhoneSample?, st: CompareStats?) {
             KeyValue("Chyba / přesnost", fmt(r, 2), valueColor = if (r > 1) MaterialTheme.colorScheme.error else null)
         }
         KeyValue("Stáří polohy", "${x.ageMs} ms")
-        x.numSv?.let { KeyValue("SV v řešení", it.toString()) }
+        x.numSv?.let { KeyValue("Družice v řešení", it.toString()) }
         KeyValue("Reference", Quality.of(x.refQuality).label + if (x.refRtcm) " (RTCM)" else "")
     }
 }
@@ -488,7 +500,8 @@ private fun TtffTab(c: RoverController) {
             if (!info.permission) Text("Nejdřív povol polohu (záložka Porovnání).", color = MaterialTheme.colorScheme.error)
             Text(
                 "Příjem GNSS se vypne, podle varianty se smažou nebo stáhnou asistenční data čipu a měří se čas do první polohy " +
-                    "a do přesnosti < 10 m a < 5 m vůči roveru (potřebuje fix roveru). Podpora příkazů závisí na výrobci telefonu.",
+                    "s aspoň 4 družicemi, do hlášené přesnosti < 10 m / < 5 m a s fixem roveru i do skutečné chyby < 10 m / < 5 m. " +
+                "Bez fixu roveru pokus končí hlášenou přesností < 5 m. Podpora příkazů závisí na výrobci telefonu.",
                 style = MaterialTheme.typography.bodySmall,
             )
             KeyValue("Internet", if (online) "ano" else "ne", mono = false)
@@ -510,10 +523,12 @@ private fun TtffTab(c: RoverController) {
                 Text("Pokus ${st.attempt}/${st.attempts} (${st.variant?.label}) – ${st.phase} ${fmt(st.elapsed, 0, " s")}",
                     style = MaterialTheme.typography.bodyMedium)
                 st.current?.let { r ->
-                    KeyValue("První poloha", fmt(r.firstFix, 1, " s"))
-                    KeyValue("< 10 m / < 5 m", "${fmt(r.to10, 1)} / ${fmt(r.to5, 1)} s")
+                    KeyValue("První poloha / fix (4 SV)", "${fmt(r.firstAny, 1)} / ${fmt(r.firstFix, 1)} s")
+                    KeyValue("Přesnost fixu (hlášená)", fmt(r.accAtFix, 1, " m"))
+                    KeyValue("Hlášená < 10 m / < 5 m", "${fmt(r.acc10, 1)} / ${fmt(r.acc5, 1)} s")
+                    KeyValue("Chyba < 10 m / < 5 m", "${fmt(r.to10, 1)} / ${fmt(r.to5, 1)} s")
                     if (r.fusedFirst != null) KeyValue("Fused první / < 10 m", "${fmt(r.fusedFirst, 1)} / ${fmt(r.fusedTo10, 1)} s")
-                    KeyValue("SV max", r.svMax.toString())
+                    KeyValue("Družice max", r.svMax.toString())
                 }
                 Button(onClick = { c.phoneTtff.stop() }) { Text("Zastavit") }
             } else {
@@ -527,9 +542,12 @@ private fun TtffTab(c: RoverController) {
                     val l = results.filter { it.variant == v }
                     if (l.isEmpty()) return@forEach
                     Text("${v.label} – ${l.size} pokusů", style = MaterialTheme.typography.titleSmall)
-                    SummaryRow("první poloha", l.mapNotNull { it.firstFix })
-                    SummaryRow("< 10 m", l.mapNotNull { it.to10 })
-                    SummaryRow("< 5 m", l.mapNotNull { it.to5 })
+                    SummaryRow("první poloha", l.mapNotNull { it.firstAny })
+                    SummaryRow("fix (4 SV)", l.mapNotNull { it.firstFix })
+                    SummaryRow("hlášená < 10 m", l.mapNotNull { it.acc10 })
+                    SummaryRow("hlášená < 5 m", l.mapNotNull { it.acc5 })
+                    SummaryRow("chyba < 10 m", l.mapNotNull { it.to10 })
+                    SummaryRow("chyba < 5 m", l.mapNotNull { it.to5 })
                     if (l.any { it.fusedFirst != null }) SummaryRow("Fused první", l.mapNotNull { it.fusedFirst })
                 }
                 Text("min / medián / max [s]", style = MaterialTheme.typography.bodySmall)
@@ -555,7 +573,8 @@ private fun SummaryRow(label: String, v: List<Double>) {
 private fun ResultRow(r: TtffResult) {
     fun b(v: Boolean?) = when (v) { null -> "–"; true -> "ano"; false -> "ne" }
     Text(
-        "${r.n}. ${r.variant.label}: fix ${fmt(r.firstFix, 1)} s, <10 m ${fmt(r.to10, 1)} s, <5 m ${fmt(r.to5, 1)} s" +
+        "${r.n}. ${r.variant.label}: poloha ${fmt(r.firstAny, 1)} s, fix ${fmt(r.firstFix, 1)} s (±${fmt(r.accAtFix, 0)} m), " +
+            "hlášená <10/<5 m ${fmt(r.acc10, 1)}/${fmt(r.acc5, 1)} s, chyba <10/<5 m ${fmt(r.to10, 1)}/${fmt(r.to5, 1)} s" +
             (if (r.fusedFirst != null) ", Fused ${fmt(r.fusedFirst, 1)} s" else "") +
             ", SV ${r.svAtFix ?: "–"}/${r.svMax}" + (if (r.timedOut) ", limit" else "") +
             " · smazání ${b(r.deleteOk)}" + (if (r.variant == TtffVariant.COLD_AGNSS) ", stažení ${b(r.injectOk)}" else ""),

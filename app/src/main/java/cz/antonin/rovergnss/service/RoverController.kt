@@ -240,7 +240,12 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     /** Porovnání poloh telefonu s roverem. */
     val phoneCompare = PhoneCompare(scope, db, prefs)
     /** Test doby do fixu telefonu (vliv A-GNSS). */
-    val phoneTtff = PhoneTtff(context, scope, phone, errorOf = { phoneCompare.errorOf(it) }, message = { _messages.tryEmit(it) })
+    val phoneTtff = PhoneTtff(
+        context, scope, phone,
+        errorOf = { phoneCompare.errorOf(it) },
+        roverFix = { _pos.value?.hasFix == true },
+        message = { _messages.tryEmit(it) },
+    )
     /** Asistence X20 z telefonu: MGA-INI a záloha databáze MGA-DBD (FW 0.11.0+). */
     val assist = X20Assist(
         context, scope, prefs,

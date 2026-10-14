@@ -78,9 +78,12 @@ fun SatScreen(c: RoverController, phoneFirst: Boolean = false) {
                     },
                     style = MaterialTheme.typography.bodySmall,
                 )
+                val usedSv = sats.filter { it.used }.distinctBy { it.gnssId * 10_000 + it.svId }.size
+                val trackedSv = sats.distinctBy { it.gnssId * 10_000 + it.svId }.size
                 Text(
-                    "Použité ${sats.count { it.used }} / sledované ${sats.size}. Plný kruh = v řešení." +
-                        if (phone) " U telefonu je dvoupásmová družice uvedena pro každé pásmo zvlášť." else "",
+                    if (phone) "Družice použité $usedSv / sledované $trackedSv, signály ${sats.count { it.used }} / ${sats.size}. " +
+                        "Dvoupásmová družice je v seznamu pro každé pásmo zvlášť. Plný kruh = v řešení."
+                    else "Použité ${sats.count { it.used }} / sledované ${sats.size}. Plný kruh = v řešení.",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 if (phone) {

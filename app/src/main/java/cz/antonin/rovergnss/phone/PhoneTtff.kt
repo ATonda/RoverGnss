@@ -34,7 +34,11 @@ data class TtffResult(
     val deleteOk: Boolean?,   // delete_aiding_data přijat (null = neposláno / výjimka)
     val injectOk: Boolean?,   // force_psds_injection / force_xtra_injection přijat
     val online: Boolean,
-    val firstFix: Double?,
+    val firstAny: Double?,    // první hlášená poloha (i vložená z asistence, bez družic)
+    val firstFix: Double?,    // první poloha s aspoň 4 družicemi v řešení
+    val accAtFix: Double?,    // hlášená přesnost první polohy se 4 družicemi [m]
+    val acc10: Double?,       // hlášená přesnost < 10 m (s aspoň 4 družicemi)
+    val acc5: Double?,
     val to10: Double?,        // 2D chyba vůči roveru < 10 m
     val to5: Double?,
     val fusedFirst: Double?,
@@ -64,6 +68,7 @@ class PhoneTtff(
     private val scope: CoroutineScope,
     private val phone: PhoneGnss,
     private val errorOf: (PhoneFix) -> Double?,
+    private val roverFix: () -> Boolean,      // rover má fix – jinak se test ukončí podle hlášené přesnosti
     private val message: (String) -> Unit,
 ) {
     private val _state = MutableStateFlow(TtffState())
@@ -117,7 +122,8 @@ class PhoneTtff(
                     delay(if (variant == TtffVariant.COLD_AGNSS) 5000L else 2000L)
                     val r0 = TtffResult(
                         n = (_results.value.lastOrNull()?.n ?: 0) + 1, variant = variant, startMs = System.currentTimeMillis(),
-                        deleteOk = del, injectOk = inj, online = online, firstFix = null, to10 = null, to5 = null,
+                        deleteOk = del, injectOk = inj, online = online, firstAny = null, firstFix = null, accAtFix = null,
+                        acc10 = null, acc5 = null, to10 = null, to5 = null,
                         fusedFirst = null, fusedTo10 = null, svAtFix = null, svMax = 0, timedOut = false,
                     )
                     cur = r0
@@ -131,10 +137,12 @@ class PhoneTtff(
                         delay(200)
                         val el = (SystemClock.elapsedRealtime() - attemptStartEl) / 1000.0
                         val c = cur ?: break
-                        val used = phone.sats.value.count { it.used }
+                        val used = phone.svCount.value.first
                         if (used > c.svMax) cur = c.copy(svMax = used)
                         _state.value = TtffState(true, variant, k, repeats, "měřím", el, cur)
-                        val done = c.to5 != null && (!withFused || c.fusedTo10 != null)
+                        // s fixem roveru do chyby < 5 m, bez něj do hlášené přesnosti < 5 m
+                        val gnssDone = if (roverFix()) c.to5 != null else c.acc5 != null
+                        val done = gnssDone && (!withFused || c.fusedTo10 != null || (!roverFix() && c.fusedFirst != null))
                         if (done) break
                         if (el >= limitSec) {
                             timedOut = true
@@ -175,12 +183,20 @@ class PhoneTtff(
         val t = (f.elapsedMs - attemptStartEl) / 1000.0
         val err = errorOf(f)
         cur = when (f.source) {
-            PhoneSource.GNSS -> c.copy(
-                firstFix = c.firstFix ?: t,
-                svAtFix = c.svAtFix ?: f.numSv,
-                to10 = c.to10 ?: if (err != null && err < 10) t else null,
-                to5 = c.to5 ?: if (err != null && err < 5) t else null,
-            )
+            PhoneSource.GNSS -> {
+                // poloha bez aspoň 4 družic v řešení je vložená (asistence, síť), ne fix z družic
+                val sats = (f.numSv ?: 0) >= MIN_SV
+                c.copy(
+                    firstAny = c.firstAny ?: t,
+                    firstFix = c.firstFix ?: if (sats) t else null,
+                    accAtFix = if (c.firstFix == null && sats) f.acc else c.accAtFix,
+                    svAtFix = if (c.firstFix == null && sats) f.numSv else c.svAtFix,
+                    acc10 = c.acc10 ?: if (sats && f.acc != null && f.acc < 10) t else null,
+                    acc5 = c.acc5 ?: if (sats && f.acc != null && f.acc < 5) t else null,
+                    to10 = c.to10 ?: if (sats && err != null && err < 10) t else null,
+                    to5 = c.to5 ?: if (sats && err != null && err < 5) t else null,
+                )
+            }
             PhoneSource.FUSED -> c.copy(
                 fusedFirst = c.fusedFirst ?: t,
                 fusedTo10 = c.fusedTo10 ?: if (err != null && err < 10) t else null,
@@ -190,18 +206,22 @@ class PhoneTtff(
     }
 
     companion object {
+        const val MIN_SV = 4
+
         fun csv(list: List<TtffResult>, out: OutputStream): Int {
             val df = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
             fun f(v: Double?) = if (v == null) "" else String.format(Locale.US, "%.1f", v)
             fun b(v: Boolean?) = when (v) { null -> ""; true -> "1"; false -> "0" }
             val w = out.bufferedWriter(Charsets.UTF_8)
-            w.write("pokus;varianta;start;internet;delete_aiding_data;injekce;prvni_fix_s;pod_10m_s;pod_5m_s;" +
+            w.write("pokus;varianta;start;internet;delete_aiding_data;injekce;prvni_poloha_s;prvni_fix_4sv_s;presnost_fixu_m;" +
+                "hlasena_pod_10m_s;hlasena_pod_5m_s;chyba_pod_10m_s;chyba_pod_5m_s;" +
                 "fused_prvni_s;fused_pod_10m_s;sv_pri_fixu;sv_max;limit\r\n")
             for (r in list) {
                 w.write(
                     listOf(
                         r.n.toString(), r.variant.label, df.format(Date(r.startMs)), b(r.online), b(r.deleteOk), b(r.injectOk),
-                        f(r.firstFix), f(r.to10), f(r.to5), f(r.fusedFirst), f(r.fusedTo10),
+                        f(r.firstAny), f(r.firstFix), f(r.accAtFix), f(r.acc10), f(r.acc5), f(r.to10), f(r.to5),
+                        f(r.fusedFirst), f(r.fusedTo10),
                         r.svAtFix?.toString() ?: "", r.svMax.toString(), if (r.timedOut) "1" else "0",
                     ).joinToString(";")
                 )

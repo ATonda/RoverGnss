@@ -58,7 +58,8 @@ data class PhoneFix(
     val vAcc: Double?,
     val speed: Double?,
     val bearing: Double?,
-    val numSv: Int?,
+    val numSv: Int?,          // družice v řešení (dvoupásmová = 1; jen GNSS čip)
+    val numSignals: Int?,     // signály v řešení (dvoupásmová družice = 2)
     val bands: String?,       // pásma družic v řešení (jen GNSS čip), např. „L1+L5“
     val rxMs: Long = System.currentTimeMillis(),
 )
@@ -101,6 +102,11 @@ class PhoneGnss(private val context: Context) {
     // aktuálně zaregistrované posluchače (zdroj může být zapnutý bez oprávnění – pak se nic neregistruje)
     private val active = HashSet<PhoneSource>()
     @Volatile private var usedCount: Int? = null
+    @Volatile private var usedSignalCount: Int? = null
+
+    /** Družice v řešení a sledované (různé družice, ne signály) – test doby do fixu, satelity. */
+    private val _svCount = MutableStateFlow(0 to 0)
+    val svCount: StateFlow<Pair<Int, Int>> = _svCount.asStateFlow()
     @Volatile private var usedBands: String? = null
     private var statusRegistered = false
     private var measRegistered = false
@@ -286,6 +292,7 @@ class PhoneGnss(private val context: Context) {
             speed = if (l.hasSpeed()) l.speed.toDouble() else null,
             bearing = if (l.hasBearing()) l.bearing.toDouble() else null,
             numSv = if (s == PhoneSource.GNSS) usedCount else null,
+            numSignals = if (s == PhoneSource.GNSS) usedSignalCount else null,
             bands = if (s == PhoneSource.GNSS) usedBands else null,
         )
     }
@@ -323,12 +330,17 @@ class PhoneGnss(private val context: Context) {
             val list = ArrayList<Sat>(status.satelliteCount)
             val bands = sortedSetOf<String>()
             var used = 0
+            val usedSv = HashSet<Long>()
+            val trackedSv = HashSet<Long>()
             for (i in 0 until status.satelliteCount) {
                 val c = status.getConstellationType(i)
                 val band = if (status.hasCarrierFrequencyHz(i)) band(c, status.getCarrierFrequencyHz(i)) else null
                 val u = status.usedInFix(i)
+                val key = c.toLong() * 10_000 + status.getSvid(i)
+                if (status.getCn0DbHz(i) > 0) trackedSv += key
                 if (u) {
                     used++
+                    usedSv += key
                     band?.let { bands += it }
                 }
                 list += Sat(
@@ -337,7 +349,9 @@ class PhoneGnss(private val context: Context) {
                     used = u, band = band,
                 )
             }
-            usedCount = used
+            usedCount = usedSv.size
+            usedSignalCount = used
+            _svCount.value = usedSv.size to trackedSv.size
             usedBands = if (bands.isEmpty()) null else bands.joinToString("+")
             _sats.value = list.filter { it.cno > 0 }
         }
