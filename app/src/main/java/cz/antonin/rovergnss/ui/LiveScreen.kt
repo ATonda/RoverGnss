@@ -70,7 +70,6 @@ import cz.antonin.rovergnss.service.RoverController
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.TimeZone
 
 /** Poloha v ETRS89 (HAS/SBAS přepočtené z ITRF2020). */
 fun Pos.etrs(): Geodetic? {
@@ -400,9 +399,9 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
             extra = { PointExtras(c, pt, onClose = { editing = null }) },
         )
     }
-    if (recDialog) TrackNameDialog(onStart = { name ->
+    if (recDialog) TrackNameDialog(avg?.takeIf { it.epochs >= MeasureCalc.MIN_EPOCHS }, onStart = { name, withAvg ->
         recDialog = false
-        c.startRecording(name)
+        c.startRecording(name, withAvg)
     }, onDismiss = { recDialog = false })
     surveyName?.let { initial ->
         SurveyDialog(initial, user, avg?.takeIf { it.result.used >= MeasureCalc.MIN_EPOCHS }, onStart = { name, take ->
@@ -548,21 +547,38 @@ private fun ModeHeader(
     Text(
         if (!avgMode) "Okamžité hodnoty (poslední epocha)"
         else if (avg == null) "Průměr: čekám na epochy bez pohybu"
-        else "Průměr ${duration(avg.lastMs - avg.startMs)} · ${avg.result.used} epoch · ${avg.quality.label}",
+        else "Průměr ${clock(avg.startMs, false)} → ${clock(avg.lastMs, false)} (${duration(avg.lastMs - avg.startMs)})",
         style = MaterialTheme.typography.titleSmall,
     )
-    val reason = avg?.resetReason
-    if (avgMode && reason != null && now - avg.resetMs < 10_000) {
-        Text("vynulováno: $reason", color = Color(0xFFEF6C00), style = MaterialTheme.typography.bodySmall)
-    }
-    val age = (now - p.rxMs).coerceAtLeast(0)
-    val utc = p.timeMs?.let {
-        SimpleDateFormat("HH:mm:ss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date(it)) + " UTC"
-    } ?: "čas neplatný"
-    KeyValue(
-        "Epocha", "$utc · stáří ${fmt(age / 1000.0, 1)} s",
-        valueColor = if (age > 3000) Color(0xFFC62828) else null,
+    if (avgMode && avg != null) Text(
+        "${count(avg.epochs)} epoch · použito ${count(avg.result.used)} ${avg.qualityLabel}",
+        style = MaterialTheme.typography.bodySmall,
     )
+    val reason = avg?.resetReason
+    if (avgMode && avg != null && reason != null && avg.resets > 0) Text(
+        "vynulováno ${avg.resets}× (poslední ${clock(avg.resetMs, false)} – $reason)",
+        color = if (now - avg.resetMs < 10_000) Color(0xFFEF6C00) else MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MaterialTheme.typography.bodySmall,
+    )
+    val age = (now - p.rxMs).coerceAtLeast(0)
+    val t = p.timeMs?.let { clock(it, true) } ?: "čas neplatný"
+    if (age > 3000) KeyValue("Epocha", "data přestala $t (před ${ago(age)})", valueColor = Color(0xFFC62828))
+    else KeyValue("Epocha", "$t · stáří ${fmt(age / 1000.0, 1)} s")
+}
+
+/** Místní čas HH:mm(:ss). */
+private fun clock(ms: Long, sec: Boolean): String =
+    SimpleDateFormat(if (sec) "HH:mm:ss" else "HH:mm", Locale.getDefault()).format(Date(ms))
+
+private fun count(n: Int): String = String.format(Locale("cs", "CZ"), "%,d", n)
+
+private fun ago(ms: Long): String {
+    val s = ms / 1000
+    return when {
+        s < 60 -> "$s s"
+        s < 3600 -> "${s / 60} min"
+        else -> String.format(Locale.US, "%d h %02d min", s / 3600, s / 60 % 60)
+    }
 }
 
 /** Zaměření bodu „tady“: název (navržený další v řadě), podmínky konce z profilu, případně převzetí průměru. */
@@ -593,7 +609,7 @@ private fun SurveyDialog(
                     val r = avg.result
                     val hs = if (r.sN != null && r.sE != null) kotlin.math.hypot(r.sN, r.sE) else null
                     Text(
-                        "Převzít průměr (${duration(avg.lastMs - avg.startMs)}, ${r.used} epoch, ${avg.quality.label}" +
+                        "Převzít průměr (${duration(avg.lastMs - avg.startMs)}, ${r.used} epoch, ${avg.qualityLabel}" +
                             (hs?.let { ", σH ${fmt(it, 3)} m" } ?: "") + ")? Měření pak pokračuje do ustálení.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -646,19 +662,29 @@ private fun RecButton(rec: cz.antonin.rovergnss.service.RecordingState?, onClick
 
 /** Název trasy před startem záznamu; prázdný = automaticky „T číslo datum čas“. */
 @Composable
-private fun TrackNameDialog(onStart: (String?) -> Unit, onDismiss: () -> Unit) {
+private fun TrackNameDialog(avg: LiveAverage?, onStart: (String?, Boolean) -> Unit, onDismiss: () -> Unit) {
     var name by remember { mutableStateOf("") }
+    var withAvg by remember { mutableStateOf(false) }
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Záznam trasy") },
         text = {
-            androidx.compose.material3.OutlinedTextField(
-                name, { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                label = { Text("Název") },
-                placeholder = { Text("prázdné = T číslo, datum a čas") },
-            )
+            Column {
+                androidx.compose.material3.OutlinedTextField(
+                    name, { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Název") },
+                    placeholder = { Text("prázdné = T číslo, datum a čas") },
+                )
+                if (avg != null) Row(verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.Checkbox(withAvg, { withAvg = it })
+                    Text(
+                        "Zahrnout průměr od ${clock(avg.startMs, false)} (${count(avg.epochs)} epoch)",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
         },
-        confirmButton = { TextButton(onClick = { onStart(name.trim().ifEmpty { null }) }) { Text("Spustit") } },
+        confirmButton = { TextButton(onClick = { onStart(name.trim().ifEmpty { null }, withAvg && avg != null) }) { Text("Spustit") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Zrušit") } },
     )
 }

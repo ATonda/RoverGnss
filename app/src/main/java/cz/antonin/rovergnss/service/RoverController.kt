@@ -48,6 +48,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.BufferedOutputStream
@@ -110,17 +111,25 @@ data class MeasureState(
 )
 
 /**
- * Průběžný průměr polohy od posledního ustálení (panel Živě). Poloha antény (bez odečtení výšky antény).
- * [resetReason] proč byl průměr naposledy vynulován, [resetMs] kdy.
+ * Průběžný průměr polohy od posledního vynulování (panel Živě). Poloha antény (bez odečtení výšky antény).
+ * Průměr a σ z nejlepší kvality s aspoň 10 epochami ([MeasureCalc]). [startMs], [lastMs] čas telefonu první
+ * a poslední epochy; [resets] počet vynulování od startu aplikace, [resetReason] a [resetMs] poslední z nich.
  */
 data class LiveAverage(
     val startMs: Long,
     val lastMs: Long,
-    val quality: Quality,
+    val epochs: Int,
     val result: MeasureResult,
+    val resets: Int = 0,
     val resetReason: String? = null,
     val resetMs: Long = 0,
-)
+) {
+    val quality: Quality get() = Quality.of(result.usedQuality)
+    val qualityLabel: String get() = if (result.usedQuality == 0) "smíšená" else quality.label
+}
+
+/** Průměr uložený v telefonu při minulém běhu aplikace (nabídka po startu). */
+data class LiveRestore(val startMs: Long, val lastMs: Long, val epochs: Int)
 
 /** Údaje o roveru z odpovědi na `get info`. */
 data class RoverInfo(
@@ -171,6 +180,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     fun shutdown() = scope.launch {
         if (_measure.value != null) stopMeasurement().join()
         stopRecording().join()
+        withContext(Dispatchers.IO) { flushLiveFile() }  // průměr zůstává v telefonu pro příští start
         ntrip.stop()
         link.disconnect()
         RoverService.stop(context)
@@ -432,7 +442,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         var startMs = System.currentTimeMillis()
         val taken = if (takeAverage) synchronized(liveEps) {
             if (liveEps.isNotEmpty()) startMs = liveStartMs
-            liveEps.map { it.copy(h = it.h - u.antennaH) }
+            liveEps.map { it.m.copy(h = it.m.h - u.antennaH) }
         } else emptyList()
         synchronized(measEpochs) {
             measEpochs.clear()
@@ -641,22 +651,47 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     }
 
     // ------------------------------------------------------------------ průběžný průměr (panel Živě)
+    // Nuluje se jen pohybem (IMU, nebo rychlost GNSS nad mezí v několika epochách po sobě) a ručně.
+    // Epochy se průběžně ukládají do souboru v telefonu; po startu aplikace se nabídne pokračování.
     private val _liveAvg = MutableStateFlow<LiveAverage?>(null)
     val liveAvg: StateFlow<LiveAverage?> = _liveAvg.asStateFlow()
-    private val liveEps = ArrayDeque<MeasureEpoch>()   // poloha antény, jedna kvalita, bez pohybu
+    private val _liveRestore = MutableStateFlow<LiveRestore?>(null)
+    val liveRestore: StateFlow<LiveRestore?> = _liveRestore.asStateFlow()
+
+    /** Epocha průměru: přijatá věta (soubor, trasa), poloha a epocha výpočtu (ETRS89, poloha antény). */
+    private class LiveEp(val line: String, val p: Pos, val m: MeasureEpoch)
+
+    private val liveEps = ArrayDeque<LiveEp>()
     private var liveStartMs = 0L
     private var liveLastMs = 0L
-    private var liveQuality = Quality.NONE
     private var liveCalcMs = 0L
+    private var liveFastN = 0                 // epochy po sobě s rychlostí GNSS nad mezí
+    private var liveResets = 0
     private var liveResetReason: String? = null
     private var liveResetMs = 0L
+    private var liveRestoreCheck = false      // po obnovení: první epocha ověří, že rover stojí na stejném místě
+    private val livePending = ArrayList<String>()  // řádky k dopsání do souboru
+    private var liveFileReset = false         // soubor přepsat (nový průměr)
+    private var restoreEps: List<LiveEp>? = null
+    private var restoreStartMs = 0L
+
+    private fun liveFile() = File(context.filesDir, "live_avg.txt")
+
+    private fun etrsOf(p: Pos): Geodetic =
+        if (p.itrf) Etrs.itrfToEtrs(p.lat!!, p.lon!!, p.hEll ?: 0.0, Etrs.epochYear(p.timeMs!!))
+        else Geodetic(p.lat!!, p.lon!!, p.hEll ?: 0.0)
+
+    private fun liveEpOf(line: String, p: Pos): LiveEp {
+        val g = etrsOf(p)
+        return LiveEp(line, p, MeasureEpoch(g.lat, g.lon, g.h, p.quality.code, false, p.rtcm))
+    }
 
     /**
      * Epochy pro terč: [TargetSource.LIVE] průběžný průměr (poloha antény), [TargetSource.MEASURE] probíhající
      * měření bodu (anténa odečtena). Výška jde jen jako rozdíl od průměru, anténa na tvar nemá vliv.
      */
     fun targetEpochs(source: Int): List<MeasureEpoch> =
-        if (source == TargetSource.LIVE) synchronized(liveEps) { liveEps.toList() }
+        if (source == TargetSource.LIVE) synchronized(liveEps) { liveEps.map { it.m } }
         else synchronized(measEpochs) { ArrayList(measEpochs) }
 
     /** Ruční vynulování průměru. */
@@ -665,54 +700,199 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     private fun liveReset(reason: String?) {
         liveEps.clear()
         liveStartMs = 0
-        liveQuality = Quality.NONE
+        liveRestoreCheck = false
         if (reason != null) {
+            liveResets++
             liveResetReason = reason
             liveResetMs = System.currentTimeMillis()
         }
+        liveFileReset = true
+        livePending.clear()
         _liveAvg.value = null
     }
 
-    /**
-     * Epocha do průběžného průměru. Nuluje se při pohybu (IMU), změně kvality, skoku polohy nad šum
-     * (4× hAcc, aspoň 0,1 m) a výpadku dat delším než [LIVE_GAP_MS]. Drží nejvýš [LIVE_MAX] posledních epoch.
-     */
-    private fun liveEpoch(p: Pos) {
+    private fun publishLive() {
+        _liveAvg.value = LiveAverage(
+            liveStartMs, liveLastMs, liveEps.size, MeasureCalc.compute(liveEps.map { it.m }),
+            liveResets, liveResetReason, liveResetMs,
+        )
+    }
+
+    /** Epocha do průběžného průměru ([line] = přijatá věta $PRVR,POS). */
+    private fun liveEpoch(p: Pos, line: String) {
         if (!p.hasFix || p.timeMs == null) return
         val now = System.currentTimeMillis()
         synchronized(liveEps) {
-            if (p.moving) {
-                if (liveEps.isNotEmpty()) liveReset("pohyb")
+            liveFastN = if (p.speed > LIVE_SPEED) liveFastN + 1 else 0
+            if (p.moving || liveFastN >= LIVE_FAST_EPOCHS) {
+                if (liveEps.isNotEmpty()) liveReset(if (p.moving) "pohyb (IMU)" else "pohyb (rychlost GNSS)")
                 return
             }
-            val g = if (p.itrf) Etrs.itrfToEtrs(p.lat!!, p.lon!!, p.hEll ?: 0.0, Etrs.epochYear(p.timeMs))
-            else Geodetic(p.lat!!, p.lon!!, p.hEll ?: 0.0)
-            if (liveEps.isNotEmpty()) {
-                val avg = _liveAvg.value?.result
-                val jump = if (avg?.lat != null && avg.lon != null) {
-                    val (kN, kE) = MeasureCalc.metersPerDeg(avg.lat)
-                    kotlin.math.hypot((g.lat - avg.lat) * kN, (g.lon - avg.lon) * kE)
-                } else 0.0
-                when {
-                    p.quality != liveQuality -> liveReset("změna kvality ${liveQuality.label} → ${p.quality.label}")
-                    now - liveLastMs > LIVE_GAP_MS -> liveReset("výpadek dat")
-                    jump > maxOf(4 * p.hAcc, 0.1) -> liveReset(String.format(Locale.US, "posun %.2f m", jump))
+            val ep = liveEpOf(line, p)
+            if (liveRestoreCheck) {
+                // obnovený průměr: rover musí stát na stejném místě
+                liveRestoreCheck = false
+                val r = _liveAvg.value?.result
+                if (r?.lat != null && r.lon != null) {
+                    val (kN, kE) = MeasureCalc.metersPerDeg(r.lat)
+                    val d = kotlin.math.hypot((ep.m.lat - r.lat) * kN, (ep.m.lon - r.lon) * kE)
+                    val hs = if (r.sN != null && r.sE != null) kotlin.math.hypot(r.sN, r.sE) else 0.0
+                    if (d > maxOf(3 * hs, 4 * p.hAcc, 0.5)) {
+                        liveReset(String.format(Locale.US, "po obnovení jiné místo (%.1f m)", d))
+                    }
                 }
             }
             if (liveEps.isEmpty()) {
                 liveStartMs = now
-                liveQuality = p.quality
                 liveCalcMs = 0
+                liveFileReset = true
+                livePending.clear()
             }
-            liveEps.addLast(MeasureEpoch(g.lat, g.lon, g.h, p.quality.code, false, p.rtcm))
+            liveEps.addLast(ep)
+            livePending.add("${p.rxMs}|$line")
             while (liveEps.size > LIVE_MAX) liveEps.removeFirst()
             liveLastMs = now
-            if (now - liveCalcMs < 1000 && _liveAvg.value != null) return
+            val period = if (liveEps.size > 5000) 5000L else 1000L
+            if (now - liveCalcMs < period && _liveAvg.value != null) return
             liveCalcMs = now
-            _liveAvg.value = LiveAverage(
-                liveStartMs, now, liveQuality, MeasureCalc.compute(liveEps.toList()), liveResetReason, liveResetMs,
-            )
+            publishLive()
         }
+    }
+
+    /** Dopíše nové epochy průměru do souboru (každých 5 s; při čekající nabídce obnovení nic). */
+    private fun flushLiveFile() {
+        if (_liveRestore.value != null) return
+        val lines: List<String>
+        val reset: Boolean
+        val start: Long
+        val empty: Boolean
+        synchronized(liveEps) {
+            lines = ArrayList(livePending)
+            livePending.clear()
+            reset = liveFileReset
+            liveFileReset = false
+            start = liveStartMs
+            empty = liveEps.isEmpty()
+        }
+        try {
+            val f = liveFile()
+            if (reset) {
+                if (empty && lines.isEmpty()) {
+                    f.delete()
+                    return
+                }
+                f.writeText("#v1|$start\n")
+            }
+            if (lines.isNotEmpty() && (reset || f.exists())) f.appendText(lines.joinToString("\n", postfix = "\n"))
+        } catch (e: IOException) {
+            Log.w("RoverController", "průměr do souboru: ${e.message}")
+        }
+    }
+
+    /** Po startu aplikace: načte uložený průměr a nabídne ho ([liveRestore]). */
+    private fun loadLiveFile() {
+        val f = liveFile()
+        if (!f.exists()) return
+        var start = 0L
+        val list = ArrayList<LiveEp>()
+        try {
+            f.forEachLine { ln ->
+                if (ln.startsWith("#v1|")) {
+                    start = ln.substring(4).toLongOrNull() ?: 0L
+                    return@forEachLine
+                }
+                val i = ln.indexOf('|')
+                if (i <= 0) return@forEachLine
+                val rx = ln.substring(0, i).toLongOrNull() ?: return@forEachLine
+                val line = ln.substring(i + 1)
+                val body = RoverProtocol.checkedBody(line) ?: return@forEachLine
+                val p = RoverProtocol.parsePos(body.split(','))?.copy(rxMs = rx) ?: return@forEachLine
+                if (!p.hasFix || p.timeMs == null) return@forEachLine
+                list.add(liveEpOf(line, p))
+            }
+        } catch (e: IOException) {
+            return
+        }
+        if (list.isEmpty()) {
+            f.delete()
+            return
+        }
+        val eps = if (list.size > LIVE_MAX) list.subList(list.size - LIVE_MAX, list.size).toList() else list
+        restoreEps = eps
+        restoreStartMs = if (start > 0) start else eps.first().p.rxMs
+        _liveRestore.value = LiveRestore(restoreStartMs, eps.last().p.rxMs, eps.size)
+    }
+
+    object RestoreAction {
+        const val CONTINUE = 0
+        const val DELETE = 1
+        const val SAVE_TRACK = 2
+    }
+
+    /** Odpověď na nabídku obnovení průměru. */
+    fun restoreLive(action: Int) = scope.launch {
+        val eps = restoreEps ?: return@launch
+        restoreEps = null
+        when (action) {
+            RestoreAction.CONTINUE -> {
+                val all: List<LiveEp>
+                synchronized(liveEps) {
+                    // mezitím přijaté epochy jdou za obnovené
+                    val current = liveEps.toList()
+                    liveEps.clear()
+                    liveEps.addAll(eps)
+                    liveEps.addAll(current)
+                    while (liveEps.size > LIVE_MAX) liveEps.removeFirst()
+                    liveStartMs = restoreStartMs
+                    liveLastMs = liveEps.last().p.rxMs
+                    liveRestoreCheck = current.isEmpty()
+                    liveFileReset = false
+                    livePending.clear()
+                    all = liveEps.toList()
+                    publishLive()
+                }
+                try {
+                    liveFile().writeText(
+                        "#v1|$restoreStartMs\n" + all.joinToString("\n", postfix = "\n") { "${it.p.rxMs}|${it.line}" }
+                    )
+                } catch (_: IOException) {
+                }
+                _messages.tryEmit("Průměr obnoven (${eps.size} epoch)")
+            }
+            RestoreAction.SAVE_TRACK -> {
+                val id = trackFromEpochs(null, eps)
+                synchronized(liveEps) { liveFileReset = true }
+                _messages.tryEmit("Uložený průměr uložen jako trasa ($id)")
+            }
+            else -> {
+                synchronized(liveEps) { liveFileReset = true }
+                _messages.tryEmit("Uložený průměr smazán")
+            }
+        }
+        _liveRestore.value = null
+        flushLiveFile()
+    }
+
+    private fun trackPointOf(trackId: Long, p: Pos) = TrackPoint(
+        trackId = trackId, timeMs = p.timeMs!!, lat = p.lat!!, lon = p.lon!!,
+        hEll = p.hEll ?: 0.0, hMsl = p.hMsl ?: 0.0, sN = p.sN, sE = p.sE, sU = p.sU,
+        hAcc = p.hAcc, vAcc = p.vAcc, quality = p.quality.code, carrSoln = p.carrSoln, itrf = p.itrf,
+        numSv = p.numSv, pdop = p.pdop, speed = p.speed, heading = p.heading, moving = p.moving,
+        corrAge = p.corrAge, rtcm = p.rtcm, hp = p.highPrecision, rxMs = p.rxMs,
+    )
+
+    /** Uloží epochy průměru jako ukončenou trasu (název prázdný = „T číslo datum čas (průměr)“). Vrací název. */
+    private suspend fun trackFromEpochs(name: String?, eps: List<LiveEp>): String {
+        val job = ensureJob()
+        val s0 = eps.first().p.rxMs
+        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(s0))
+        val id = db.tracks().insert(
+            Track(jobId = job.id, name = name ?: stamp, startMs = s0, antennaH = prefs.antennaH, rateHz = _info.value?.rateHz ?: 0)
+        )
+        val n = name ?: "T$id $stamp (průměr)"
+        eps.chunked(2000).forEach { c -> db.tracks().insertPoints(c.map { trackPointOf(id, it.p) }) }
+        db.tracks().get(id)?.let { db.tracks().update(it.copy(name = n, endMs = eps.last().p.rxMs, points = eps.size)) }
+        return n
     }
 
     // ------------------------------------------------------------------ zásobník roveru (výpadek BT)
@@ -988,6 +1168,14 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             combine(_recording, _measure) { r, m -> r != null || m != null }
                 .distinctUntilChanged().collect { syncRoverRec() }
         }
+        // Průběžný průměr: nabídka uloženého z minula a průběžné ukládání do souboru
+        scope.launch(Dispatchers.IO) {
+            loadLiveFile()
+            while (true) {
+                delay(5000)
+                flushLiveFile()
+            }
+        }
         // Zápis bodů trasy do databáze po dávkách
         scope.launch {
             while (true) {
@@ -1059,7 +1247,8 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     }
 
     // ------------------------------------------------------------------ záznam trasy
-    fun startRecording(name: String? = null) = scope.launch {
+    /** Záznam trasy; [includeAverage] = trasa začne epochami běžícího průměru (od jeho začátku). */
+    fun startRecording(name: String? = null, includeAverage: Boolean = false) = scope.launch {
         if (_recording.value != null) return@launch
         val job = ensureJob()
         val now = System.currentTimeMillis()
@@ -1082,7 +1271,18 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             }
         }
         recCounter = 0
-        _recording.value = RecordingState(id, n, 0, now)
+        var startMs = now
+        var pre = 0
+        if (includeAverage) {
+            val eps = synchronized(liveEps) { liveEps.toList() }
+            if (eps.isNotEmpty()) {
+                eps.chunked(2000).forEach { c -> db.tracks().insertPoints(c.map { trackPointOf(id, it.p) }) }
+                startMs = eps.first().p.rxMs
+                pre = eps.size
+                db.tracks().get(id)?.let { db.tracks().update(it.copy(startMs = startMs)) }
+            }
+        }
+        _recording.value = RecordingState(id, n, pre, startMs)
     }
 
     fun stopRecording() = scope.launch {
@@ -1230,7 +1430,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                 onEpoch(p)
                 record(p)
                 measureEpoch(p)
-                liveEpoch(p)
+                liveEpoch(p, line)
                 val now = System.currentTimeMillis()
                 if (p.hasFix && now - lastTrailMs >= 1000) {
                     lastTrailMs = now
@@ -1360,7 +1560,8 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     companion object {
         private const val TAG = "RoverController"
         const val TRAIL_MAX = 7200  // 2 h při 1 Hz
-        const val LIVE_MAX = 3600   // průběžný průměr: nejvýš posledních 3600 epoch
-        const val LIVE_GAP_MS = 5000L
+        const val LIVE_MAX = 50_000       // průběžný průměr: nejvýš posledních 50 000 epoch (14 h při 1 Hz)
+        const val LIVE_SPEED = 0.3        // [m/s] rychlost GNSS, nad kterou se počítá pohyb
+        const val LIVE_FAST_EPOCHS = 5    // tolik epoch po sobě nad rychlostí = pohyb
     }
 }

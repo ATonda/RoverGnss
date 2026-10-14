@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import cz.antonin.rovergnss.service.RoverController
 import cz.antonin.rovergnss.service.TargetSource
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -111,6 +112,33 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
           }
         }
         if (target >= 0) TargetScreen(controller, target, onClose = { target = -1 })
+        // průměr uložený v telefonu při minulém běhu: pokračovat / uložit jako trasu / smazat
+        val restore by controller.liveRestore.collectAsStateWithLifecycle()
+        restore?.let { r -> LiveRestoreDialog(r, onAction = { controller.restoreLive(it) }) }
         }
     }
+}
+
+@Composable
+private fun LiveRestoreDialog(r: cz.antonin.rovergnss.service.LiveRestore, onAction: (Int) -> Unit) {
+    val df = java.text.SimpleDateFormat("d. M. HH:mm", java.util.Locale.getDefault())
+    val sec = ((r.lastMs - r.startMs) / 1000).coerceAtLeast(0)
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = {},
+        title = { Text("Uložený průměr") },
+        text = {
+            Text(
+                "Průměr z minulého běhu aplikace: ${df.format(java.util.Date(r.startMs))} → ${df.format(java.util.Date(r.lastMs))} " +
+                    String.format(java.util.Locale.US, "(%d:%02d:%02d)", sec / 3600, sec / 60 % 60, sec % 60) +
+                    ", ${r.epochs} epoch.\n\nPokračovat: rover musí stát na stejném místě – jinak se průměr po první epoše vynuluje."
+            )
+        },
+        confirmButton = {
+            Column(horizontalAlignment = Alignment.End) {
+                androidx.compose.material3.TextButton(onClick = { onAction(RoverController.RestoreAction.CONTINUE) }) { Text("Pokračovat") }
+                androidx.compose.material3.TextButton(onClick = { onAction(RoverController.RestoreAction.SAVE_TRACK) }) { Text("Uložit jako trasu a smazat") }
+                androidx.compose.material3.TextButton(onClick = { onAction(RoverController.RestoreAction.DELETE) }) { Text("Smazat") }
+            }
+        },
+    )
 }

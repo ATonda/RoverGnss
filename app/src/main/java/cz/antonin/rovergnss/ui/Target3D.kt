@@ -28,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -180,6 +181,7 @@ private fun Target3D(eps: List<MeasureEpoch>, res: MeasureResult, modifier: Modi
     }
     Canvas(
         modifier
+            .clipToBounds()  // stupnice a popisky nesmí přetéct přes nadpis a text dole
             .pointerInput(Unit) {
                 detectTransformGestures { _, pan, z, _ ->
                     yaw += pan.x * 0.008f
