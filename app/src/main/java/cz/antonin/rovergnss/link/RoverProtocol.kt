@@ -12,7 +12,7 @@ import java.util.TimeZone
 enum class Quality(val code: Int, val label: String) {
     NONE(0, "bez fixu"),
     GNSS(1, "3D"),
-    DGNSS(2, "SBAS/DGNSS"),
+    DGNSS(2, "SBAS"),
     HAS(3, "HAS"),
     FIX(4, "RTK fix"),
     FLOAT(5, "RTK float"),
@@ -82,8 +82,32 @@ data class Sta(
     val mgaRejected: Long? = null, // UBX-MGA-ACK: odmítnuto
     val mgaDbd: Long? = null,     // UBX-MGA-DBD vyslané X20 (výpis databáze)
     val ackAiding: Int? = null,   // CFG-NAVSPG-ACKAIDING: 1 OK, 0 NAK, -1 bez odpovědi
+    // FW 0.12.0+
+    val rateHz: Int? = null,      // frekvence navigace aktivního profilu
+    // FW 0.13.0+ (starší firmware: null)
+    val corrSource: Int? = null,  // zdroj korekcí z NAV-SIG (-1 žádný, 1 SBAS, 4 RTCM3, …)
+    val corrSignals: Int? = null, // signálů použitých s korekcí
+    val corrCfg: Int? = null,     // nastavení SBAS/HAS v X20: 1 OK, 0 NAK, -1 bez odpovědi
+    val passthrough: Boolean = false, // průchozí režim USB <-> X20
+    val navRec: Boolean = false,  // rover posílá při záznamu rámce NAV-PVT/COV/HPPOSLLH
     val rxMs: Long = System.currentTimeMillis(),
-)
+) {
+    /** Zdroj korekcí slovy (UBX-NAV-SIG corrSource). */
+    val corrSourceText: String?
+        get() = when (corrSource) {
+            null -> null
+            -1 -> "žádné"
+            1 -> "SBAS"
+            2 -> "BeiDou"
+            3 -> "RTCM2"
+            4 -> "RTCM3 (OSR)"
+            5 -> "RTCM3 (SSR)"
+            6 -> "QZSS SLAS"
+            7 -> "SPARTN"
+            8 -> "CLAS"
+            else -> "zdroj $corrSource (HAS?)"
+        }
+}
 
 data class Sat(
     val gnssId: Int,          // 0 GPS, 1 SBAS, 2 Galileo, 3 BeiDou, 5 QZSS, 6 GLONASS, 7 NavIC
@@ -178,6 +202,12 @@ object RoverProtocol {
             mgaRejected = f.getOrNull(25)?.let { l(it) },
             mgaDbd = f.getOrNull(26)?.let { l(it) },
             ackAiding = f.getOrNull(27)?.let { i(it) },
+            rateHz = f.getOrNull(28)?.let { i(it) },
+            corrSource = f.getOrNull(29)?.let { i(it) },
+            corrSignals = f.getOrNull(30)?.let { i(it) },
+            corrCfg = f.getOrNull(31)?.let { i(it) },
+            passthrough = f.getOrNull(32) == "1",
+            navRec = f.getOrNull(33) == "1",
         )
     }
 

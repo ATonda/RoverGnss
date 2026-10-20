@@ -13,8 +13,8 @@ android {
         applicationId = "cz.antonin.rovergnss"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.7.3"
+        versionCode = 15
+        versionName = "0.8.0"
     }
 
     buildTypes {

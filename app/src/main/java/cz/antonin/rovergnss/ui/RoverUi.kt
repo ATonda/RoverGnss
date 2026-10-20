@@ -9,6 +9,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -45,6 +46,7 @@ private val TABS = listOf(
     Tab("Živě", Icons.Filled.Map),
     Tab("Body", Icons.Filled.Place),
     Tab("Telefon", Icons.Filled.PhoneAndroid),
+    Tab("Test", Icons.Filled.Science),
     Tab("Nastavení", Icons.Filled.Settings),
 )
 
@@ -108,7 +110,8 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
                         }
                         1 -> SiteScreen(controller)
                         2 -> PhoneScreen(controller)
-                        3 -> SettingsScreen(controller)
+                        3 -> TestScreen(controller)
+                        4 -> SettingsScreen(controller)
                     }
                 }
             }

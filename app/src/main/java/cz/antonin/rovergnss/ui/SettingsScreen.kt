@@ -47,6 +47,7 @@ private val STAKE_SEC = listOf(3 to "3 s", 5 to "5 s", 10 to "10 s", 20 to "20 s
 fun SettingsScreen(c: RoverController) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         RoverSection(c)
+        RoverSetupSection(c)
         NtripSection(c)
         UserProfileSection(c)
         AppSection(c)

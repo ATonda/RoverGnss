@@ -147,7 +147,18 @@ data class RoverInfo(
     val profileIndex: Int,
     val profileName: String,
     val rateHz: Int,
-)
+    // FW 0.13.0+
+    val caps: Set<String> = emptySet(),  // set, cal, pass, navrec, sig, boot
+    val boot: BootTimes? = null,
+    val upMs: Long? = null,              // doba od startu ESP při odpovědi
+    val resetReason: Int? = null,        // esp_reset_reason: 1 zapnutí napájení, 3 SW restart, …
+) {
+    /** Rover umí nastavení z aplikace (FW 0.13.0+). */
+    val canSetup: Boolean get() = "set" in caps
+}
+
+/** Doba od zapnutí roveru do prvního 3D fixu, korekcí, float a RTK fix [ms] (null = zatím ne). */
+data class BootTimes(val fix: Long?, val corr: Long?, val float: Long?, val fixRtk: Long?)
 
 /**
  * Jádro aplikace: spojení s roverem, NTRIP, živá data, záznam tras.
@@ -1199,6 +1210,18 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                 if (active) RoverService.start(context) else RoverService.stop(context)
             }
         }
+        // Po zapnutí roveru: doba od zapnutí do fixu a korekcí (FW 0.13.0+) – dotaz, dokud nejsou známé
+        scope.launch {
+            while (true) {
+                delay(10_000)
+                val i = _info.value ?: continue
+                val b = i.boot ?: continue
+                if (link.state.value !is LinkState.Connected || i.resetReason != 1) continue
+                if ((i.upMs ?: Long.MAX_VALUE) > 30 * 60_000L) continue
+                if (b.fix != null && b.corr != null) continue
+                refreshBootTimes()
+            }
+        }
         // Kvalita spojení: přepočet i bez nových dat (stárnutí)
         scope.launch {
             while (true) {
@@ -1284,10 +1307,31 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             profileIndex = p?.optInt("i") ?: 0,
             profileName = p?.optString("name") ?: "",
             rateHz = p?.optInt("hz") ?: 0,
+            caps = r.optString("caps").split(',').filter { it.isNotEmpty() }.toSet(),
+            boot = r.optJSONObject("boot")?.let { b ->
+                fun t(k: String) = b.optLong(k, -1).takeIf { it >= 0 }
+                BootTimes(t("fix"), t("corr"), t("float"), t("fixRtk"))
+            },
+            upMs = if (r.has("upMs")) r.optLong("upMs") else null,
+            resetReason = if (r.has("reset")) r.optInt("reset") else null,
         )
+        _info.value?.let { roverTtff.onInfo(it) }
         requestRoverProfiles()
         applyUserRoverProfile()
         assist.onInfo(r.optString("fw"))
+    }
+
+    /** Jen doby od zapnutí do fixu (bez načítání profilů a asistence jako [requestInfo]). */
+    private suspend fun refreshBootTimes() {
+        val r = command(JSONObject().put("cmd", "get").put("what", "info")) ?: return
+        val b = r.optJSONObject("boot") ?: return
+        fun t(k: String) = b.optLong(k, -1).takeIf { it >= 0 }
+        val i = _info.value ?: return
+        _info.value = i.copy(
+            boot = BootTimes(t("fix"), t("corr"), t("float"), t("fixRtk")),
+            upMs = if (r.has("upMs")) r.optLong("upMs") else i.upMs,
+        )
+        _info.value?.let { roverTtff.onInfo(it) }
     }
 
     fun setProfile(i: Int) = scope.launch {
@@ -1301,10 +1345,81 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         _messages.tryEmit(if (r?.optBoolean("ok") == true) "X20: restart ($kind)" else "X20: restart selhal")
     }
 
+    /** Restart příjmu X20 pro test doby do fixu (true = rover potvrdil). */
+    suspend fun resetX20Now(kind: String): Boolean =
+        command(JSONObject().put("cmd", "x20").put("op", "reset").put("kind", kind))?.optBoolean("ok") == true
+
+    // ------------------------------------------------------------------ nastavení roveru (FW 0.13.0+)
+    /** Profily roveru celé: {"active":0,"default":0,"max":10,"profiles":[…]} (null = bez odpovědi). */
+    suspend fun roverProfilesJson(): JSONObject? =
+        command(JSONObject().put("cmd", "get").put("what", "profiles"))?.takeIf { it.optBoolean("ok") }?.optJSONObject("data")
+
+    /** Uloží profily do roveru; vrací null = OK, jinak chybu. */
+    suspend fun saveRoverProfiles(data: JSONObject): String? {
+        val r = command(JSONObject().put("cmd", "set").put("what", "profiles").put("data", data), 8000)
+            ?: return "rover neodpovídá"
+        if (!r.optBoolean("ok")) return r.optString("err", "chyba")
+        requestInfo()
+        return null
+    }
+
+    /** Nastavení přístroje: {"btName":"…"} + výchozí název. */
+    suspend fun roverDevice(): JSONObject? = command(JSONObject().put("cmd", "get").put("what", "device"))?.takeIf { it.optBoolean("ok") }
+
+    /** Název BT (prázdný = výchozí ROVER-xxxx); platí po restartu roveru. Vrací null = OK, jinak chybu. */
+    suspend fun saveRoverDevice(btName: String): String? {
+        val r = command(JSONObject().put("cmd", "set").put("what", "device").put("data", JSONObject().put("btName", btName)))
+            ?: return "rover neodpovídá"
+        return if (r.optBoolean("ok")) null else r.optString("err", "chyba")
+    }
+
+    /** Kalibrace: {"gyro":[x,y,z],"div":…,"bat":…,"batOk":…}. */
+    suspend fun roverCal(): JSONObject? = command(JSONObject().put("cmd", "get").put("what", "cal"))?.takeIf { it.optBoolean("ok") }
+
+    /** Kalibrace baterie změřeným napětím [V] nebo gyra ([volts] = null). Odpověď roveru (ok, err, nové hodnoty). */
+    suspend fun calibrateRover(volts: Double?): JSONObject? {
+        val c = JSONObject().put("cmd", "cal")
+        if (volts != null) c.put("what", "battery").put("v", volts) else c.put("what", "gyro")
+        return command(c, 8000)
+    }
+
+    /** Průchozí režim USB <-> X20 (u-center na PC přes USB roveru). */
+    fun roverPassthrough(on: Boolean) = scope.launch {
+        val r = command(JSONObject().put("cmd", "passthrough").put("op", if (on) "start" else "stop"))
+        _messages.tryEmit(
+            when {
+                r == null -> "Rover neodpovídá"
+                !r.optBoolean("ok") -> "Průchozí režim: ${r.optString("err")}"
+                on -> "Průchozí režim zapnut – u-center na PC přes USB roveru, konec tlačítkem nebo zde"
+                else -> "Průchozí režim ukončen, X20 se znovu nastavuje"
+            }
+        )
+    }
+
+    /** Restart ESP roveru (X20 běží dál a po startu dostane znovu konfiguraci). */
+    fun restartRover() = scope.launch {
+        val r = command(JSONObject().put("cmd", "restart"))
+        _messages.tryEmit(if (r?.optBoolean("ok") == true) "Rover se restartuje…" else "Rover neodpovídá")
+    }
+
+    // ------------------------------------------------------------------ testy (záložka Test)
+    /** Test doby do fixu roveru (restart X20) a po zapnutí roveru. */
+    val roverTtff = RoverTtff(context, scope, prefs, reset = ::resetX20Now, message = { _messages.tryEmit(it) })
+    /** Řízené testovací záznamy pro EKF (scénáře, značky, metadata). */
+    val test = TestSession(context, scope, this)
+
     // ------------------------------------------------------------------ záznam trasy
     /** Záznam trasy; [includeAverage] = trasa začne epochami běžícího průměru (od jeho začátku). */
     fun startRecording(name: String? = null, includeAverage: Boolean = false) = scope.launch {
-        if (_recording.value != null) return@launch
+        startRecordingNow(name, includeAverage)
+    }
+
+    /**
+     * Spustí záznam a vrátí id trasy (null = záznam už běží). [forceRaw] = surový proud i bez volby
+     * v uživatelském profilu (test – podklad pro EKF).
+     */
+    suspend fun startRecordingNow(name: String? = null, includeAverage: Boolean = false, forceRaw: Boolean = false): Long? {
+        if (_recording.value != null) return null
         val job = ensureJob()
         val now = System.currentTimeMillis()
         val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(now))
@@ -1314,7 +1429,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         // výchozí název: číslo trasy a čas na sekundy (jednoznačný), lze přejmenovat
         val n = name ?: "T$id $stamp"
         db.tracks().get(id)?.let { db.tracks().update(it.copy(name = n)) }
-        if (prefs.recordRaw) {
+        if (prefs.recordRaw || forceRaw) {
             val name = "track_$id.log"
             try {
                 val f = rawFile(name)
@@ -1338,6 +1453,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             }
         }
         _recording.value = RecordingState(id, n, pre, startMs)
+        return id
     }
 
     fun stopRecording() = scope.launch {
@@ -1445,8 +1561,8 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         val r = _recording.value ?: return
         if (!p.hasFix || p.timeMs == null) return
         recCounter++
-        // měření bodu ukládá každou epochu
-        if (_measure.value == null && recCounter % prefs.recordEvery.coerceAtLeast(1) != 0) return
+        // měření bodu a testovací záznam ukládají každou epochu
+        if (_measure.value == null && test.run.value == null && recCounter % prefs.recordEvery.coerceAtLeast(1) != 0) return
         val tp = TrackPoint(
             trackId = r.trackId, timeMs = p.timeMs, lat = p.lat!!, lon = p.lon!!,
             hEll = p.hEll ?: 0.0, hMsl = p.hMsl ?: 0.0, sN = p.sN, sE = p.sE, sU = p.sU,
@@ -1488,6 +1604,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                 liveEpoch(p, line)
                 phoneCompare.onRover(p)
                 assist.onPos(p)
+                roverTtff.onPos(p)
                 val now = System.currentTimeMillis()
                 if (p.hasFix && now - lastTrailMs >= 1000) {
                     lastTrailMs = now
