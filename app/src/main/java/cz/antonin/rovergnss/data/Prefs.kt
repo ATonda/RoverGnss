@@ -9,6 +9,26 @@ import org.json.JSONObject
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("rovergnss", Context.MODE_PRIVATE)
 
+    init {
+        // 0.8.2: dřívější uživatelské profily nahrazeny čtyřmi výchozími (Automat, Chůze, Měření, Auto)
+        if (!sp.getBoolean("profiles082", false)) {
+            sp.edit().putString("userProfiles", UserProfile.listToJson(UserProfile.defaults())).putInt("userIndex", 0)
+                .putBoolean("profiles082", true).apply()
+        }
+    }
+
+    /** Rover s adresou už dostal výchozí profily (Automat, Chůze, Měření, Auto). */
+    fun roverProvisioned(address: String): Boolean = sp.getBoolean("prov_$address", false)
+    fun setRoverProvisioned(address: String, v: Boolean) = sp.edit().putBoolean("prov_$address", v).apply()
+
+    /** Rozbalené sekce Nastavení (klíče). */
+    fun isExpanded(key: String): Boolean = sp.getStringSet("expanded", emptySet())?.contains(key) == true
+    fun setExpanded(key: String, v: Boolean) {
+        val s = (sp.getStringSet("expanded", emptySet()) ?: emptySet()).toMutableSet()
+        if (v) s += key else s -= key
+        sp.edit().putStringSet("expanded", s).apply()
+    }
+
     var roverAddress: String?
         get() = sp.getString("roverAddress", null)
         set(v) = sp.edit().putString("roverAddress", v).apply()
@@ -60,22 +80,11 @@ class Prefs(context: Context) {
 
 
     // ---------------------------------------------------------------- uživatelské profily
-    /** Uživatelské profily; při prvním spuštění se založí „Výchozí“ z dřívějších samostatných hodnot. */
+    /** Uživatelské profily; prázdný seznam = výchozí čtyři. */
     var userProfiles: List<UserProfile>
         get() {
             val l = sp.getString("userProfiles", null)?.let { UserProfile.listFromJson(it) } ?: emptyList()
-            if (l.isNotEmpty()) return l
-            return listOf(
-                UserProfile(
-                    name = "Výchozí",
-                    antennaH = sp.getFloat("antennaH", 0f).toDouble(),
-                    recordEvery = sp.getInt("recordEvery", 1),
-                    recordRaw = sp.getBoolean("recordRaw", true),
-                    measureSec = sp.getInt("measureSec", 180),
-                    measStatic = sp.getBoolean("measStatic", true),
-                    measRaw = sp.getBoolean("measRaw", false),
-                )
-            )
+            return l.ifEmpty { UserProfile.defaults() }
         }
         set(v) = sp.edit().putString("userProfiles", UserProfile.listToJson(v)).apply()
 

@@ -55,6 +55,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedOutputStream
 import java.io.File
@@ -1160,17 +1161,62 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         refreshUsers()
     }
 
+    /** Index profilu v roveru, který určuje aktivní profil aplikace (podle názvu; -1 = neměnit / v roveru není). */
+    private fun userRoverIndex(): Int {
+        val u = prefs.user
+        return if (u.roverName.isNotEmpty()) _roverProfiles.value.indexOf(u.roverName) else u.roverProfile
+    }
+
     private fun applyUserRoverProfile() {
-        val rp = prefs.user.roverProfile
-        if (rp < 0 || link.state.value !is LinkState.Connected) return
+        if (link.state.value !is LinkState.Connected) return
+        val rp = userRoverIndex()
+        if (rp < 0) return
         if (_info.value?.profileIndex == rp) return
         setProfile(rp)
     }
 
-    private fun requestRoverProfiles() = scope.launch {
-        val r = command(JSONObject().put("cmd", "get").put("what", "profiles")) ?: return@launch
-        val a = r.optJSONObject("data")?.optJSONArray("profiles") ?: return@launch
+    /** Přepnutí profilu tlačítkem na roveru: vybrat profil aplikace se stejným názvem přijímače. */
+    private fun followRoverProfile(name: String) {
+        val l = prefs.userProfiles
+        val i = l.indexOfFirst { it.roverName.isNotEmpty() && it.roverName == name }
+        if (i < 0 || i == prefs.userIndex) return
+        prefs.userIndex = i
+        refreshUsers()
+    }
+
+    private suspend fun loadRoverProfiles() {
+        val r = command(JSONObject().put("cmd", "get").put("what", "profiles")) ?: return
+        val a = r.optJSONObject("data")?.optJSONArray("profiles") ?: return
         _roverProfiles.value = (0 until a.length()).map { a.getJSONObject(it).optString("name", "Profil ${it + 1}") }
+    }
+
+    /**
+     * Při prvním připojení roveru zapíše profily Automat, Chůze, Měření, Auto (výchozí Automat) – stejné názvy
+     * jako výchozí profily aplikace. Masky, SBAS/HAS, bzučák a NMEA převezme z dosavadního prvního profilu.
+     */
+    private suspend fun provisionRover() {
+        val addr = (link.state.value as? LinkState.Connected)?.address ?: return
+        if (prefs.roverProvisioned(addr)) return
+        val i = _info.value ?: return
+        if (!i.canSetup) return
+        val d = roverProfilesJson() ?: return
+        val a = d.optJSONArray("profiles") ?: JSONArray()
+        val base = if (a.length() > 0) a.getJSONObject(0).toString() else "{}"
+        val autoDyn = if ("motion" in i.caps) "auto" else "pedestrian"
+        fun prof(name: String, rate: Int, dyn: String) = JSONObject(base).put("name", name).put("rate", rate).put("dyn", dyn)
+        val profiles = JSONArray()
+            .put(prof("Automat", 5, autoDyn))
+            .put(prof("Chůze", 5, "pedestrian"))
+            .put(prof("Měření", 1, "stationary"))
+            .put(prof("Auto", 5, "automotive"))
+        prefs.setRoverProvisioned(addr, true)  // před zápisem: uložení vyvolá nové načtení info (bez opakování)
+        val err = saveRoverProfiles(JSONObject().put("default", 0).put("active", 0).put("profiles", profiles))
+        if (err != null) {
+            prefs.setRoverProvisioned(addr, false)
+            _messages.tryEmit("Zápis profilů do roveru selhal: $err")
+        } else {
+            _messages.tryEmit("Do roveru zapsány profily Automat, Chůze, Měření, Auto (výchozí Automat)")
+        }
     }
 
     fun takeCuzkPoint(c: CuzkPoint) = scope.launch {
@@ -1191,6 +1237,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         scope.launch {
             link.state.collect { st ->
                 if (st is LinkState.Connected) {
+                    autoPending = false
                     delay(300)
                     requestInfo().join()
                     fetchRoverBuffer()
@@ -1269,8 +1316,33 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     }
 
     fun disconnect() {
+        autoPending = false
         ntrip.stop()
         link.disconnect()
+    }
+
+    private var autoTried = false
+    @Volatile private var autoPending = false
+
+    /**
+     * Po startu aplikace (s oprávněním Bluetooth) připojí naposledy použitý rover. Zkouší nejdéle 5 min,
+     * pak přestane. Po ručním odpojení se znovu nepřipojuje (až po dalším startu aplikace).
+     */
+    fun autoConnect() {
+        if (autoTried) return
+        autoTried = true
+        val a = prefs.roverAddress ?: return
+        if (!link.isEnabled || link.state.value !is LinkState.Idle) return
+        autoPending = true
+        connect(a)
+        scope.launch {
+            delay(AUTO_CONNECT_MS)
+            if (autoPending && link.state.value is LinkState.Connecting) {
+                autoPending = false
+                link.disconnect()
+                _messages.tryEmit("Rover se do 5 min nepřipojil – automatické připojení zastaveno")
+            }
+        }
     }
 
     fun startNtrip(p: NtripProfile) = ntrip.start(p)
@@ -1316,8 +1388,11 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             resetReason = if (r.has("reset")) r.optInt("reset") else null,
         )
         _info.value?.let { roverTtff.onInfo(it) }
-        requestRoverProfiles()
-        applyUserRoverProfile()
+        scope.launch {
+            provisionRover()
+            loadRoverProfiles()
+            applyUserRoverProfile()
+        }
         assist.onInfo(r.optString("fw"))
     }
 
@@ -1624,7 +1699,9 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             "BUF" -> RoverProtocol.parsePos(f)?.let { onBufEpoch(it) }
             "BUFEND" -> onBufEnd()
             "STA" -> RoverProtocol.parseSta(f)?.let {
+                val prevName = _sta.value?.profileName
                 _sta.value = it
+                if (prevName != null && prevName != it.profileName) followRoverProfile(it.profileName)
                 recordDiag(it)
                 test.onSta(it)
                 assist.onSta(it)
@@ -1739,6 +1816,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         if (System.currentTimeMillis() - lastGgaMs < 10_000) lastGga else null
 
     companion object {
+        private const val AUTO_CONNECT_MS = 5 * 60_000L
         private const val TAG = "RoverController"
         const val TRAIL_MAX = 7200  // 2 h při 1 Hz
         const val LIVE_MAX = 50_000       // průběžný průměr: nejvýš posledních 50 000 epoch (14 h při 1 Hz)

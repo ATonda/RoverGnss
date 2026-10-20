@@ -139,6 +139,10 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
     var userMenu by remember { mutableStateOf(false) }
     val user by c.user.collectAsStateWithLifecycle()
     val users by c.users.collectAsStateWithLifecycle()
+    val roverProfs by c.roverProfiles.collectAsStateWithLifecycle()
+    val linkNow by c.linkState.collectAsStateWithLifecycle()
+    val recvMissing = linkNow is cz.antonin.rovergnss.link.LinkState.Connected && roverProfs.isNotEmpty() &&
+        user.roverName.isNotEmpty() && user.roverName !in roverProfs
     val stake by c.stake.collectAsStateWithLifecycle()
     val meas by c.measure.collectAsStateWithLifecycle()
     val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -201,11 +205,11 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
                 Modifier.align(Alignment.TopStart).padding(8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                // uživatelský profil (výška antény, …) – přepnutí jedním klepnutím
+                // profil (výška antény, přijímač, …) – přepnutí jedním klepnutím, úpravy v Nastavení
                 Box {
                     androidx.compose.material3.AssistChip(
                         onClick = { userMenu = true },
-                        label = { Text(user.name) },
+                        label = { Text(user.name + if (recvMissing) " – přijímač nenalezen" else "") },
                         colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(
                             containerColor = Color.White.copy(alpha = 0.9f),
                         ),

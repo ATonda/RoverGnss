@@ -1,6 +1,7 @@
 package cz.antonin.rovergnss.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,6 +12,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -59,10 +62,63 @@ fun batteryText(s: cz.antonin.rovergnss.link.Sta): String {
 
 @Composable
 fun Section(title: String, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    SectionCard(title, null, modifier, null, content)
+}
+
+/**
+ * Sbalitelná sekce (Nastavení): nadpis se stavem [summary], klepnutím rozbalí / sbalí; stav rozbalení se pamatuje
+ * v [prefs] pod [key]. S [prefs] = null je sekce vždy rozbalená a bez stavu v nadpisu.
+ */
+@Composable
+fun FoldSection(
+    title: String,
+    summary: String?,
+    prefs: cz.antonin.rovergnss.data.Prefs?,
+    key: String,
+    content: @Composable () -> Unit,
+) {
+    if (prefs == null) {
+        Section(title, content = content)
+        return
+    }
+    var open by androidx.compose.runtime.saveable.rememberSaveable(key) {
+        androidx.compose.runtime.mutableStateOf(prefs.isExpanded(key))
+    }
+    SectionCard(title, summary, Modifier, open to {
+        open = !open
+        prefs.setExpanded(key, open)
+    }, content)
+}
+
+@Composable
+private fun SectionCard(
+    title: String,
+    summary: String?,
+    modifier: Modifier,
+    fold: Pair<Boolean, () -> Unit>?,
+    content: @Composable () -> Unit,
+) {
     Card(modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            content()
+            if (fold == null) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                content()
+            } else {
+                Row(
+                    Modifier.fillMaxWidth().clickable { fold.second() },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(title, style = MaterialTheme.typography.titleMedium)
+                        if (!summary.isNullOrEmpty()) Text(
+                            summary, style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Text(if (fold.first) "▴" else "▾", style = MaterialTheme.typography.titleMedium)
+                }
+                if (fold.first) content()
+            }
         }
     }
 }

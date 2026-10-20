@@ -90,10 +90,18 @@ internal fun RoverSetupSection(c: RoverController) {
     val sta by c.sta.collectAsStateWithLifecycle()
     if (link !is LinkState.Connected) return
     val i = info ?: return
-    Section("Nastavení roveru") {
+    val summary = sta?.let { s ->
+        listOfNotNull(
+            s.profileName.takeIf { it.isNotEmpty() },
+            s.rateHz?.let { "$it Hz" },
+            s.corrSourceText,
+            s.motionText,
+        ).joinToString(", ")
+    }
+    FoldSection("Nastavení roveru", summary, c.prefs, "receiver") {
         if (!i.canSetup) {
             Text("Rover má firmware ${i.fw} – nastavení z aplikace vyžaduje FW 0.13.0+.", style = MaterialTheme.typography.bodySmall)
-            return@Section
+            return@FoldSection
         }
         sta?.let { s ->
             KeyValue("Zdroj korekcí (X20)", (s.corrSourceText ?: "–") + (s.corrSignals?.let { ", $it sig." } ?: ""))
@@ -176,7 +184,7 @@ private fun ProfilesEditor(c: RoverController) {
         dirty = true
     }
 
-    Text("Profily roveru (přepínání krátkým stiskem tlačítka)", style = MaterialTheme.typography.titleSmall)
+    Text("Nastavení přijímače – profily v roveru (přepínání krátkým stiskem tlačítka)", style = MaterialTheme.typography.titleSmall)
     profs.forEachIndexed { k, p ->
         Row(verticalAlignment = Alignment.CenterVertically) {
             RadioButton(selected = def == k, onClick = {
@@ -196,7 +204,8 @@ private fun ProfilesEditor(c: RoverController) {
         if (open == k) ProfileFields(p) { np -> upd(k) { np } }
     }
     Text(
-        "○ = výchozí profil po zapnutí. Model „automaticky“ (FW 0.14.0+) přepíná podle stavu: Měřím = stationary, " +
+        "Profily aplikace (Automat, Chůze, Měření, Auto) přepínají přijímač se stejným názvem. " +
+            "○ = výchozí profil po zapnutí. Model „automaticky“ (FW 0.14.0+) přepíná podle stavu: Měřím = stationary, " +
             "Manipulace a Chodím = pedestrian, Jedu = automotive.",
         style = MaterialTheme.typography.bodySmall,
     )

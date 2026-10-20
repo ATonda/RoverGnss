@@ -61,5 +61,7 @@ class MainActivity : ComponentActivity() {
     private fun checkPermissions() {
         permissionsOk.value = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        // připojení k naposledy použitému roveru (jen jednou po startu aplikace)
+        if (permissionsOk.value) (application as RoverApp).controller.autoConnect()
     }
 }

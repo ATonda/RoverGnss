@@ -46,9 +46,9 @@ private val STAKE_SEC = listOf(3 to "3 s", 5 to "5 s", 10 to "10 s", 20 to "20 s
 @Composable
 fun SettingsScreen(c: RoverController) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        RoverSection(c)
+        RoverSection(c, fold = true)
         RoverSetupSection(c)
-        NtripSection(c)
+        NtripSection(c, fold = true)
         UserProfileSection(c)
         AppSection(c)
         Spacer(Modifier.height(12.dp))
@@ -66,7 +66,12 @@ private fun UserProfileSection(c: RoverController) {
     var text by remember { mutableStateOf("") }
     val idx = c.prefs.userIndex.coerceIn(0, (users.size - 1).coerceAtLeast(0))
 
-    Section("Uživatelský profil") {
+    val linkSt by c.linkState.collectAsStateWithLifecycle()
+    val missing = linkSt is cz.antonin.rovergnss.link.LinkState.Connected && roverProfiles.isNotEmpty() &&
+        u.roverName.isNotEmpty() && u.roverName !in roverProfiles
+    val summary = "${u.name}, anténa ${antCm(u.antennaH)}" +
+        (if (u.roverName.isNotEmpty()) ", přijímač ${u.roverName}" + (if (missing) " (v roveru není)" else "") else "")
+    FoldSection("Profil", summary, c.prefs, "profile") {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.weight(1f)) {
                 TextButton(onClick = { menu = true }) { Text("Profil: ${u.name} ▾", style = MaterialTheme.typography.titleSmall) }
@@ -91,7 +96,11 @@ private fun UserProfileSection(c: RoverController) {
             }) { Text("Přejmenovat") }
             OutlinedButton(onClick = { dialog = "delete" }, enabled = users.size > 1) { Text("Smazat") }
         }
-        Text("Nový profil je kopie aktivního. Přepínat lze i štítkem na mapě v Živě.", style = MaterialTheme.typography.bodySmall)
+        Text(
+            "Nový profil je kopie aktivního. Přepínání štítkem vlevo nahoře v Živě nebo tlačítkem na roveru " +
+                "(profil přijímače se stejným názvem).",
+            style = MaterialTheme.typography.bodySmall,
+        )
 
         // key = profil: při přepnutí se pole naplní znovu
         androidx.compose.runtime.key(idx, u.name) {
@@ -156,25 +165,28 @@ private fun UserProfileEditor(u: UserProfile, roverProfiles: List<String>, onCha
         modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
     )
 
-    Text("Profil roveru", style = MaterialTheme.typography.titleSmall)
+    Text("Nastavení přijímače", style = MaterialTheme.typography.titleSmall)
     Box {
-        val label = if (u.roverProfile < 0) "neměnit"
-        else roverProfiles.getOrNull(u.roverProfile)?.let { "${u.roverProfile + 1}: $it" } ?: "profil ${u.roverProfile + 1}"
+        val label = when {
+            u.roverName.isNotEmpty() -> u.roverName + if (roverProfiles.isNotEmpty() && u.roverName !in roverProfiles) " (v roveru není)" else ""
+            u.roverProfile >= 0 -> roverProfiles.getOrNull(u.roverProfile) ?: "profil ${u.roverProfile + 1}"
+            else -> "neměnit"
+        }
         OutlinedButton(onClick = { rpMenu = true }) { Text("Při výběru přepnout: $label") }
         DropdownMenu(expanded = rpMenu, onDismissRequest = { rpMenu = false }) {
             DropdownMenuItem(text = { Text("neměnit") }, onClick = {
                 rpMenu = false
-                onChange(u.copy(roverProfile = -1))
+                onChange(u.copy(roverProfile = -1, roverName = ""))
             })
-            roverProfiles.forEachIndexed { i, n ->
-                DropdownMenuItem(text = { Text("${i + 1}: $n") }, onClick = {
+            roverProfiles.forEach { n ->
+                DropdownMenuItem(text = { Text(n) }, onClick = {
                     rpMenu = false
-                    onChange(u.copy(roverProfile = i))
+                    onChange(u.copy(roverProfile = -1, roverName = n))
                 })
             }
         }
     }
-    if (roverProfiles.isEmpty()) Text("Seznam profilů roveru se načte po připojení roveru.", style = MaterialTheme.typography.bodySmall)
+    if (roverProfiles.isEmpty()) Text("Seznam profilů přijímače se načte po připojení roveru.", style = MaterialTheme.typography.bodySmall)
 
     Text("Záznam trasy", style = MaterialTheme.typography.titleSmall)
     OutlinedTextField(
@@ -234,14 +246,14 @@ private fun CheckRow(label: String, checked: Boolean, onChange: (Boolean) -> Uni
 @Composable
 private fun AppSection(c: RoverController) {
     val context = LocalContext.current
-    Section("Aplikace") {
-        val version = remember {
-            try {
-                context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
-            } catch (e: Exception) {
-                "?"
-            }
+    val version = remember {
+        try {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
+        } catch (e: Exception) {
+            "?"
         }
+    }
+    FoldSection("Aplikace", "verze $version", c.prefs, "app") {
         KeyValue("Verze", version)
         ExitButton(c)
     }

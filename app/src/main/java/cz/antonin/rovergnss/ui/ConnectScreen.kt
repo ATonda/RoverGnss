@@ -59,14 +59,24 @@ fun ConnectScreen(c: RoverController) {
 // ---------------------------------------------------------------------- rover
 @SuppressLint("MissingPermission")
 @Composable
-internal fun RoverSection(c: RoverController) {
+internal fun RoverSection(c: RoverController, fold: Boolean = false) {
     val link by c.linkState.collectAsStateWithLifecycle()
     val info by c.info.collectAsStateWithLifecycle()
     val sta by c.sta.collectAsStateWithLifecycle()
     var selected by remember { mutableStateOf(c.prefs.roverAddress) }
     val devices = remember(link) { c.link.bondedDevices() }
+    val summary = when (val l = link) {
+        LinkState.Idle -> "nepřipojeno"
+        is LinkState.Connecting -> "připojuji ${l.name} (pokus ${l.attempt})"
+        is LinkState.Failed -> "chyba: ${l.error}"
+        is LinkState.Connected -> listOfNotNull(
+            "připojeno ${l.name}",
+            info?.fw?.takeIf { it.isNotEmpty() }?.let { "FW $it" },
+            sta?.let { s -> s.batV?.let { v -> if (v < 2.5 || v > 4.4) "baterie ?" else "baterie ${s.batPct} %" } },
+        ).joinToString(", ")
+    }
 
-    Section("Rover") {
+    FoldSection("Rover", summary, if (fold) c.prefs else null, "rover") {
         when (val l = link) {
             LinkState.Idle -> {
                 if (!c.link.isEnabled) Text("Bluetooth je vypnutý.", color = MaterialTheme.colorScheme.error)
@@ -192,7 +202,7 @@ private fun X20ResetMenu(c: RoverController) {
 
 // ---------------------------------------------------------------------- NTRIP
 @Composable
-internal fun NtripSection(c: RoverController) {
+internal fun NtripSection(c: RoverController, fold: Boolean = false) {
     val state by c.ntripState.collectAsStateWithLifecycle()
     val sta by c.sta.collectAsStateWithLifecycle()
     val link by c.linkState.collectAsStateWithLifecycle()
@@ -208,7 +218,18 @@ internal fun NtripSection(c: RoverController) {
         }
     }
 
-    Section("Korekce NTRIP") {
+    tick.let { }
+    val ntripSummary = when (val s = state) {
+        NtripState.Off -> "vypnuto" + (profiles.getOrNull(index)?.let { " (${it.name})" } ?: "")
+        is NtripState.Connecting -> "připojuji ${profiles.getOrNull(index)?.name ?: ""} (pokus ${s.attempt})"
+        is NtripState.Streaming -> {
+            val age = (System.currentTimeMillis() - c.ntrip.lastDataMs) / 1000.0
+            "zapnuto, ${profiles.getOrNull(index)?.name ?: s.mount}, RTCM ${fmt(age, 0)} s"
+        }
+        is NtripState.Failed -> "chyba: ${s.error}"
+    }
+
+    FoldSection("Korekce NTRIP", ntripSummary, if (fold) c.prefs else null, "ntrip") {
         // výběr profilu
         var open by remember { mutableStateOf(false) }
         Row(verticalAlignment = Alignment.CenterVertically) {

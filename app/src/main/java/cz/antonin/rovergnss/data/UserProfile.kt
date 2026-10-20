@@ -19,13 +19,14 @@ data class UserProfile(
     val surveySigma: Double = 0.02,  // zaměření bodu: konec při σ vodorovně ≤ [m]
     val surveyMinEpochs: Int = 10,   // zaměření bodu: aspoň epoch
     val stakeSec: Int = 5,           // vytyčení: průměrování polohy [s]
-    val roverProfile: Int = -1,      // profil roveru (index), -1 = neměnit
+    val roverProfile: Int = -1,      // profil roveru (index), -1 = neměnit – starší profily, nahrazeno [roverName]
+    val roverName: String = "",      // nastavení přijímače: název profilu v roveru, "" = neměnit
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("name", name).put("antennaH", antennaH).put("recordEvery", recordEvery).put("recordRaw", recordRaw)
         .put("measureSec", measureSec).put("measStatic", measStatic).put("measRaw", measRaw)
         .put("surveyMaxSec", surveyMaxSec).put("surveySigma", surveySigma).put("surveyMinEpochs", surveyMinEpochs)
-        .put("stakeSec", stakeSec).put("roverProfile", roverProfile)
+        .put("stakeSec", stakeSec).put("roverProfile", roverProfile).put("roverName", roverName)
 
     companion object {
         fun fromJson(o: JSONObject) = UserProfile(
@@ -41,6 +42,19 @@ data class UserProfile(
             surveyMinEpochs = o.optInt("surveyMinEpochs", 10),
             stakeSec = o.optInt("stakeSec", 5),
             roverProfile = o.optInt("roverProfile", -1),
+            roverName = o.optString("roverName", ""),
+        )
+
+        /** Výchozí profily (aplikace 0.8.2); stejné názvy mají profily v roveru (zapíše je aplikace). */
+        fun defaults(): List<UserProfile> = listOf(
+            UserProfile(name = "Automat", antennaH = 0.04, recordEvery = 1, recordRaw = true, measureSec = 180,
+                measStatic = true, measRaw = false, roverName = "Automat"),
+            UserProfile(name = "Chůze", antennaH = 0.04, recordEvery = 1, recordRaw = true, measureSec = 180,
+                measStatic = true, measRaw = false, roverName = "Chůze"),
+            UserProfile(name = "Měření", antennaH = 0.04, recordEvery = 1, recordRaw = true, measureSec = 300,
+                measStatic = true, measRaw = true, roverName = "Měření"),
+            UserProfile(name = "Auto", antennaH = 0.04, recordEvery = 5, recordRaw = false, measureSec = 0,
+                measStatic = true, measRaw = false, roverName = "Auto"),
         )
 
         fun listToJson(list: List<UserProfile>): String = JSONArray().also { a -> list.forEach { a.put(it.toJson()) } }.toString()
