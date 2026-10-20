@@ -1,8 +1,16 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
+}
+
+// Vlastní ladicí klíč (mimo Git) – viz signingConfigs
+val ks = Properties().apply {
+    val f = rootProject.file("keystore/keystore.properties")
+    if (f.exists()) f.inputStream().use { this.load(it) }
 }
 
 android {
@@ -19,10 +27,6 @@ android {
 
     // Vlastní ladicí klíč: keystore/ v kořeni projektu (mimo Git). Na PC ho má Android Studio, na GitHubu ho
     // workflow vytvoří z GitHub Secrets – APK z obou míst jde instalovat přes sebe. Bez něj výchozí klíč Android Studia.
-    val ks = java.util.Properties().apply {
-        val f = rootProject.file("keystore/keystore.properties")
-        if (f.exists()) f.inputStream().use { load(it) }
-    }
     signingConfigs {
         if (!ks.isEmpty) getByName("debug") {
             storeFile = rootProject.file("keystore/rovergnss-debug.keystore")
