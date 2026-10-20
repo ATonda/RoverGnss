@@ -38,6 +38,7 @@ data class TestScenario(
     val markers: List<String> = emptyList(),
     val carry: String = "levý bok",
     val autoStopSec: Int = 0,
+    val light: Boolean = false,  // lehký záznam: bez surového proudu, každá 5. epocha (celý den)
 )
 
 /** Metadata záznamu (zadává uživatel před startem). */
@@ -79,6 +80,9 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
 
     private fun dir() = File(context.filesDir, "tests").also { it.mkdirs() }
     private fun fileOf(trackId: Long) = File(dir(), "test_$trackId.json")
+    private fun motionFileOf(trackId: Long) = File(dir(), "test_${trackId}_motion.csv")
+    private var motionOut: java.io.BufferedWriter? = null
+    private var lastMotion: Int? = null
 
     init {
         scope.launch(Dispatchers.IO) { refreshFiles() }
@@ -87,15 +91,49 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
     fun start(sc: TestScenario, meta: TestMeta) = scope.launch {
         if (_run.value != null) return@launch
         val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
-        val id = c.startRecordingNow(name = "TEST ${sc.title} $stamp", forceRaw = true) ?: run {
+        val id = c.startRecordingNow(name = "TEST ${sc.title} $stamp", forceRaw = !sc.light) ?: run {
             c.postMessage("Běží jiný záznam trasy – nejdřív ho ukonči")
             return@launch
         }
         _run.value = TestRun(id, sc, meta, System.currentTimeMillis())
+        lastMotion = null
+        withContext(Dispatchers.IO) {
+            try {
+                motionOut = motionFileOf(id).bufferedWriter(Charsets.UTF_8).also {
+                    it.write("cas_telefon;cas_gnss;stav;stav_text;automaticky;model_x20;a_sigma_mg;a_odchylka_mg;omega_max;kroky_pct;kroky_hz;rychlost;zmen\r\n")
+                }
+            } catch (_: java.io.IOException) {
+                motionOut = null
+            }
+        }
         mark("start: ${sc.title}")
         if (sc.steps.isNotEmpty()) stepJob = scope.launch { runSteps(sc) }
         else if (sc.autoStopSec > 0) stepJob = scope.launch { runTimer(sc.autoStopSec) }
         save()
+    }
+
+    /**
+     * Věta STA z roveru (1 Hz) během testu: stav přístroje a znaky do motion.csv, změna stavu roveru jako značka
+     * „rover: …“ (porovnání s ručními značkami stavu).
+     */
+    fun onSta(s: cz.antonin.rovergnss.link.Sta) {
+        if (_run.value == null) return
+        val m = s.motion ?: return
+        if (lastMotion != null && m != lastMotion) mark("rover: ${s.motionText}")
+        lastMotion = m
+        val now = System.currentTimeMillis()
+        val p = c.pos.value
+        val gnss = p?.timeMs?.let { it + (now - p.rxMs) }
+        fun d(v: Double?) = v?.let { String.format(Locale.US, "%.2f", it) } ?: ""
+        try {
+            motionOut?.write(
+                listOf(now.toString(), gnss?.toString() ?: "", m.toString(), s.motionText ?: "", if (s.motionAuto) "1" else "0",
+                    s.dynModel?.toString() ?: "", s.accStdMg?.toString() ?: "", s.accDevMg?.toString() ?: "", d(s.gyroMax),
+                    s.stepScore?.toString() ?: "", d(s.stepHz), d(s.motionSpeed), s.motionChanges?.toString() ?: "").joinToString(";") + "\r\n"
+            )
+        } catch (_: java.io.IOException) {
+            motionOut = null
+        }
     }
 
     /** Značka s časem telefonu a odhadem času GNSS (poslední epocha + doba od jejího příjmu). */
@@ -112,6 +150,13 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
         stepJob?.cancel()
         mark("konec")
         c.stopRecording().join()
+        withContext(Dispatchers.IO) {
+            try {
+                motionOut?.close()
+            } catch (_: java.io.IOException) {
+            }
+            motionOut = null
+        }
         save()
         _run.value = null
         withContext(Dispatchers.IO) { refreshFiles() }
@@ -181,10 +226,10 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
                 is NtripState.Streaming -> "NTRIP (RTCM)"
                 else -> "bez NTRIP (HAS/SBAS podle profilu roveru)"
             })
-            // geometrie IMU v krabičce (rover-firmware-specifikace.md, Rozhodnutí 20. 10.)
+            // geometrie IMU v krabičce (rover-firmware-specifikace.md; osy ověřené testem 6 poloh 20. 10.)
             .put("imu", JSONObject()
-                .put("axes", "X vodorovně doleva (pohled na čelo s USB), Y dolů ke dnu, Z ven z čela")
-                .put("lever_mm", JSONArray(listOf(17.5, -16.0, -45.0)))
+                .put("axes", "X vodorovně doprava (pohled na čelo s USB), Y dolů ke dnu, Z dovnitř krabičky (od čela)")
+                .put("lever_mm", JSONArray(listOf(-17.5, -16.0, 45.0)))
                 .put("box_mm", JSONArray(listOf(100, 85, 40))))
             .put("markers", JSONArray().apply {
                 r.markers.forEach { m ->
@@ -210,6 +255,7 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
 
     fun delete(t: TestFile) = scope.launch(Dispatchers.IO) {
         t.file.delete()
+        motionFileOf(t.trackId).delete()
         refreshFiles()
     }
 
@@ -230,6 +276,12 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
                 Exporter.diagCsv(c.db.tracks().diag(track.id), NoClose(z))
                 z.closeEntry()
                 n += 2
+                motionFileOf(track.id).takeIf { it.exists() }?.let { f ->
+                    z.putNextEntry(ZipEntry("motion.csv"))
+                    f.inputStream().use { it.copyTo(z) }
+                    z.closeEntry()
+                    n++
+                }
                 track.rawFile?.let { c.rawFile(it) }?.takeIf { it.exists() }?.let { f ->
                     z.putNextEntry(ZipEntry("raw.log"))
                     f.inputStream().use { it.copyTo(z) }
@@ -250,6 +302,18 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
     }
 
     companion object {
+        /** Název scénáře do jména souboru: bez diakritiky a mezer („6 poloh“ -> „6_poloh“). */
+        fun slug(s: String): String =
+            java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "")
+                .replace(Regex("[^A-Za-z0-9]+"), "_").trim('_')
+
+        private val DAY_PROC = listOf(
+            "Běžný den s roverem: měření bodů, chůze, auto (krabička na palubní desce), manipulace.",
+            "Při každé změně označ skutečný stav tlačítkem – slouží k ověření automatického přepínání modelu.",
+            "Rover musí mít profil „Automaticky“. Změny stavu roveru se zapisují samy (značka „rover: …“).",
+        )
+        private val DAY_MARKS = listOf("Měřím", "Manipulace", "Chodím", "Jedu", "poznámka")
+
         val CARRY = listOf("levý bok", "pravý bok", "geodetická tyč", "v ruce", "batoh", "auto – držák", "jiné")
         val ORIENT = listOf("čelo (USB) dopředu", "čelo (USB) dozadu", "čelo (USB) nahoru", "čelo (USB) dolů", "neurčeno")
 
@@ -295,6 +359,14 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
                 "forest", "Les", "výpadky pod stromy",
                 listOf("Začni i skonči na volném prostranství (kontrola konce trasy).", "Značky vstupu a výstupu z lesa."),
                 markers = listOf("vstup do lesa", "výstup z lesa", "zastávka – začátek", "zastávka – konec", "poznámka"),
+            ),
+            TestScenario(
+                "day_light", "Celý den (lehký)", "ověření automatického modelu; bez surové IMU, ~1 MB/h",
+                DAY_PROC, markers = DAY_MARKS, carry = "různě", light = true,
+            ),
+            TestScenario(
+                "day_full", "Celý den (plný)", "ladění mezí z dat; se surovou IMU, ~15 MB/h – na kratší úseky",
+                DAY_PROC, markers = DAY_MARKS, carry = "různě",
             ),
             TestScenario(
                 "car", "Auto", "jízda, model automotive",

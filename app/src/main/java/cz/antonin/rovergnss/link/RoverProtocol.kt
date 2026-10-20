@@ -90,8 +90,40 @@ data class Sta(
     val corrCfg: Int? = null,     // nastavení SBAS/HAS v X20: 1 OK, 0 NAK, -1 bez odpovědi
     val passthrough: Boolean = false, // průchozí režim USB <-> X20
     val navRec: Boolean = false,  // rover posílá při záznamu rámce NAV-PVT/COV/HPPOSLLH
+    // FW 0.14.0+: stav přístroje a automatický model (starší firmware: null)
+    val motion: Int? = null,      // 0 Měřím, 1 Manipulace, 2 Chodím, 3 Jedu
+    val motionAuto: Boolean = false, // profil s modelem „automaticky“
+    val dynModel: Int? = null,    // model X20: 2 stationary, 3 pedestrian, 4 automotive
+    val accStdMg: Int? = null,    // rozptyl |a| v okně 2 s [mg]
+    val accDevMg: Int? = null,    // největší odchylka |a| od 1 g [mg]
+    val gyroMax: Double? = null,  // největší |ω| [°/s]
+    val stepScore: Int? = null,   // kroky (autokorelace ×100)
+    val stepHz: Double? = null,   // frekvence kroků [Hz]
+    val motionSpeed: Double? = null, // rychlost GNSS, kterou použil [m/s] (-1 bez fixu)
+    val motionChanges: Long? = null, // změn stavu od startu roveru
     val rxMs: Long = System.currentTimeMillis(),
 ) {
+    /** Stav přístroje slovy. */
+    val motionText: String?
+        get() = when (motion) {
+            0 -> "Měřím"
+            1 -> "Manipulace"
+            2 -> "Chodím"
+            3 -> "Jedu"
+            else -> null
+        }
+
+    /** Model X20 slovy. */
+    val dynText: String?
+        get() = when (dynModel) {
+            null -> null
+            0 -> "portable"
+            2 -> "stationary"
+            3 -> "pedestrian"
+            4 -> "automotive"
+            else -> "model $dynModel"
+        }
+
     /** Zdroj korekcí slovy (UBX-NAV-SIG corrSource). */
     val corrSourceText: String?
         get() = when (corrSource) {
@@ -105,7 +137,8 @@ data class Sta(
             6 -> "QZSS SLAS"
             7 -> "SPARTN"
             8 -> "CLAS"
-            else -> "zdroj $corrSource (HAS?)"
+            12 -> "HAS"
+            else -> "zdroj $corrSource"
         }
 }
 
@@ -208,6 +241,16 @@ object RoverProtocol {
             corrCfg = f.getOrNull(31)?.let { i(it) },
             passthrough = f.getOrNull(32) == "1",
             navRec = f.getOrNull(33) == "1",
+            motion = f.getOrNull(34)?.let { i(it) },
+            motionAuto = f.getOrNull(35) == "1",
+            dynModel = f.getOrNull(36)?.let { i(it) },
+            accStdMg = f.getOrNull(37)?.let { i(it) },
+            accDevMg = f.getOrNull(38)?.let { i(it) },
+            gyroMax = f.getOrNull(39)?.let { d(it) },
+            stepScore = f.getOrNull(40)?.let { i(it) },
+            stepHz = f.getOrNull(41)?.let { d(it) },
+            motionSpeed = f.getOrNull(42)?.let { d(it) },
+            motionChanges = f.getOrNull(43)?.let { l(it) },
         )
     }
 

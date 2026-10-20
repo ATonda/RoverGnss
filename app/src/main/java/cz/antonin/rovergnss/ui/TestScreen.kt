@@ -225,7 +225,7 @@ private fun TestFilesSection(c: RoverController) {
                 TextButton(onClick = {
                     pending = t
                     val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(t.startMs))
-                    zip.launch("RG_TEST_${stamp}.zip")
+                    zip.launch("RG_TEST_${stamp}_${TestSession.slug(t.title)}.zip")
                 }) { Text("ZIP") }
                 TextButton(onClick = { toDelete = t }) { Text("Smazat") }
             }

@@ -1415,10 +1415,10 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     }
 
     /**
-     * Spustí záznam a vrátí id trasy (null = záznam už běží). [forceRaw] = surový proud i bez volby
-     * v uživatelském profilu (test – podklad pro EKF).
+     * Spustí záznam a vrátí id trasy (null = záznam už běží). [forceRaw]: true = surový proud vždy (test pro EKF),
+     * false = nikdy (lehký test), null = podle uživatelského profilu.
      */
-    suspend fun startRecordingNow(name: String? = null, includeAverage: Boolean = false, forceRaw: Boolean = false): Long? {
+    suspend fun startRecordingNow(name: String? = null, includeAverage: Boolean = false, forceRaw: Boolean? = null): Long? {
         if (_recording.value != null) return null
         val job = ensureJob()
         val now = System.currentTimeMillis()
@@ -1429,7 +1429,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         // výchozí název: číslo trasy a čas na sekundy (jednoznačný), lze přejmenovat
         val n = name ?: "T$id $stamp"
         db.tracks().get(id)?.let { db.tracks().update(it.copy(name = n)) }
-        if (prefs.recordRaw || forceRaw) {
+        if (forceRaw ?: prefs.recordRaw) {
             val name = "track_$id.log"
             try {
                 val f = rawFile(name)
@@ -1561,8 +1561,13 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         val r = _recording.value ?: return
         if (!p.hasFix || p.timeMs == null) return
         recCounter++
-        // měření bodu a testovací záznam ukládají každou epochu
-        if (_measure.value == null && test.run.value == null && recCounter % prefs.recordEvery.coerceAtLeast(1) != 0) return
+        // měření bodu a testovací záznam ukládají každou epochu (lehký test každou 5.)
+        val every = when {
+            _measure.value != null -> 1
+            test.run.value != null -> if (test.run.value?.scenario?.light == true) 5 else 1
+            else -> prefs.recordEvery.coerceAtLeast(1)
+        }
+        if (recCounter % every != 0) return
         val tp = TrackPoint(
             trackId = r.trackId, timeMs = p.timeMs, lat = p.lat!!, lon = p.lon!!,
             hEll = p.hEll ?: 0.0, hMsl = p.hMsl ?: 0.0, sN = p.sN, sE = p.sE, sU = p.sU,
@@ -1621,6 +1626,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             "STA" -> RoverProtocol.parseSta(f)?.let {
                 _sta.value = it
                 recordDiag(it)
+                test.onSta(it)
                 assist.onSta(it)
             }
             "SAT" -> RoverProtocol.parseSat(f)?.let { part ->

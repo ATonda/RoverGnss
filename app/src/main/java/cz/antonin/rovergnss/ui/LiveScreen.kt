@@ -357,6 +357,7 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
                 )
                 Text("SV ${p.numSv}  PDOP ${fmt(p.pdop, 1)}")
                 if (p.moving) Text("pohyb", color = Color(0xFFEF6C00))
+                sta?.motionText?.let { m -> Text(if (sta?.motionAuto == true) "$m (auto)" else m, style = MaterialTheme.typography.bodySmall) }
             }
             val ar = avg?.result
             // zobrazená poloha: okamžitá epocha, nebo průměr (poloha antény)

@@ -79,7 +79,7 @@ private data class RoverProf(
     }
 }
 
-private val DYN = listOf("pedestrian" to "chodec", "automotive" to "auto", "stationary" to "statika", "auto" to "automaticky*")
+private val DYN = listOf("auto" to "automaticky", "pedestrian" to "chodec", "automotive" to "auto", "stationary" to "statika")
 private val RATES = listOf(1, 5, 10)
 
 /** Nastavení roveru z aplikace (FW 0.13.0+): profily, název BT, kalibrace, průchozí režim, restart. */
@@ -97,6 +97,13 @@ internal fun RoverSetupSection(c: RoverController) {
         }
         sta?.let { s ->
             KeyValue("Zdroj korekcí (X20)", (s.corrSourceText ?: "–") + (s.corrSignals?.let { ", $it sig." } ?: ""))
+            s.motionText?.let { m ->
+                KeyValue("Stav / model X20", "$m / ${s.dynText ?: "–"}" + if (s.motionAuto) " (automaticky)" else "")
+                KeyValue(
+                    "|a| σ, ω max, kroky",
+                    "${s.accStdMg ?: "–"} mg, ${fmt(s.gyroMax, 0)} °/s, ${s.stepScore ?: "–"} %" + (s.stepHz?.takeIf { it > 0 }?.let { " (${fmt(it, 1)} Hz)" } ?: ""),
+                )
+            }
             KeyValue("Nastavení SBAS/HAS", when (s.corrCfg) {
                 1 -> "OK"
                 0 -> "X20 odmítla (NAK)"
@@ -188,7 +195,11 @@ private fun ProfilesEditor(c: RoverController) {
         }
         if (open == k) ProfileFields(p) { np -> upd(k) { np } }
     }
-    Text("○ = výchozí profil po zapnutí. *automaticky zatím jako chodec.", style = MaterialTheme.typography.bodySmall)
+    Text(
+        "○ = výchozí profil po zapnutí. Model „automaticky“ (FW 0.14.0+) přepíná podle stavu: Měřím = stationary, " +
+            "Manipulace a Chodím = pedestrian, Jedu = automotive.",
+        style = MaterialTheme.typography.bodySmall,
+    )
     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(onClick = {
             scope.launch {
