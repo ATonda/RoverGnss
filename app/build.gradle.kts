@@ -17,6 +17,16 @@ android {
         versionName = "0.8.0"
     }
 
+    // Ladicí klíč v repozitáři: Android Studio i GitHub Actions podepisují stejně (instalace přes sebe bez ztráty dat)
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
