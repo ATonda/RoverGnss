@@ -17,13 +17,18 @@ android {
         versionName = "0.8.0"
     }
 
-    // Ladicí klíč v repozitáři: Android Studio i GitHub Actions podepisují stejně (instalace přes sebe bez ztráty dat)
+    // Vlastní ladicí klíč: keystore/ v kořeni projektu (mimo Git). Na PC ho má Android Studio, na GitHubu ho
+    // workflow vytvoří z GitHub Secrets – APK z obou míst jde instalovat přes sebe. Bez něj výchozí klíč Android Studia.
+    val ks = java.util.Properties().apply {
+        val f = rootProject.file("keystore/keystore.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
     signingConfigs {
-        getByName("debug") {
-            storeFile = file("debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+        if (!ks.isEmpty) getByName("debug") {
+            storeFile = rootProject.file("keystore/rovergnss-debug.keystore")
+            storePassword = ks.getProperty("storePassword")
+            keyAlias = ks.getProperty("keyAlias")
+            keyPassword = ks.getProperty("keyPassword")
         }
     }
 

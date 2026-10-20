@@ -12,5 +12,5 @@
 *.aab
 *.keystore
 *.jks
-# ladicí klíč (stejný jako v Android Studiu na PC) – APK z GitHub Actions jde nainstalovat přes stávající aplikaci
-!app/debug.keystore
+# podpisový klíč (jen na PC a v GitHub Secrets, nikdy v repozitáři)
+/keystore/

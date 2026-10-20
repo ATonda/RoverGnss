@@ -26,3 +26,9 @@ app/src/main/java/cz/antonin/rovergnss/
   export/   CSV, GPX
   ui/       obrazovky Compose, mapa
 ```
+
+## Licence
+
+GPL-3.0 – viz [LICENSE](LICENSE).
+
+Mřížky v `app/src/main/assets` (`CR-2005_v1005.dat` – kvazigeoid ČR, `table_yx_3_v1710.dat` – opravná tabulka S-JTSK) © ČÚZK, převzato z dat ČÚZK.

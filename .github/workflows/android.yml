@@ -1,5 +1,6 @@
 # Překlad aplikace RoverGnss po každém pushi do main (a ručně: Actions → Build APK → Run workflow).
 # Výsledek: Actions → poslední běh → Artifacts → RoverGnss-<verze>.zip (uvnitř APK).
+# Podpis: klíč z GitHub Secrets (DEBUG_KEYSTORE_B64, DEBUG_KEYSTORE_PASSWORD); bez nich náhodný ladicí klíč.
 name: Build APK
 
 on:
@@ -11,14 +12,27 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Podpisový klíč
+        env:
+          KS_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
+          KS_PW: ${{ secrets.DEBUG_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            mkdir -p keystore
+            echo "$KS_B64" | base64 -d > keystore/rovergnss-debug.keystore
+            printf 'storePassword=%s\nkeyAlias=rovergnss\nkeyPassword=%s\n' "$KS_PW" "$KS_PW" > keystore/keystore.properties
+          else
+            echo "Bez klíče v Secrets – APK s náhodným ladicím klíčem"
+          fi
 
       - name: Překlad (debug APK)
         run: |
@@ -29,7 +43,7 @@ jobs:
         id: ver
         run: echo "name=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: RoverGnss-${{ steps.ver.outputs.name }}
           path: app/build/outputs/apk/debug/*.apk
