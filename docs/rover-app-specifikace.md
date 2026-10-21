@@ -297,3 +297,17 @@ Cíl: kratší studený start X20 po delším vypnutí bez účtu a bez internet
 - **Profily v roveru:** při prvním připojení každého roveru (podle adresy BT) aplikace zapíše do roveru čtyři profily Automat, Chůze, Měření, Auto, výchozí po zapnutí Automat (masky, SBAS/HAS, bzučák a NMEA převezme z dosavadního prvního profilu). Dosavadní profily roveru se přepíšou. Firmware bez stavu přístroje (bez „motion“, starší než 0.14.0) dostane u Automatu model pedestrian.
 - Krátký stisk tlačítka na roveru přepne profil roveru a aplikace přepne profil se stejným názvem přijímače. Bez aplikace (např. CurieFinder přes NMEA) rover běží podle svého profilu, po zapnutí vždy Automat.
 - V Nastavení roveru se seznam profilů roveru jmenuje „Nastavení přijímače“.
+
+## 15. Stav aplikace 0.8.3 (21. 10.) – FW 0.15.0
+
+- **Test „Kontrolní okruh“** (karta Test, jeden záznam, jeden ZIP):
+  1. Výběr bodu lokality se souřadnicemi ETRS89; profil se přepne na Automat (po testu zpět). Tlačítko „Studený start a vypnout“: studený start X20 a výzva vypnout rover.
+  2. Po odpojení a novém připojení roveru (nebo „Rover je zapnutý – pokračovat“) začne záznam (surový proud, IMU, NAV) se značkou „rover připojen – příprava“; manipulace se zaznamená.
+  3. „Položeno na bodě“: studený start X20, měření bodu 30 min uvnitř záznamu testu (statický model podle profilu), velký odpočet; doba do 3D fixu a do korekcí od tohoto okamžiku (značky „3D fix“, „korekce (…)“), živá odchylka 2D, N/E a výšky od bodu.
+  4. Okruh: značky nesu v ruce, nastupuju, jedu, vystupuju, chodím, les – vstup / výstup, klid, poznámka.
+  5. „Položeno na bodě (15 min)“: druhé měření, po odpočtu konec testu.
+  - U každé fáze ⓘ s postupem. `test.json` navíc `circuit`: bod, profil, časy studených startů, `ttffFixS`, `ttffCorrS`, `meas1`/`meas2` (začátek, konec, epochy, průměr, dN, dE, dU, d2, dH, id měření). Měření se uloží i k bodu (historie měření).
+- Měření kontrolního bodu může běžet uvnitř běžícího záznamu (`startMeasurement(…, inTrack)`) – trasa se nezakládá ani neukončuje.
+- STA z FW 0.15.0 (teplota IMU, klid, kroky, bias gyra) se zapisuje do `motion.csv` (sloupce `teplota_imu;klid;kroky_celkem;bias_aktualizaci;bias_x;bias_y;bias_z`).
+- Kalibrace gyra 30 s na pozadí (čeká na událost `cal_gyro`), se starším FW beze změny.
+- Pozn.: `raw.log` limit velikosti nemá (zápis i export ZIP průběžně). Konec surových dat v testu 21. 10. v 6482 s způsobilo ukončení záznamu trasy, ne velikost – příčina neověřena.
