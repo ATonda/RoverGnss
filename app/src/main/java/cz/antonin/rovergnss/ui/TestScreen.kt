@@ -42,8 +42,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import cz.antonin.rovergnss.data.Point
 import cz.antonin.rovergnss.link.LinkState
 import cz.antonin.rovergnss.service.RoverController
+import cz.antonin.rovergnss.service.TestRun
 import cz.antonin.rovergnss.service.RoverTtff
 import cz.antonin.rovergnss.service.TestFile
 import cz.antonin.rovergnss.service.TestMeta
@@ -84,6 +86,13 @@ private fun TestRecordSection(c: RoverController) {
     var noteDialog by remember { mutableStateOf(false) }
     var noteText by remember { mutableStateOf("") }
     var tick by remember { mutableIntStateOf(0) }
+    var points by remember { mutableStateOf<List<Point>>(emptyList()) }
+    var pointSel by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(sc.circuit, run == null) {
+        if (sc.circuit && run == null) {
+            points = c.db.points().listByJob(c.ensureJob().id).filter { it.lat != null && it.lon != null && it.hEll != null }
+        }
+    }
     LaunchedEffect(run != null) {
         while (run != null) {
             delay(1000)
@@ -135,10 +144,36 @@ private fun TestRecordSection(c: RoverController) {
             if (!connected) Text("Připoj rover.", color = MaterialTheme.colorScheme.error)
             else if (!fw13) Text("Rover nemá FW 0.13.0+ – rámce NAV pro EKF nepřijdou (IMU ano).", color = MaterialTheme.colorScheme.error)
             if (rec != null) Text("Běží jiný záznam trasy.", color = MaterialTheme.colorScheme.error)
-            Button(
+            if (sc.circuit) {
+                Text("Bod (lokalita, se souřadnicemi ETRS89)", style = MaterialTheme.typography.titleSmall)
+                if (points.isEmpty()) Text("V lokalitě není bod s danými souřadnicemi – převezmi ho z vrstvy ČÚZK v Živě.",
+                    color = MaterialTheme.colorScheme.error)
+                points.forEach { p ->
+                    Row(Modifier.fillMaxWidth().clickable { pointSel = p.id }, verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = pointSel == p.id, onClick = { pointSel = p.id })
+                        Column {
+                            Text(p.name)
+                            Text(listOfNotNull(p.kind.ifEmpty { null }, p.y?.let { String.format(Locale.US, "Y %.2f X %.2f", it, p.x ?: 0.0) },
+                                p.bpv?.let { String.format(Locale.US, "Bpv %.3f", it) }).joinToString(", "),
+                                style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                val point = points.firstOrNull { it.id == pointSel }
+                Button(
+                    onClick = { point?.let { c.test.startCircuit(sc, TestMeta(carry, orient, note.trim()), it) } },
+                    enabled = connected && rec == null && point != null,
+                ) { Text("Studený start a vypnout") }
+            } else Button(
                 onClick = { c.test.start(sc, TestMeta(carry, orient, note.trim())) },
                 enabled = connected && rec == null,
             ) { Text("Spustit test") }
+        } else if (r.scenario.circuit) {
+            tick.let { }
+            CircuitRun(c, r, onNote = {
+                noteText = ""
+                noteDialog = true
+            })
         } else {
             tick.let { }
             val el = (System.currentTimeMillis() - r.startMs) / 1000
@@ -192,6 +227,116 @@ private fun TestRecordSection(c: RoverController) {
         },
         dismissButton = { TextButton(onClick = { noteDialog = false }) { Text("Zrušit") } },
     )
+}
+
+// ---------------------------------------------------------------------- Kontrolní okruh
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun CircuitRun(c: RoverController, r: TestRun, onNote: () -> Unit) {
+    val meas by c.measure.collectAsStateWithLifecycle()
+    val pos by c.pos.collectAsStateWithLifecycle()
+    val rec by c.recording.collectAsStateWithLifecycle()
+    val sta by c.sta.collectAsStateWithLifecycle()
+    var infoOpen by remember { mutableStateOf(false) }
+    val phaseTitle = when (r.phase) {
+        TestSession.PH_OFF -> "1. Vypnutí a zapnutí roveru"
+        TestSession.PH_PLACE -> "2. Položit na bod"
+        TestSession.PH_MEAS1 -> "3. Měření na bodě (30 min)"
+        TestSession.PH_LOOP -> "4. Okruh"
+        TestSession.PH_MEAS2 -> "5. Druhé měření na bodě (15 min)"
+        else -> r.phase
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(r.scenario.title + (r.point?.let { " – ${it.name}" } ?: ""), style = MaterialTheme.typography.titleSmall)
+            Text(phaseTitle, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        }
+        TextButton(onClick = { infoOpen = true }) { Text("ⓘ", style = MaterialTheme.typography.headlineSmall) }
+    }
+    if (r.info.isNotEmpty()) Text(r.info, style = MaterialTheme.typography.bodyLarge)
+    if (r.trackId != 0L) {
+        val el = (System.currentTimeMillis() - r.startMs) / 1000
+        KeyValue("Záznam", String.format(Locale.US, "%d:%02d:%02d, epoch %d", el / 3600, el / 60 % 60, el % 60, rec?.points ?: 0))
+    }
+    sta?.let { s ->
+        KeyValue("Stav roveru", (s.motionText ?: "–") + (s.imuTemp?.let { String.format(Locale.US, ", IMU %.1f °C", it) } ?: "") +
+            if (s.still == true) ", klid" else "")
+    }
+    when (r.phase) {
+        TestSession.PH_OFF -> {
+            OutlinedButton(onClick = { c.test.circuitPowered() }) { Text("Rover je zapnutý – pokračovat") }
+        }
+        TestSession.PH_PLACE -> {
+            Button(onClick = { c.test.circuitPlaced() }, modifier = Modifier.fillMaxWidth().height(64.dp)) {
+                Text("Položeno na bodě", style = MaterialTheme.typography.titleLarge)
+            }
+        }
+        TestSession.PH_MEAS1, TestSession.PH_MEAS2 -> {
+            Text(String.format(Locale.US, "%d:%02d", r.remainSec / 60, r.remainSec % 60),
+                style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary)
+            if (r.phase == TestSession.PH_MEAS1) {
+                KeyValue("3D fix od studeného startu", r.fixSec?.let { String.format(Locale.US, "%.1f s", it) } ?: "čekám…")
+                KeyValue("Korekce od studeného startu", r.corrSec?.let { String.format(Locale.US, "%.1f s", it) } ?: "čekám…")
+            }
+            KeyValue("Kvalita", pos?.quality?.label ?: "–")
+            pos?.let { p -> KeyValue("hAcc / vAcc", String.format(Locale.US, "%.3f / %.3f m", p.hAcc, p.vAcc)) }
+            meas?.let { m ->
+                KeyValue("Epoch v průměru", "${m.result?.used ?: 0} z ${m.result?.epochs ?: 0}")
+                m.offset?.let { o ->
+                    KeyValue("Odchylka 2D", o.d2?.let { String.format(Locale.US, "%.3f m", it) } ?: "–")
+                    KeyValue("Odchylka N / E", String.format(Locale.US, "%+.3f / %+.3f m", o.dN ?: Double.NaN, o.dE ?: Double.NaN))
+                    KeyValue("Odchylka výšky", o.dU?.let { String.format(Locale.US, "%+.3f m", it) } ?: "–")
+                }
+            }
+        }
+        TestSession.PH_LOOP -> {
+            Text("Značky", style = MaterialTheme.typography.titleSmall)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                r.scenario.markers.forEach { m ->
+                    OutlinedButton(onClick = { if (m == "poznámka") onNote() else c.test.mark(m) }) { Text(m) }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = { c.test.circuitPlaced() }, modifier = Modifier.fillMaxWidth().height(64.dp)) {
+                Text("Položeno na bodě (15 min)", style = MaterialTheme.typography.titleLarge)
+            }
+        }
+    }
+    r.markers.takeLast(3).reversed().forEach { m ->
+        val t = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(m.phoneMs))
+        Text("$t  ${m.label}", style = MaterialTheme.typography.bodySmall)
+    }
+    Button(onClick = { c.test.stop() }) { Text(if (r.trackId == 0L) "Zrušit test" else "Ukončit test") }
+
+    if (infoOpen) AlertDialog(
+        onDismissRequest = { infoOpen = false },
+        title = { Text(phaseTitle) },
+        text = { Text(circuitHelp(r.phase, r.point?.name ?: "bod")) },
+        confirmButton = { TextButton(onClick = { infoOpen = false }) { Text("Zavřít") } },
+    )
+}
+
+private fun circuitHelp(phase: String, point: String): String = when (phase) {
+    TestSession.PH_OFF ->
+        "X20 dostal studený start (smazání efemerid a almanachu v RAM). Teď rover vypni vypínačem. " +
+            "Po zapnutí se aplikace připojí sama a spustí záznam (IMU, NAV, poloha). Když se rover neodpojil " +
+            "nebo už je zapnutý, stiskni „Rover je zapnutý – pokračovat“. Rover nenabíjej."
+    TestSession.PH_PLACE ->
+        "Záznam běží – manipulace s krabičkou se zaznamená. Polož rover na bod $point: dnem dolů, střed krabičky " +
+            "(anténa) přesně nad značkou, výška antény podle profilu. Pak stiskni „Položeno na bodě“: X20 dostane " +
+            "studený start a začne měření 30 min s odpočtem. Doba do 3D fixu a do korekcí se počítá od tohoto okamžiku."
+    TestSession.PH_MEAS1 ->
+        "Na rover nesahej, nestoj nad ním (stín signálu). Telefon může být opodál (do ~10 m kvůli Bluetooth). " +
+            "Odchylka se počítá průběžně z průměru epoch bez pohybu. Po skončení odpočtu pípnutí, měření se uloží k bodu " +
+            "a začne okruh."
+    TestSession.PH_LOOP ->
+        "Vezmi rover, jeď kousek autem (krabička v držáku), pak pěšky po poli do lesa a zpět. Při každé změně stiskni " +
+            "značku (nesu v ruce, nastupuju, jedu, vystupuju, chodím, les – vstup / výstup, klid). Telefon nos u sebe. " +
+            "Na bodě rover polož stejně jako poprvé a stiskni „Položeno na bodě (15 min)“."
+    TestSession.PH_MEAS2 ->
+        "Druhé měření na bodě, 15 min. Na rover nesahej. Po odpočtu se test sám ukončí a uloží; ZIP najdeš v Uložených testech."
+    else -> ""
 }
 
 @Composable

@@ -114,6 +114,7 @@ data class MeasureState(
     val mode: Int = MeasureMode.CONTROL,
     val sigmaLimit: Double = 0.0,     // SURVEY: konec při σ vodorovně ≤ mez
     val minEpochs: Int = 0,           // SURVEY: a aspoň tolik epoch
+    val ownTrack: Boolean = true,     // CONTROL: trasa „M …“ patří měření (false = měření uvnitř záznamu testu)
 )
 
 /**
@@ -412,19 +413,26 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     /**
      * Měření kontrolního bodu: záznam trasy „M bod čas“ (všechny epochy, surový proud podle nastavení) a průběžný průměr.
      * @param seconds délka měření, 0 = do ručního ukončení
+     * @param inTrack měření uvnitř běžícího záznamu (test Kontrolní okruh): trasa se nezakládá ani neukončuje
      */
-    fun startMeasurement(p: Point, seconds: Int) = scope.launch {
+    fun startMeasurement(p: Point, seconds: Int, inTrack: Long? = null) = scope.launch {
         if (_measure.value != null) return@launch
         if (link.state.value !is LinkState.Connected) {
             _messages.tryEmit("Rover není připojený")
             return@launch
         }
-        if (_recording.value != null) {
+        if (inTrack != null) {
+            if (_recording.value?.trackId != inTrack) {
+                _messages.tryEmit("Záznam testu neběží – měření nelze spustit")
+                return@launch
+            }
+        } else if (_recording.value != null) {
             _messages.tryEmit("Nejdřív ukonči záznam trasy")
             return@launch
+        } else {
+            val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+            startRecording("M ${p.name} $stamp").join()
         }
-        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
-        startRecording("M ${p.name} $stamp").join()
         val r = _recording.value ?: return@launch
         val now = System.currentTimeMillis()
         val antH = prefs.antennaH
@@ -454,7 +462,8 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             }
         }
         db.measurements().get(id)?.let { db.measurements().update(it.copy(staticModel = static, rawUbx = ubxName)) }
-        _measure.value = MeasureState(id, r.trackId, p, now, seconds, antH, staticModel = static, raw = ubxName != null)
+        _measure.value = MeasureState(id, r.trackId, p, now, seconds, antH, staticModel = static, raw = ubxName != null,
+            ownTrack = inTrack == null)
         startTimer(seconds)
     }
 
@@ -538,13 +547,13 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         measTimer = null
         if (m.staticModel || m.raw) command(JSONObject().put("cmd", "meas").put("op", "stop"), 3000)
         closeUbx()
-        if (m.mode == MeasureMode.CONTROL) stopRecording().join()
+        if (m.mode == MeasureMode.CONTROL && m.ownTrack) stopRecording().join()
         val eps = synchronized(measEpochs) { ArrayList(measEpochs).also { measEpochs.clear() } }
         if (!save) {
             if (m.mode == MeasureMode.CONTROL) {
                 if (m.raw) rawFile("meas_${m.measurementId}.ubx").delete()
                 db.measurements().delete(m.measurementId)
-                deleteTrackFiles(m.trackId)
+                if (m.ownTrack) deleteTrackFiles(m.trackId)
             }
             _messages.tryEmit(
                 when (m.mode) {
@@ -1451,11 +1460,26 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     /** Kalibrace: {"gyro":[x,y,z],"div":…,"bat":…,"batOk":…}. */
     suspend fun roverCal(): JSONObject? = command(JSONObject().put("cmd", "get").put("what", "cal"))?.takeIf { it.optBoolean("ok") }
 
-    /** Kalibrace baterie změřeným napětím [V] nebo gyra ([volts] = null). Odpověď roveru (ok, err, nové hodnoty). */
+    /** Výsledek kalibrace gyra na pozadí (FW 0.15.0, událost "cal_gyro"). */
+    @Volatile private var calWaiter: CompletableDeferred<JSONObject>? = null
+
+    /**
+     * Kalibrace baterie změřeným napětím [V] nebo gyra ([volts] = null). Odpověď roveru (ok, err, nové hodnoty).
+     * Gyro: FW 0.15.0+ kalibruje 30 s na pozadí – odpověď "pending", výsledek přijde událostí "cal_gyro".
+     */
     suspend fun calibrateRover(volts: Double?): JSONObject? {
         val c = JSONObject().put("cmd", "cal")
-        if (volts != null) c.put("what", "battery").put("v", volts) else c.put("what", "gyro")
-        return command(c, 8000)
+        if (volts != null) return command(c.put("what", "battery").put("v", volts), 8000)
+        val w = CompletableDeferred<JSONObject>()
+        calWaiter = w
+        val r = command(c.put("what", "gyro").put("ms", 30000), 8000)
+        if (r == null || !r.optBoolean("pending")) {
+            calWaiter = null
+            return r
+        }
+        val ev = withTimeoutOrNull(r.optLong("ms", 30000) + 15000) { w.await() }
+        calWaiter = null
+        return ev
     }
 
     /** Průchozí režim USB <-> X20 (u-center na PC přes USB roveru). */
@@ -1738,6 +1762,8 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         }
         if (o.has("id")) {
             pending.remove(o.optInt("id"))?.complete(o)
+        } else if (o.optString("ev") == "cal_gyro") {
+            calWaiter?.complete(o)
         } else if (o.has("ev")) {
             _messages.tryEmit("Rover: ${o.optString("ev")}")
         } else if (!o.optBoolean("ok", true)) {

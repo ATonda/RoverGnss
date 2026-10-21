@@ -101,6 +101,15 @@ data class Sta(
     val stepHz: Double? = null,   // frekvence kroků [Hz]
     val motionSpeed: Double? = null, // rychlost GNSS, kterou použil [m/s] (-1 bez fixu)
     val motionChanges: Long? = null, // změn stavu od startu roveru
+    // FW 0.15.0: teplota IMU, klid (okno 1 s), kroky, průběžná kalibrace gyra
+    val imuTemp: Double? = null,  // [°C]
+    val still: Boolean? = null,   // σ|a| < 5 mg a |ω| < 1,5 °/s
+    val stepsTotal: Long? = null, // odhad kroků od startu roveru
+    val biasUpdates: Long? = null, // průběžných aktualizací biasu gyra od startu
+    val biasX: Double? = null,    // bias gyra [°/s]
+    val biasY: Double? = null,
+    val biasZ: Double? = null,
+    val calRunning: Boolean = false, // kalibrace gyra na pozadí běží
     val rxMs: Long = System.currentTimeMillis(),
 ) {
     /** Stav přístroje slovy. */
@@ -251,6 +260,14 @@ object RoverProtocol {
             stepHz = f.getOrNull(41)?.let { d(it) },
             motionSpeed = f.getOrNull(42)?.let { d(it) },
             motionChanges = f.getOrNull(43)?.let { l(it) },
+            imuTemp = f.getOrNull(44)?.let { d(it) },
+            still = f.getOrNull(45)?.let { it == "1" },
+            stepsTotal = f.getOrNull(46)?.let { l(it) },
+            biasUpdates = f.getOrNull(47)?.let { l(it) },
+            biasX = f.getOrNull(48)?.let { d(it) },
+            biasY = f.getOrNull(49)?.let { d(it) },
+            biasZ = f.getOrNull(50)?.let { d(it) },
+            calRunning = f.getOrNull(51) == "1",
         )
     }
 

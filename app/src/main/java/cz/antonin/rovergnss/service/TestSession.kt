@@ -3,8 +3,11 @@ package cz.antonin.rovergnss.service
 import android.content.Context
 import android.media.AudioManager
 import android.media.ToneGenerator
+import cz.antonin.rovergnss.data.Point
 import cz.antonin.rovergnss.export.ExportFilter
 import cz.antonin.rovergnss.export.Exporter
+import cz.antonin.rovergnss.link.LinkState
+import cz.antonin.rovergnss.link.Quality
 import cz.antonin.rovergnss.ntrip.NtripState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -13,6 +16,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -39,6 +43,7 @@ data class TestScenario(
     val carry: String = "levý bok",
     val autoStopSec: Int = 0,
     val light: Boolean = false,  // lehký záznam: bez surového proudu, každá 5. epocha (celý den)
+    val circuit: Boolean = false, // Kontrolní okruh: studený start, měření na bodě, okruh, měření na bodě
 )
 
 /** Metadata záznamu (zadává uživatel před startem). */
@@ -50,7 +55,11 @@ data class TestMeta(
 
 data class TestMarker(val phoneMs: Long, val gnssMs: Long?, val label: String)
 
-/** Probíhající test. [phase]: prep (odpočet před krokem), step (krok běží), free (volný záznam se značkami). */
+/**
+ * Probíhající test. [phase]: prep (odpočet před krokem), step (krok běží), free (volný záznam se značkami);
+ * Kontrolní okruh: c_off (čeká na vypnutí a zapnutí roveru), c_place (položit na bod), c_meas1 / c_meas2 (měření
+ * s odpočtem), c_loop (okruh). [trackId] = 0, dokud záznam neběží (Kontrolní okruh před zapnutím roveru).
+ */
 data class TestRun(
     val trackId: Long,
     val scenario: TestScenario,
@@ -61,6 +70,9 @@ data class TestRun(
     val phase: String = "free",
     val remainSec: Int = 0,
     val info: String = "",
+    val point: Point? = null,        // Kontrolní okruh: bod
+    val fixSec: Double? = null,      // Kontrolní okruh: od studeného startu na bodě do 3D fixu [s]
+    val corrSec: Double? = null,     //                  do korekcí (SBAS/HAS/RTK) [s]
 )
 
 /** Uložený test (soubor tests/test_<trasa>.json). */
@@ -96,20 +108,177 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
             return@launch
         }
         _run.value = TestRun(id, sc, meta, System.currentTimeMillis())
+        openMotion(id)
+        mark("start: ${sc.title}")
+        if (sc.steps.isNotEmpty()) stepJob = scope.launch { runSteps(sc) }
+        else if (sc.autoStopSec > 0) stepJob = scope.launch { runTimer(sc.autoStopSec) }
+        save()
+    }
+
+    private suspend fun openMotion(id: Long) {
         lastMotion = null
         withContext(Dispatchers.IO) {
             try {
                 motionOut = motionFileOf(id).bufferedWriter(Charsets.UTF_8).also {
-                    it.write("cas_telefon;cas_gnss;stav;stav_text;automaticky;model_x20;a_sigma_mg;a_odchylka_mg;omega_max;kroky_pct;kroky_hz;rychlost;zmen\r\n")
+                    it.write("cas_telefon;cas_gnss;stav;stav_text;automaticky;model_x20;a_sigma_mg;a_odchylka_mg;omega_max;kroky_pct;kroky_hz;rychlost;zmen;" +
+                        "teplota_imu;klid;kroky_celkem;bias_aktualizaci;bias_x;bias_y;bias_z\r\n")
                 }
             } catch (_: java.io.IOException) {
                 motionOut = null
             }
         }
-        mark("start: ${sc.title}")
-        if (sc.steps.isNotEmpty()) stepJob = scope.launch { runSteps(sc) }
-        else if (sc.autoStopSec > 0) stepJob = scope.launch { runTimer(sc.autoStopSec) }
+    }
+
+    // ------------------------------------------------------------------ Kontrolní okruh
+    private var circuitJob: Job? = null
+    private var circuitInfo = JSONObject()
+    private var prevUser: Int? = null
+    private var coldMs = 0L
+
+    /**
+     * Kontrolní okruh, krok 1: profil Automat, studený start X20 a výzva k vypnutí roveru. Záznam začne po novém
+     * připojení roveru (manipulace s krabičkou se zaznamená), studený start a měření až po potvrzení „Položeno na bodě“.
+     */
+    fun startCircuit(sc: TestScenario, meta: TestMeta, point: Point) = scope.launch {
+        if (_run.value != null) return@launch
+        if (c.recording.value != null) {
+            c.postMessage("Běží jiný záznam trasy – nejdřív ho ukonči")
+            return@launch
+        }
+        circuitInfo = JSONObject().put("point", JSONObject().put("name", point.name).put("kind", point.kind)
+            .put("lat", point.lat).put("lon", point.lon).put("hEll", point.hEll).put("y", point.y).put("x", point.x)
+            .put("bpv", point.bpv))
+        val users = c.prefs.userProfiles
+        val ai = users.indexOfFirst { it.name == AUTO_PROFILE }
+        prevUser = c.prefs.userIndex
+        if (ai < 0) c.postMessage("Profil „$AUTO_PROFILE“ nenalezen – test běží s profilem ${c.prefs.user.name}")
+        else if (ai != c.prefs.userIndex) c.selectUser(ai)
+        circuitInfo.put("profile", c.prefs.user.name)
+        _run.value = TestRun(0, sc, meta, System.currentTimeMillis(), phase = PH_OFF, point = point,
+            info = "Studený start X20…")
+        delay(1500)  // profil do roveru
+        val ok = c.resetX20Now("cold")
+        circuitInfo.put("coldBeforeOffMs", System.currentTimeMillis()).put("coldBeforeOffOk", ok)
+        _run.value = _run.value?.copy(
+            info = if (ok) "Studený start proveden – vypni rover" else "Studený start se nepotvrdil – vypni rover (po zapnutí se zopakuje)"
+        )
+        beep(ToneGenerator.TONE_PROP_ACK, 300)
+        circuitJob = scope.launch { waitPowerCycle() }
+    }
+
+    /** Čeká na odpojení (vypnutí) a nové připojení roveru. */
+    private suspend fun waitPowerCycle() {
+        c.linkState.first { it !is LinkState.Connected }
+        _run.value = _run.value?.copy(info = "Rover vypnutý – zapni ho, aplikace se připojí sama")
+        c.linkState.first { it is LinkState.Connected }
+        onPowered()
+    }
+
+    /** Ruční pokračování (rover se neodpojil nebo už je zapnutý). */
+    fun circuitPowered() {
+        if (_run.value?.phase != PH_OFF) return
+        circuitJob?.cancel()
+        circuitJob = scope.launch { onPowered() }
+    }
+
+    private suspend fun onPowered() {
+        if (_run.value?.phase != PH_OFF) return
+        _run.value = _run.value?.copy(info = "Rover připojen – spouštím záznam…")
+        delay(3000)  // aplikace si načte stav roveru
+        val r = _run.value ?: return
+        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
+        val id = c.startRecordingNow(name = "TEST ${r.scenario.title} $stamp", forceRaw = true) ?: run {
+            c.postMessage("Běží jiný záznam trasy – test nelze spustit")
+            _run.value = _run.value?.copy(info = "Běží jiný záznam trasy – ukonči ho a test spusť znovu")
+            return
+        }
+        val now = System.currentTimeMillis()
+        _run.value = r.copy(trackId = id, startMs = now, phase = PH_PLACE, info = "Polož rover na bod ${r.point?.name ?: ""} a potvrď")
+        openMotion(id)
+        mark("start: ${r.scenario.title}")
+        mark("rover připojen – příprava")
+        beep(ToneGenerator.TONE_PROP_BEEP2, 300)
         save()
+    }
+
+    /** „Položeno na bodě“: 1. = studený start a měření [MEAS1_SEC], 2. (po okruhu) = měření [MEAS2_SEC]. */
+    fun circuitPlaced() = scope.launch {
+        val r = _run.value ?: return@launch
+        when (r.phase) {
+            PH_PLACE -> {
+                mark("položeno na bodě 1")
+                coldMs = System.currentTimeMillis()
+                val ok = c.resetX20Now("cold")
+                circuitInfo.put("cold1Ms", coldMs).put("cold1Ok", ok)
+                mark(if (ok) "studený start" else "studený start nepotvrzen")
+                startPointMeas(1, MEAS1_SEC)
+            }
+            PH_LOOP -> {
+                mark("položeno na bodě 2")
+                startPointMeas(2, MEAS2_SEC)
+            }
+            else -> Unit
+        }
+    }
+
+    private suspend fun startPointMeas(n: Int, sec: Int) {
+        val r = _run.value ?: return
+        val p = r.point ?: return
+        c.startMeasurement(p, 0, inTrack = r.trackId).join()
+        val m = c.measure.value
+        if (m == null) c.postMessage("Měření bodu se nespustilo – záznam běží dál")
+        circuitInfo.put("meas$n", JSONObject().put("startMs", System.currentTimeMillis()).put("plannedSec", sec)
+            .put("measurementId", m?.measurementId ?: JSONObject.NULL).put("staticModel", m?.staticModel ?: false))
+        _run.value = r.copy(phase = if (n == 1) PH_MEAS1 else PH_MEAS2, remainSec = sec,
+            info = if (n == 1) "Měření na bodě po studeném startu" else "Druhé měření na bodě")
+        beep(ToneGenerator.TONE_PROP_BEEP2, 400)
+        save()
+        circuitJob = scope.launch { measCountdown(n, sec) }
+    }
+
+    private suspend fun measCountdown(n: Int, sec: Int) {
+        val t0 = System.currentTimeMillis()
+        while (true) {
+            val left = sec - ((System.currentTimeMillis() - t0) / 1000).toInt()
+            if (left <= 0) break
+            var r = _run.value ?: return
+            if (n == 1) {
+                val p = c.pos.value
+                if (p != null && p.rxMs > coldMs + 500) {
+                    if (r.fixSec == null && p.hasFix) {
+                        r = r.copy(fixSec = (p.rxMs - coldMs) / 1000.0)
+                        mark("3D fix")
+                    }
+                    if (r.corrSec == null && p.hasFix && p.quality.code in Quality.DGNSS.code..Quality.FLOAT.code) {
+                        r = r.copy(corrSec = (p.rxMs - coldMs) / 1000.0)
+                        mark("korekce (${p.quality.label})")
+                    }
+                }
+            }
+            _run.value = r.copy(remainSec = left)
+            if (left <= 3) beep(ToneGenerator.TONE_PROP_BEEP, 120)
+            delay(1000)
+        }
+        val m = c.measure.value
+        val o = circuitInfo.optJSONObject("meas$n") ?: JSONObject().also { circuitInfo.put("meas$n", it) }
+        m?.result?.let { res ->
+            o.put("epochs", res.epochs).put("used", res.used).put("lat", res.lat).put("lon", res.lon).put("hEll", res.h)
+        }
+        m?.offset?.let { off -> o.put("dN", off.dN).put("dE", off.dE).put("dU", off.dU).put("d2", off.d2).put("dH", off.dH) }
+        c.stopMeasurement(true).join()
+        o.put("endMs", System.currentTimeMillis())
+        _run.value?.let { r ->
+            if (n == 1) circuitInfo.put("ttffFixS", r.fixSec ?: JSONObject.NULL).put("ttffCorrS", r.corrSec ?: JSONObject.NULL)
+        }
+        mark("bod $n: konec měření")
+        beep(ToneGenerator.TONE_PROP_ACK, 800)
+        save()
+        if (n == 1) {
+            _run.value = _run.value?.copy(phase = PH_LOOP, remainSec = 0,
+                info = "Okruh: auto, pole, les, zpět. Při změně stiskni značku, na bodě „Položeno na bodě“.")
+        } else {
+            stop()
+        }
     }
 
     /**
@@ -125,11 +294,14 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
         val p = c.pos.value
         val gnss = p?.timeMs?.let { it + (now - p.rxMs) }
         fun d(v: Double?) = v?.let { String.format(Locale.US, "%.2f", it) } ?: ""
+        fun d4(v: Double?) = v?.let { String.format(Locale.US, "%.4f", it) } ?: ""
         try {
             motionOut?.write(
                 listOf(now.toString(), gnss?.toString() ?: "", m.toString(), s.motionText ?: "", if (s.motionAuto) "1" else "0",
                     s.dynModel?.toString() ?: "", s.accStdMg?.toString() ?: "", s.accDevMg?.toString() ?: "", d(s.gyroMax),
-                    s.stepScore?.toString() ?: "", d(s.stepHz), d(s.motionSpeed), s.motionChanges?.toString() ?: "").joinToString(";") + "\r\n"
+                    s.stepScore?.toString() ?: "", d(s.stepHz), d(s.motionSpeed), s.motionChanges?.toString() ?: "",
+                    d(s.imuTemp), s.still?.let { if (it) "1" else "0" } ?: "", s.stepsTotal?.toString() ?: "",
+                    s.biasUpdates?.toString() ?: "", d4(s.biasX), d4(s.biasY), d4(s.biasZ)).joinToString(";") + "\r\n"
             )
         } catch (_: java.io.IOException) {
             motionOut = null
@@ -148,6 +320,19 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
     fun stop() = scope.launch {
         val r = _run.value ?: return@launch
         stepJob?.cancel()
+        if (r.scenario.circuit) {
+            val self = coroutineContext[Job]
+            if (circuitJob != self) circuitJob?.cancel()
+            circuitJob = null
+            if (c.measure.value != null) c.stopMeasurement(true).join()
+            prevUser?.let { if (it != c.prefs.userIndex) c.selectUser(it) }
+            prevUser = null
+            if (r.trackId == 0L) {  // záznam ještě nezačal (rover se nezapnul)
+                _run.value = null
+                c.postMessage("Test zrušen před začátkem záznamu")
+                return@launch
+            }
+        }
         mark("konec")
         c.stopRecording().join()
         withContext(Dispatchers.IO) {
@@ -209,6 +394,7 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
 
     private suspend fun save() = withContext(Dispatchers.IO) {
         val r = _run.value ?: return@withContext
+        if (r.trackId == 0L) return@withContext
         val info = c.info.value
         val sta = c.sta.value
         val o = JSONObject()
@@ -237,6 +423,7 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
                 }
             })
             .put("savedMs", System.currentTimeMillis())
+        if (r.scenario.circuit) o.put("circuit", JSONObject(circuitInfo.toString()))
         fileOf(r.trackId).writeText(o.toString(2))
     }
 
@@ -302,6 +489,15 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
     }
 
     companion object {
+        const val PH_OFF = "c_off"
+        const val PH_PLACE = "c_place"
+        const val PH_MEAS1 = "c_meas1"
+        const val PH_LOOP = "c_loop"
+        const val PH_MEAS2 = "c_meas2"
+        const val MEAS1_SEC = 1800
+        const val MEAS2_SEC = 900
+        const val AUTO_PROFILE = "Automat"
+
         /** Název scénáře do jména souboru: bez diakritiky a mezer („6 poloh“ -> „6_poloh“). */
         fun slug(s: String): String =
             java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "")
@@ -318,6 +514,19 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
         val ORIENT = listOf("čelo (USB) dopředu", "čelo (USB) dozadu", "čelo (USB) nahoru", "čelo (USB) dolů", "neurčeno")
 
         val SCENARIOS = listOf(
+            TestScenario(
+                "circuit", "Kontrolní okruh",
+                "známý bod 30 min po studeném startu, okruh autem a pěšky (pole, les), znovu bod 15 min",
+                listOf(
+                    "Vyber bod s danými souřadnicemi (ETRS89 nebo S-JTSK + Bpv). Profil se přepne na Automat.",
+                    "„Studený start a vypnout“ – pak rover vypni. Po zapnutí se aplikace připojí a začne záznam.",
+                    "Polož rover na bod (střed krabičky na značku, výška antény podle profilu) a potvrď „Položeno na bodě“ – studený start, měření 30 min s odpočtem.",
+                    "Pak okruh: auto, pole, les, zpět – při změně značka. Na bodě znovu „Položeno na bodě“ – měření 15 min, pak konec.",
+                    "Rover během testu nenabíjet (ohřev IMU), telefon nos u sebe (Bluetooth).",
+                ),
+                markers = listOf("nesu v ruce", "nastupuju", "jedu", "vystupuju", "chodím", "les – vstup", "les – výstup", "klid", "poznámka"),
+                carry = "různě", circuit = true,
+            ),
             TestScenario(
                 "rest", "Klid 30 min", "šum a bias IMU, teplotní drift (jednou studený, jednou zahřátý rover)",
                 listOf("Krabička leží dnem dolů na rovné pevné ploše.", "Nehýbat, nedotýkat se, bez otřesů (stůl, ne parapet u silnice).",

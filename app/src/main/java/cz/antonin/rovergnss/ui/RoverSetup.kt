@@ -352,11 +352,13 @@ private fun CalEditor(c: RoverController) {
     OutlinedButton(onClick = {
         scope.launch {
             busy = true
-            msg = "Kalibrace gyra – nehýbat 3 s…"
+            msg = "Kalibrace gyra – nehýbat 30 s…"
             result(c.calibrateRover(null), "Bias gyra uložen")
             busy = false
         }
-    }, enabled = !busy) { Text("Kalibrace gyra (3 s v klidu)") }
+    }, enabled = !busy) { Text("Kalibrace gyra (30 s v klidu)") }
+    Text("FW 0.15.0+: bias gyra se navíc sám zpřesňuje po každých 30 s klidu (σ|a| < 5 mg, |ω| < 1,5 °/s).",
+        style = MaterialTheme.typography.bodySmall)
     Text("Napětí baterie změř multimetrem přímo na článku, rover bez USB (nabíjení zkresluje).", style = MaterialTheme.typography.bodySmall)
     msg?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 }
