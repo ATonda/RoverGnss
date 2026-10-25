@@ -118,6 +118,7 @@ private fun signed(v: Double?, dec: Int) = if (v == null) "–" else (if (v >= 0
 fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: (Boolean) -> Unit) {
     val pos by c.pos.collectAsStateWithLifecycle()
     val sta by c.sta.collectAsStateWithLifecycle()
+    val speedOn by c.speedActive.collectAsStateWithLifecycle()
     val trail by c.trail.collectAsStateWithLifecycle()
     val rec by c.recording.collectAsStateWithLifecycle()
     val lq by c.linkQuality.collectAsStateWithLifecycle()
@@ -208,10 +209,18 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
                 // profil (výška antény, přijímač, …) – přepnutí jedním klepnutím, úpravy v Nastavení
                 Box {
                     androidx.compose.material3.AssistChip(
-                        onClick = { userMenu = true },
-                        label = { Text(user.name + if (recvMissing) " – přijímač nenalezen" else "") },
+                        onClick = {
+                            if (speedOn) c.postMessage("Běží měření rychlosti (profil Rychlost) – ukončení na záložce Auto")
+                            else userMenu = true
+                        },
+                        label = {
+                            Text(
+                                if (speedOn) "Rychlost – měření"
+                                else user.name + if (recvMissing) " – přijímač nenalezen" else ""
+                            )
+                        },
                         colors = androidx.compose.material3.AssistChipDefaults.assistChipColors(
-                            containerColor = Color.White.copy(alpha = 0.9f),
+                            containerColor = if (speedOn) Color(0xFFFFB74D) else Color.White.copy(alpha = 0.9f),
                         ),
                     )
                     DropdownMenu(expanded = userMenu, onDismissRequest = { userMenu = false }) {
@@ -242,7 +251,9 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
                 }) {
                     Icon(Icons.Filled.AddLocationAlt, contentDescription = "Zaměřit bod")
                 }
-                RecButton(rec, onClick = { if (rec == null) recDialog = true else c.stopRecording() })
+                RecButton(rec, onClick = { if (rec == null) recDialog = true else c.stopRecording("tlačítko STOP v Živě", fromUi = true) })
+                // RTK (NTRIP) zap / vyp pod REC (0.9.0)
+                RtkButton(c)
             }
             ScaleBar(camZoom, camLat, Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 34.dp))
             Column(
@@ -337,6 +348,7 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             LinkMeter(lq)
+            SatLine(c)
             nav?.let { t ->
                 NavPanel(
                     t, ni,
@@ -411,9 +423,9 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
             extra = { PointExtras(c, pt, onClose = { editing = null }) },
         )
     }
-    if (recDialog) TrackNameDialog(avg?.takeIf { it.epochs >= MeasureCalc.MIN_EPOCHS }, onStart = { name, withAvg ->
+    if (recDialog) TrackNameDialog(onStart = { name ->
         recDialog = false
-        c.startRecording(name, withAvg)
+        c.startRecording(name)
     }, onDismiss = { recDialog = false })
     surveyName?.let { initial ->
         SurveyDialog(initial, user, avg?.takeIf { it.result.used >= MeasureCalc.MIN_EPOCHS }, onStart = { name, take ->
@@ -672,11 +684,13 @@ private fun RecButton(rec: cz.antonin.rovergnss.service.RecordingState?, onClick
     }
 }
 
-/** Název trasy před startem záznamu; prázdný = automaticky „T číslo datum čas“. */
+/**
+ * Název trasy před startem záznamu; prázdný = automaticky „T číslo datum čas“.
+ * Záznam jen od stisku Spustit – volba „Zahrnout průměr od …“ zrušena (0.9.0, záznam nebyl úplný).
+ */
 @Composable
-private fun TrackNameDialog(avg: LiveAverage?, onStart: (String?, Boolean) -> Unit, onDismiss: () -> Unit) {
+private fun TrackNameDialog(onStart: (String?) -> Unit, onDismiss: () -> Unit) {
     var name by remember { mutableStateOf("") }
-    var withAvg by remember { mutableStateOf(false) }
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Záznam trasy") },
@@ -687,16 +701,9 @@ private fun TrackNameDialog(avg: LiveAverage?, onStart: (String?, Boolean) -> Un
                     label = { Text("Název") },
                     placeholder = { Text("prázdné = T číslo, datum a čas") },
                 )
-                if (avg != null) Row(verticalAlignment = Alignment.CenterVertically) {
-                    androidx.compose.material3.Checkbox(withAvg, { withAvg = it })
-                    Text(
-                        "Zahrnout průměr od ${clock(avg.startMs, false)} (${count(avg.epochs)} epoch)",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
             }
         },
-        confirmButton = { TextButton(onClick = { onStart(name.trim().ifEmpty { null }, withAvg && avg != null) }) { Text("Spustit") } },
+        confirmButton = { TextButton(onClick = { onStart(name.trim().ifEmpty { null }) }) { Text("Spustit") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Zrušit") } },
     )
 }

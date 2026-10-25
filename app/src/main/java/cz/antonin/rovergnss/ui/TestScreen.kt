@@ -454,7 +454,7 @@ private fun RoverTtffSection(c: RoverController) {
         st.done.forEach { TtffRow(it) }
         if (st.done.size >= 2) {
             fun stat(sel: (TtffTry) -> Long?): String {
-                val v = st.done.mapNotNull(sel).sorted()
+                val v = st.done.filter { it.invalid == null }.mapNotNull(sel).sorted()
                 if (v.isEmpty()) return "–"
                 return "${sec(v.first())} / ${sec(v[v.size / 2])} / ${sec(v.last())} s (${v.size}×)"
             }
@@ -474,7 +474,8 @@ private fun TtffRow(t: TtffTry, live: Boolean = false) {
     fun v(x: Long?) = x?.let { sec(it) } ?: "–"
     Text(
         (if (live) "▶ " else "") + "${RoverTtff.kindText(t.kind)}: 3D ${v(t.fix3d)} s, kor. ${v(t.corr)} s, float ${v(t.float)} s, " +
-            "fix ${v(t.rtkFix)} s" + (t.firstSv?.let { ", SV $it" } ?: "") + if (t.timeout) " – limit" else "",
+            "fix ${v(t.rtkFix)} s" + (t.firstSv?.let { ", SV $it" } ?: "") + (if (t.timeout) " – limit" else "") +
+            (t.invalid?.let { " – NEPLATNÉ: $it" } ?: "") + (if (live && t.lostMs == null && t.invalid == null) " – čekám na ztrátu fixu" else ""),
         style = MaterialTheme.typography.bodySmall,
     )
 }

@@ -46,11 +46,18 @@ data class Pos(
     val moving: Boolean,      // IMU: přístroj v pohybu
     val highPrecision: Boolean, // poloha z NAV-HPPOSLLH
     val rxMs: Long = System.currentTimeMillis(),
+    /** HAS navázaný na předchozí RTK (0.9.0, dočasné pravidlo): X20 po RTK drží polohu v systému RTK (ETRS89). */
+    val frameRtk: Boolean = false,
+    /** Dopočet z IMU při výpadku GNSS (0.9.0) – poloha z aplikace, ne z roveru (kvalita 6). */
+    val deadReckoned: Boolean = false,
 ) {
     val hasFix: Boolean get() = quality != Quality.NONE && lat != null && lon != null
 
-    /** Bez RTCM ze sítě je řešení HAS/SBAS v ITRF2020 (nutný přepočet do ETRS89). */
-    val itrf: Boolean get() = !rtcm
+    /**
+     * Bez RTCM ze sítě je řešení HAS/SBAS v ITRF2020 (nutný přepočet do ETRS89) – kromě HAS navázaného na předchozí
+     * RTK v téže relaci ([frameRtk], test 25. 10.: surová poloha při přechodu RTK → HAS neskočila, přepočet dělal 0,95 m).
+     */
+    val itrf: Boolean get() = !rtcm && !frameRtk && !deadReckoned
 }
 
 data class Sta(
@@ -110,6 +117,14 @@ data class Sta(
     val biasY: Double? = null,
     val biasZ: Double? = null,
     val calRunning: Boolean = false, // kalibrace gyra na pozadí běží
+    // FW 0.15.1: příjem z mobilu
+    val btRxDropped: Long? = null,  // bajty zahozené přetečením přijímacího bufferu
+    val btRxMaxFill: Long? = null,  // největší zaplnění přijímacího bufferu [B]
+    val jsonAborted: Long? = null,  // zrušené „řádky JSON“ (binární data)
+    // FW 0.16.0: měření rychlosti a bias gyra ze stání v autě
+    val speedMode: Boolean = false, // vnitřní profil Rychlost (10 Hz, IMU 120 Hz)
+    val carBiasUpdates: Long? = null, // aktualizace biasu ze stání v autě
+    val carStopSec: Long? = null,   // probíhající stání v autě splňující podmínky [s]
     val rxMs: Long = System.currentTimeMillis(),
 ) {
     /** Stav přístroje slovy. */
@@ -268,6 +283,12 @@ object RoverProtocol {
             biasY = f.getOrNull(49)?.let { d(it) },
             biasZ = f.getOrNull(50)?.let { d(it) },
             calRunning = f.getOrNull(51) == "1",
+            btRxDropped = f.getOrNull(52)?.let { l(it) },
+            btRxMaxFill = f.getOrNull(53)?.let { l(it) },
+            jsonAborted = f.getOrNull(54)?.let { l(it) },
+            speedMode = f.getOrNull(55) == "1",
+            carBiasUpdates = f.getOrNull(56)?.let { l(it) },
+            carStopSec = f.getOrNull(57)?.let { l(it) },
         )
     }
 

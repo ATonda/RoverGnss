@@ -197,7 +197,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     /** Úplné ukončení: uloží běžící záznam, odpojí NTRIP a rover (i znovupřipojování), zastaví službu, zavře okno. */
     fun shutdown() = scope.launch {
         if (_measure.value != null) stopMeasurement().join()
-        stopRecording().join()
+        stopRecording("ukončení aplikace").join()
         withContext(Dispatchers.IO) { flushLiveFile() }  // průměr zůstává v telefonu pro příští start
         ntrip.stop()
         link.disconnect()
@@ -225,6 +225,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     private val epochTimes = ArrayDeque<Long>()      // čas GNSS přijatých epoch (30 s)
     private val epochLatency = ArrayDeque<Long>()    // zpoždění epoch (10 s)
     private var lastPosRxMs = 0L
+    private var noFixEpoch = false    // poslední epocha bez fixu – kvalita jen podle příjmu dat a fronty
     private var lastEpochMs = 0L
     private var lostTotal = 0L
 
@@ -246,6 +247,41 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     val rtcmFramer = RtcmFramer { frame -> link.send(frame) }
     val ntrip = NtripClient(scope, onRtcm = { synchronized(rtcmFramer) { rtcmFramer.feed(it) } }, ggaProvider = ::currentGga)
     val ntripState: StateFlow<NtripState> get() = ntrip.state
+
+    /** Doba připojení k RTK a cena od vynulování; upozornění na nečinnost (0.9.0). */
+    val rtkUsage by lazy {
+        RtkUsage(
+            prefs, scope, ntrip.state,
+            isRoverConnected = { link.state.value is LinkState.Connected },
+            isBusy = { _recording.value != null || _measure.value != null },
+            isRoverMoving = {
+                val p = _pos.value
+                val st = _sta.value
+                (p != null && p.hasFix && p.speed > 0.5) || (st?.motion != null && st.motion != 0)
+            },
+            warn = { _messages.tryEmit(it); EventLog.log("RTK: $it") },
+        )
+    }
+
+    // ------------------------------------------------------------------ IMU v autě, dopočet, měření rychlosti (0.9.0)
+    /** Orientace krabičky v autě a zrychlení (z rámců IMU 0xF5 – při záznamu nebo měření rychlosti). */
+    val vehicleImu = VehicleImu()
+    private val dr = DeadReckoner(vehicleImu)
+    /** Dopočtená poloha při výpadku GNSS (null = neběží). */
+    private val _drPos = MutableStateFlow<Pos?>(null)
+    val drPos: StateFlow<Pos?> = _drPos.asStateFlow()
+    /** Záložka Auto: živé hodnoty a testy. */
+    val autoMeter = AutoMeter(vehicleImu, save = { prefs.autoHistory = AutoMeter.listToJson(it) },
+        initial = AutoMeter.listFromJson(prefs.autoHistory))
+    /** Měření rychlosti běží (vnitřní profil Rychlost v roveru). */
+    private val _speedActive = MutableStateFlow(false)
+    val speedActive: StateFlow<Boolean> = _speedActive.asStateFlow()
+    private var speedJob: kotlinx.coroutines.Job? = null
+
+    // HAS navázaný na předchozí RTK (dočasné pravidlo, test 25. 10.)
+    private var lastRtkPos: Pos? = null
+    private var hasAnchoredToRtk = false
+    private var noFixSinceMs = 0L
 
     // ------------------------------------------------------------------ GNSS telefonu a asistence X20
     /** Zdroje polohy telefonu (čip, Fused, Network) a jeho satelity. */
@@ -417,6 +453,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
      */
     fun startMeasurement(p: Point, seconds: Int, inTrack: Long? = null) = scope.launch {
         if (_measure.value != null) return@launch
+        if (speedBlocks()) return@launch
         if (link.state.value !is LinkState.Connected) {
             _messages.tryEmit("Rover není připojený")
             return@launch
@@ -490,6 +527,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
      */
     fun startSurvey(name: String, takeAverage: Boolean = false) = scope.launch {
         if (_measure.value != null) return@launch
+        if (speedBlocks()) return@launch
         if (link.state.value !is LinkState.Connected) {
             _messages.tryEmit("Rover není připojený")
             return@launch
@@ -527,6 +565,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     /** Vytyčení: krátké průměrování polohy na vytyčovaném bodě, uloží odchylku a pokračuje dalším bodem. */
     fun startStakeCheck(p: Point) = scope.launch {
         if (_measure.value != null) return@launch
+        if (speedBlocks()) return@launch
         if (link.state.value !is LinkState.Connected) {
             _messages.tryEmit("Rover není připojený")
             return@launch
@@ -547,7 +586,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         measTimer = null
         if (m.staticModel || m.raw) command(JSONObject().put("cmd", "meas").put("op", "stop"), 3000)
         closeUbx()
-        if (m.mode == MeasureMode.CONTROL && m.ownTrack) stopRecording().join()
+        if (m.mode == MeasureMode.CONTROL && m.ownTrack) stopRecording("konec měření bodu").join()
         val eps = synchronized(measEpochs) { ArrayList(measEpochs).also { measEpochs.clear() } }
         if (!save) {
             if (m.mode == MeasureMode.CONTROL) {
@@ -671,6 +710,15 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
 
     /** Rámec UBX z roveru (RXM-RAWX / RXM-SFRBX během měření bodu) do souboru .ubx. */
     private fun onUbx(frame: ByteArray) {
+        // IMU z roveru (0xF5): orientace v autě, zrychlení, dopočet, měření rychlosti
+        if (frame.size >= 4 && (frame[2].toInt() and 0xFF) == ImuFrames.CLS) {
+            ImuFrames.parse(frame)?.forEach { s ->
+                vehicleImu.onImu(s)
+                dr.onImu(s)
+                if (_speedActive.value) autoMeter.onImu(s)
+            }
+            return
+        }
         // asistence X20 (MGA-ACK, výpis databáze MGA-DBD)
         if (frame.size >= 4 && (frame[2].toInt() and 0xFF) == X20Assist.CLS_MGA) {
             assist.onUbx(frame)
@@ -691,9 +739,12 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     }
 
     /** Epocha do probíhajícího měření (ETRS89, anténa odečtena). */
+    /** DGNSS při RTK (po výpadku, výška až o 6 m mimo – 22. 10.) se v měření bodu a průměru nepoužije (0.9.0). */
+    private fun dgnssInRtk(p: Pos) = p.quality == Quality.DGNSS && p.rtcm
+
     private fun measureEpoch(p: Pos) {
         val m = _measure.value ?: return
-        if (!p.hasFix || p.timeMs == null) return
+        if (!p.hasFix || p.timeMs == null || dgnssInRtk(p)) return
         val g = if (p.itrf) Etrs.itrfToEtrs(p.lat!!, p.lon!!, p.hEll ?: 0.0, Etrs.epochYear(p.timeMs))
         else Geodetic(p.lat!!, p.lon!!, p.hEll ?: 0.0)
         synchronized(measEpochs) {
@@ -788,7 +839,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
 
     /** Epocha do průběžného průměru ([line] = přijatá věta $PRVR,POS). */
     private fun liveEpoch(p: Pos, line: String) {
-        if (!p.hasFix || p.timeMs == null) return
+        if (!p.hasFix || p.timeMs == null || dgnssInRtk(p)) return
         val now = System.currentTimeMillis()
         synchronized(liveEps) {
             liveFastN = if (p.speed > LIVE_SPEED) liveFastN + 1 else 0
@@ -1235,6 +1286,17 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     }
 
     init {
+        rtkUsage.state  // spustí počítadlo RTK (započte i spojení přerušené pádem aplikace)
+        scope.launch {
+            ntrip.state.collect { s ->
+                EventLog.log("NTRIP: " + when (s) {
+                    NtripState.Off -> "vypnuto"
+                    is NtripState.Connecting -> "připojuji (${s.attempt}) ${s.lastError ?: ""}"
+                    is NtripState.Streaming -> "příjem ${s.mount}"
+                    is NtripState.Failed -> "chyba ${s.error}"
+                })
+            }
+        }
         // GNSS telefonu: polohy do porovnání a testu doby do fixu; zdroje zapnuté minule
         phone.onFix = { f ->
             phoneCompare.onPhone(f)
@@ -1251,7 +1313,15 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                     requestInfo().join()
                     fetchRoverBuffer()
                 } else {
+                    EventLog.log("rover: ${st.javaClass.simpleName}")
                     linkLost()
+                    resetFrame()
+                    if (_speedActive.value) {
+                        speedJob?.cancel()
+                        speedJob = null
+                        _speedActive.value = false
+                        _messages.tryEmit("Měření rychlosti přerušeno (odpojení) – rover se do 30 s vrátí na svůj profil")
+                    }
                     assist.onDisconnected()
                     roverRecSent = null
                     if (st is LinkState.Idle) _info.value = null
@@ -1430,8 +1500,11 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     }
 
     /** Restart příjmu X20 pro test doby do fixu (true = rover potvrdil). */
-    suspend fun resetX20Now(kind: String): Boolean =
-        command(JSONObject().put("cmd", "x20").put("op", "reset").put("kind", kind))?.optBoolean("ok") == true
+    suspend fun resetX20Now(kind: String): Boolean {
+        resetFrame()
+        EventLog.log("restart X20: $kind")
+        return command(JSONObject().put("cmd", "x20").put("op", "reset").put("kind", kind))?.optBoolean("ok") == true
+    }
 
     // ------------------------------------------------------------------ nastavení roveru (FW 0.13.0+)
     /** Profily roveru celé: {"active":0,"default":0,"max":10,"profiles":[…]} (null = bez odpovědi). */
@@ -1552,11 +1625,22 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             }
         }
         _recording.value = RecordingState(id, n, pre, startMs)
+        EventLog.log("začátek záznamu $id „$n“")
         return id
     }
 
-    fun stopRecording() = scope.launch {
+    /**
+     * Konec záznamu trasy. [reason] se zapíše do deníku událostí (0.9.0 – konec záznamu bez zásahu 25. 10.).
+     * Tlačítka v Živě a Trasách ([fromUi]) záznam testu neukončí – test se ukončuje na kartě Test.
+     */
+    fun stopRecording(reason: String = "?", fromUi: Boolean = false) = scope.launch {
         val r = _recording.value ?: return@launch
+        if (fromUi && test.run.value != null) {
+            _messages.tryEmit("Běží test – záznam se ukončí koncem testu na kartě Test")
+            EventLog.log("konec záznamu odmítnut (běží test): $reason")
+            return@launch
+        }
+        EventLog.log("konec záznamu ${r.trackId} – $reason")
         // trasu měření bodu ukončuje jen konec měření (stopMeasurement nejdřív zruší _measure)
         if (_measure.value != null) {
             _messages.tryEmit("Probíhá měření bodu – ukonči ho v pruhu měření")
@@ -1699,7 +1783,18 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         }
         val f = body.split(',')
         when (f.getOrNull(1)) {
-            "POS" -> RoverProtocol.parsePos(f)?.let { p ->
+            "POS" -> RoverProtocol.parsePos(f)?.let { p0 ->
+                val p = frameOf(p0)
+                if (p.hasFix) p.timeMs?.let { ImuFrames.syncFromUtc(it) }
+                vehicleImu.onPos(p)
+                if (_speedActive.value) autoMeter.onPos(p)
+                val drOk = _sta.value?.motion == 3 || _speedActive.value
+                val d = dr.onPos(p, drOk)
+                _drPos.value = d
+                if (d != null) {
+                    record(d)
+                    trailAdd(d.lat!!, d.lon!!, d.quality.code)
+                }
                 p.timeMs?.let { liveGnss(it) }
                 _pos.value = p
                 onEpoch(p)
@@ -1715,9 +1810,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                     val g = if (p.itrf && p.timeMs != null)
                         Etrs.itrfToEtrs(p.lat!!, p.lon!!, p.hEll ?: 0.0, Etrs.epochYear(p.timeMs))
                     else null
-                    val pt = doubleArrayOf(g?.lat ?: p.lat!!, g?.lon ?: p.lon!!, p.quality.code.toDouble())
-                    val t = _trail.value
-                    _trail.value = (if (t.size >= TRAIL_MAX) t.drop(t.size - TRAIL_MAX + 1) else t) + listOf(pt)
+                    trailAdd(g?.lat ?: p.lat!!, g?.lon ?: p.lon!!, p.quality.code)
                 }
             }
             "BUF" -> RoverProtocol.parsePos(f)?.let { onBufEpoch(it) }
@@ -1778,8 +1871,20 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
 
     /** Evidence epoch pro kvalitu spojení. */
     private fun onEpoch(p: Pos) {
+        // bez fixu není čas GNSS platný (hodiny X20) – zpoždění a ztráty by byly nesmyslné (0.9.0); spojení žije
+        if (!p.hasFix) {
+            synchronized(epochTimes) {
+                lastPosRxMs = p.rxMs
+                noFixEpoch = true
+                epochTimes.clear()
+                epochLatency.clear()
+                lastEpochMs = 0
+            }
+            return
+        }
         val t = p.timeMs ?: return
         synchronized(epochTimes) {
+            noFixEpoch = false
             lastPosRxMs = p.rxMs
             val per = periodMs()
             if (lastEpochMs > 0 && t > lastEpochMs) {
@@ -1795,7 +1900,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     }
 
     private fun periodMs(): Long {
-        val hz = _info.value?.rateHz ?: 0
+        val hz = _sta.value?.rateHz?.takeIf { it > 0 } ?: _info.value?.rateHz ?: 0
         return if (hz > 0) 1000L / hz else 200L
     }
 
@@ -1820,11 +1925,13 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             val bars = when {
                 age == null || age > 10_000L -> 0
                 age > 3000L -> 1
+                noFixEpoch -> if ((backlog ?: 0L) > 1024L) 3 else 4
                 (lagNow ?: 0L) > 2000L || (loss ?: 0.0) > 10 -> 2
                 (lat ?: 0L) > 600L || (loss ?: 0.0) > 2 || (backlog ?: 0L) > 1024L -> 3
                 else -> 4
             }
-            q = LinkQuality(bars, age, lat, loss, backlog, lostTotal)
+            q = if (noFixEpoch) LinkQuality(bars, age, null, null, backlog, lostTotal)
+            else LinkQuality(bars, age, lat, loss, backlog, lostTotal)
         }
         _linkQuality.value = q
     }
@@ -1833,13 +1940,121 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         _messages.tryEmit(text)
     }
 
+    private fun trailAdd(lat: Double, lon: Double, q: Int) {
+        val t = _trail.value
+        _trail.value = (if (t.size >= TRAIL_MAX) t.drop(t.size - TRAIL_MAX + 1) else t) + listOf(doubleArrayOf(lat, lon, q.toDouble()))
+    }
+
+    /**
+     * Dočasné pravidlo (0.9.0, test 25. 10.): HAS po RTK v téže relaci zůstává v systému RTK (ETRS89), když surová
+     * poloha při přechodu neskočí (< 0,3 m po odečtení posunu z rychlosti). Platí do ztráty fixu na > 30 s,
+     * odpojení roveru nebo restartu X20. HAS bez předchozího RTK se dál přepočítává z ITRF2020.
+     */
+    private fun frameOf(p: Pos): Pos {
+        val now = System.currentTimeMillis()
+        if (!p.hasFix) {
+            if (noFixSinceMs == 0L) noFixSinceMs = now
+            if (now - noFixSinceMs > 30_000) {
+                hasAnchoredToRtk = false
+                lastRtkPos = null
+            }
+            return p
+        }
+        noFixSinceMs = 0
+        if (p.rtcm) {
+            if (p.carrSoln > 0) lastRtkPos = p
+            return p
+        }
+        val r = lastRtkPos
+        if (!hasAnchoredToRtk && r != null && r.timeMs != null && p.timeMs != null && p.timeMs - r.timeMs < 2000) {
+            val dt = (p.timeMs - r.timeMs) / 1000.0
+            val dN = (p.lat!! - r.lat!!) * Math.PI / 180 * 6_371_000.0
+            val dE = (p.lon!! - r.lon!!) * Math.PI / 180 * 6_371_000.0 * Math.cos(Math.toRadians(p.lat!!))
+            val hd = Math.toRadians(r.heading)
+            val pN = r.speed * Math.cos(hd) * dt
+            val pE = r.speed * Math.sin(hd) * dt
+            val jump = Math.hypot(dN - pN, dE - pE)
+            hasAnchoredToRtk = jump < 0.3
+            EventLog.log("RTK → HAS: skok surové polohy ${"%.2f".format(Locale.US, jump)} m – " +
+                if (hasAnchoredToRtk) "HAS v systému RTK (ETRS89)" else "HAS přepočet z ITRF2020")
+            lastRtkPos = null
+        }
+        return if (hasAnchoredToRtk) p.copy(frameRtk = true) else p
+    }
+
+    /** Konec relace (odpojení, restart X20): HAS se zase přepočítává z ITRF2020. */
+    private fun resetFrame() {
+        hasAnchoredToRtk = false
+        lastRtkPos = null
+        noFixSinceMs = 0
+        dr.reset()
+        vehicleImu.reset()
+    }
+
+    /** Během měření rychlosti (automotive, bez HPPOSLLH a COV) nejde měřit bod. */
+    private fun speedBlocks(): Boolean {
+        if (!_speedActive.value) return false
+        _messages.tryEmit("Běží měření rychlosti (záložka Auto) – měření bodu nejde, nejdřív ho ukonči")
+        return true
+    }
+
+    // ------------------------------------------------------------------ měření rychlosti (záložka Auto, FW 0.16.0+)
+    /** Rover umí měření rychlosti (vnitřní profil Rychlost). */
+    fun roverSupportsSpeed(): Boolean = _info.value?.caps?.contains("speed") == true
+
+    /**
+     * Aktivace měření: rover přepne do vnitřního profilu Rychlost (10 Hz, IMU 120 Hz), aplikace mu každých 5 s
+     * posílá „žiju“. Ukončení (nebo 30 s bez „žiju“ – odpojení, pád aplikace) vrátí rover na předchozí profil.
+     */
+    fun startSpeed() = scope.launch {
+        if (_speedActive.value) return@launch
+        if (link.state.value !is LinkState.Connected) {
+            _messages.tryEmit("Rover není připojený")
+            return@launch
+        }
+        if (!roverSupportsSpeed()) {
+            _messages.tryEmit("Měření rychlosti potřebuje FW roveru 0.16.0 nebo novější")
+            return@launch
+        }
+        val r = command(JSONObject().put("cmd", "speed").put("op", "start"))
+        if (r?.optBoolean("speed") != true) {
+            _messages.tryEmit("Rover měření rychlosti nezapnul")
+            return@launch
+        }
+        autoMeter.activate()
+        _speedActive.value = true
+        EventLog.log("měření rychlosti ZAP")
+        speedJob?.cancel()
+        speedJob = scope.launch {
+            while (true) {
+                delay(5000)
+                if (link.state.value is LinkState.Connected) command(JSONObject().put("cmd", "speed").put("op", "alive"), 2000)
+            }
+        }
+    }
+
+    fun stopSpeed() = scope.launch {
+        if (!_speedActive.value) return@launch
+        speedJob?.cancel()
+        speedJob = null
+        _speedActive.value = false
+        autoMeter.arm(null)
+        EventLog.log("měření rychlosti VYP")
+        if (link.state.value is LinkState.Connected) command(JSONObject().put("cmd", "speed").put("op", "stop"))
+    }
+
     fun clearTrail() {
         _trail.value = emptyList()
     }
 
     /** GGA pro NTRIP: poslední z roveru, pokud není starší než 10 s. */
-    private fun currentGga(): String? =
-        if (System.currentTimeMillis() - lastGgaMs < 10_000) lastGga else null
+    private fun currentGga(): String? {
+        val g = lastGga ?: return null
+        if (System.currentTimeMillis() - lastGgaMs >= 10_000) return null
+        // GGA bez fixu (kvalita 0) caster nepřijme – NTRIP čeká na polohu (0.9.0)
+        val q = g.split(',').getOrNull(6)?.toIntOrNull() ?: 0
+        return if (q > 0) g else null
+    }
 
     companion object {
         private const val AUTO_CONNECT_MS = 5 * 60_000L
