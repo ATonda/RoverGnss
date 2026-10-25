@@ -40,7 +40,7 @@ data class TestScenario(
     val procedure: List<String>,
     val steps: List<TestStep> = emptyList(),
     val markers: List<String> = emptyList(),
-    val carry: String = "levý bok",
+    val carry: String = "palubní deska",   // 0.9.0: rover v autě vždy na palubní desce
     val autoStopSec: Int = 0,
     val light: Boolean = false,  // lehký záznam: bez surového proudu, každá 5. epocha (celý den)
     val circuit: Boolean = false, // Kontrolní okruh: studený start, měření na bodě, okruh, měření na bodě
@@ -102,6 +102,10 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
 
     fun start(sc: TestScenario, meta: TestMeta) = scope.launch {
         if (_run.value != null) return@launch
+        if (c.speedActive.value) {
+            c.postMessage("Běží měření rychlosti (záložka Auto) – test nejde spustit, nastavení X20 je jiné")
+            return@launch
+        }
         val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date())
         val id = c.startRecordingNow(name = "TEST ${sc.title} $stamp", forceRaw = !sc.light) ?: run {
             c.postMessage("Běží jiný záznam trasy – nejdřív ho ukonči")
@@ -334,7 +338,7 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
             }
         }
         mark("konec")
-        c.stopRecording().join()
+        c.stopRecording("konec testu").join()
         withContext(Dispatchers.IO) {
             try {
                 motionOut?.close()
@@ -475,6 +479,11 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
                     z.closeEntry()
                     n++
                 }
+                // deník událostí aplikace za dobu testu (0.9.0): konec záznamu s důvodem, NTRIP, popředí, pád
+                z.putNextEntry(ZipEntry("events.log"))
+                z.write(EventLog.since(t.startMs - 60_000).toByteArray(Charsets.UTF_8))
+                z.closeEntry()
+                n++
             }
         }
         n
@@ -510,7 +519,7 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
         )
         private val DAY_MARKS = listOf("Měřím", "Manipulace", "Chodím", "Jedu", "poznámka")
 
-        val CARRY = listOf("levý bok", "pravý bok", "geodetická tyč", "v ruce", "batoh", "auto – držák", "jiné")
+        val CARRY = listOf("palubní deska", "levý bok", "pravý bok", "geodetická tyč", "v ruce", "batoh", "jiné")
         val ORIENT = listOf("čelo (USB) dopředu", "čelo (USB) dozadu", "čelo (USB) nahoru", "čelo (USB) dolů", "neurčeno")
 
         val SCENARIOS = listOf(
@@ -581,7 +590,7 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
                 "car", "Auto", "jízda, model automotive",
                 listOf("Krabička pevně v držáku, poloha čela zapiš v metadatech.", "Značky rozjezdu a zastavení."),
                 markers = listOf("rozjezd", "zastavení", "zatáčka", "poznámka"),
-                carry = "auto – držák",
+                carry = "palubní deska",
             ),
         )
     }

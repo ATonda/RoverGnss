@@ -114,7 +114,7 @@ fun TrackScreen(c: RoverController) {
             Section("Záznam") {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (rec == null) Button(onClick = { c.startRecording() }) { Text("Spustit záznam") }
-                    else Button(onClick = { c.stopRecording() }) { Text("Ukončit (${rec?.points} b.)") }
+                    else Button(onClick = { c.stopRecording("tlačítko Ukončit v Trasách", fromUi = true) }) { Text("Ukončit (${rec?.points} b.)") }
                 }
                 Text(
                     "Výška antény ${antCm(c.prefs.antennaH)}, každá ${c.prefs.recordEvery}. epocha" +

@@ -215,4 +215,44 @@ class Prefs(context: Context) {
     var dbdFrames: Int
         get() = sp.getInt("dbdFrames", 0)
         set(v) = sp.edit().putInt("dbdFrames", v).apply()
+
+    // ------------------------------------------------------------------ RTK (NTRIP) – doba a cena (0.9.0)
+    /** Cena služby [Kč za hodinu], zadává se ručně */
+    var rtkPricePerHour: Double
+        get() = sp.getFloat("rtkPrice", 0f).toDouble()
+        set(v) = sp.edit().putFloat("rtkPrice", v.toFloat()).apply()
+
+    /** Účtovaná doba připojení od vynulování [s] – každé spojení zaokrouhleno nahoru na celou sekundu */
+    var rtkUsedSec: Long
+        get() = sp.getLong("rtkUsedSec", 0)
+        set(v) = sp.edit().putLong("rtkUsedSec", v).apply()
+
+    /** Počet spojení od vynulování */
+    var rtkSessions: Int
+        get() = sp.getInt("rtkSessions", 0)
+        set(v) = sp.edit().putInt("rtkSessions", v).apply()
+
+    /** Čas vynulování [ms] (0 = nikdy) */
+    var rtkResetMs: Long
+        get() = sp.getLong("rtkResetMs", 0)
+        set(v) = sp.edit().putLong("rtkResetMs", v).apply()
+
+    /** Probíhající spojení: začátek a poslední potvrzený okamžik [ms] – po pádu aplikace se započte při dalším startu */
+    var rtkSessStart: Long
+        get() = sp.getLong("rtkSessStart", 0)
+        set(v) = sp.edit().putLong("rtkSessStart", v).apply()
+    var rtkSessLast: Long
+        get() = sp.getLong("rtkSessLast", 0)
+        set(v) = sp.edit().putLong("rtkSessLast", v).apply()
+
+    // ------------------------------------------------------------------ Auto – měření rychlosti (0.9.0)
+    /** Historie testů (JSON pole, nejnovější na konci) */
+    var autoHistory: String
+        get() = sp.getString("autoHistory", "[]") ?: "[]"
+        set(v) = sp.edit().putString("autoHistory", v).apply()
+
+    /** Cílová rychlost vlastního rozjezdu 0–X [km/h] */
+    var autoCustomKmh: Int
+        get() = sp.getInt("autoCustomKmh", 130)
+        set(v) = sp.edit().putInt("autoCustomKmh", v).apply()
 }

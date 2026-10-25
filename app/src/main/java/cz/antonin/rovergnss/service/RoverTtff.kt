@@ -36,6 +36,10 @@ data class TtffTry(
     val rtkFix: Long? = null,
     val timeout: Boolean = false,
     val firstSv: Int? = null,  // SV při 3D fixu
+    // 0.9.0: čas se měří od skutečné ztráty fixu po restartu (test 23. 10.: „3D za 0,0 s“ byla stará poloha
+    // před provedením restartu a další pokus měřil od špatného okamžiku)
+    val lostMs: Long? = null,  // čas telefonu, kdy X20 fix ztratil (null = zatím ne)
+    val invalid: String? = null, // důvod neplatného pokusu (do statistiky se nepočítá)
 )
 
 data class TtffState(
@@ -127,7 +131,11 @@ class RoverTtff(
                 while (_state.value.running) {
                     val c = _state.value.current ?: break
                     val el = System.currentTimeMillis() - c.startMs
-                    if (reached(c, s0.target)) break
+                    if (reached(c, s0.target) || c.invalid != null) break
+                    if (c.lostMs == null && el > LOSS_WAIT_MS) {
+                        _state.value = _state.value.copy(current = c.copy(invalid = "X20 po restartu neztratil fix"))
+                        break
+                    }
                     if (el > s0.limitSec * 1000L) {
                         _state.value = _state.value.copy(current = c.copy(timeout = true))
                         break
@@ -153,6 +161,8 @@ class RoverTtff(
         _state.value = _state.value.copy(status = "zastaveno")
     }
 
+    private var lastPosRx = 0L
+
     private fun reached(t: TtffTry, target: TtffTarget) = when (target) {
         TtffTarget.FIX3D -> t.fix3d != null
         TtffTarget.CORR -> t.corr != null
@@ -171,11 +181,30 @@ class RoverTtff(
             if (seen > 0 && now - seen > 60_000L) e.putLong("gapStart", seen)
             e.putLong("lastSeen", now).apply()
         }
-        val c = _state.value.current ?: return
-        val el = p.rxMs - c.startMs
-        if (el < 0) return
-        var n = c
+        val c = _state.value.current
+        val prevRx = lastPosRx
+        lastPosRx = p.rxMs
+        if (c == null || c.invalid != null) return
+        if (p.rxMs < c.startMs) return
         val fix = p.hasFix && p.quality != Quality.DR
+        var n = c
+        if (n.lostMs == null) {
+            when {
+                !fix -> n = n.copy(lostMs = p.rxMs)
+                // horký start: X20 může jen vynechat epochy – mezera > 1 s po restartu = ztráta od poslední epochy
+                prevRx > c.startMs - 1000 && p.rxMs - prevRx > 1000 -> n = n.copy(lostMs = maxOf(prevRx, c.startMs))
+                else -> return  // stará poloha před provedením restartu
+            }
+            if (!fix) {
+                _state.value = _state.value.copy(current = n)
+                return
+            }
+        }
+        val el = p.rxMs - n.lostMs!!
+        if (n.fix3d == null && fix && el < MIN_COLD_MS && c.kind != "hot") {
+            _state.value = _state.value.copy(current = n.copy(invalid = "fix ${el} ms po ztrátě – neplatný studený/teplý start"))
+            return
+        }
         if (n.fix3d == null && fix) n = n.copy(fix3d = el, firstSv = p.numSv)
         if (n.corr == null && fix && p.quality in setOf(Quality.DGNSS, Quality.HAS, Quality.FLOAT, Quality.FIX)) n = n.copy(corr = el)
         if (n.float == null && fix && p.carrSoln >= 1) n = n.copy(float = el)
@@ -227,11 +256,11 @@ class RoverTtff(
     fun csv(out: OutputStream) {
         val df = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
         val w = out.bufferedWriter(Charsets.UTF_8)
-        w.write("cas;start;fix3d_s;korekce_s;float_s;rtk_fix_s;limit;sv_pri_fixu\r\n")
+        w.write("cas;start;fix3d_s;korekce_s;float_s;rtk_fix_s;limit;sv_pri_fixu;neplatny\r\n")
         fun s(v: Long?) = v?.let { String.format(Locale.US, "%.1f", it / 1000.0) } ?: ""
         for (t in _state.value.done) {
             w.write(listOf(df.format(Date(t.startMs)), t.kind, s(t.fix3d), s(t.corr), s(t.float), s(t.rtkFix),
-                if (t.timeout) "1" else "0", t.firstSv?.toString() ?: "").joinToString(";"))
+                if (t.timeout) "1" else "0", t.firstSv?.toString() ?: "", t.invalid ?: "").joinToString(";"))
             w.write("\r\n")
         }
         w.write("\r\n# po zapnutí roveru\r\ncas;vypnuto_min;fix3d_s;korekce_s;float_s;rtk_fix_s\r\n")
@@ -244,6 +273,8 @@ class RoverTtff(
     }
 
     companion object {
+        private const val LOSS_WAIT_MS = 5000L   // X20 musí fix ztratit do 5 s po restartu, jinak neplatný pokus
+        private const val MIN_COLD_MS = 1000L    // studený / teplý start s fixem do 1 s po ztrátě = neplatný
         fun kindText(k: String) = when (k) {
             "hot" -> "horký"
             "warm" -> "teplý"

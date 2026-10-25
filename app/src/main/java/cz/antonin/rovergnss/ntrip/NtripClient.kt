@@ -38,7 +38,8 @@ sealed class NtripState {
     data class Failed(val error: String) : NtripState()   // chyba, kterou opakování nevyřeší (heslo, mountpoint)
 }
 
-class NtripException(msg: String, val fatal: Boolean) : IOException(msg)
+/** [auth] = caster odmítl přihlášení (401) u požadavku s polohou – po několika pokusech „špatné jméno nebo heslo“. */
+class NtripException(msg: String, val fatal: Boolean, val auth: Boolean = false) : IOException(msg)
 
 /**
  * Klient NTRIP 1.0/2.0: příjem RTCM z casteru, odesílání GGA. Po výpadku se znovu připojuje.
@@ -58,21 +59,46 @@ class NtripClient(
     private var job: Job? = null
     @Volatile private var socket: Socket? = null
 
+    /**
+     * Připojení (0.9.0): mountpoint s GGA (síťové řešení, nejbližší stanice) se bez polohy nepřipojuje – caster CZEPOS
+     * na požadavek bez GGA odpovídá 401, což vypadalo jako špatné heslo (23. 10.). Stav „Připojuji (pokus 0) – čekám
+     * na polohu“, připojí se samo po prvním fixu (stačí 3D). 401 s polohou se zopakuje po [AUTH_RETRY_MS]
+     * (účet může být chvíli obsazený po pádu aplikace), „špatné jméno nebo heslo“ až po [AUTH_MAX] odmítnutích.
+     */
     fun start(p: NtripProfile) {
         stop()
         job = scope.launch(Dispatchers.IO) {
             var attempt = 0
+            var authFails = 0
             var lastError: String? = null
             while (isActive) {
+                if (p.ggaSec > 0 && ggaProvider() == null) {
+                    _state.value = NtripState.Connecting(0, WAIT_FIX)
+                    delay(1000)
+                    continue
+                }
                 attempt++
                 _state.value = NtripState.Connecting(attempt, lastError)
+                var wait = (2000L * attempt).coerceAtMost(20_000L)
                 try {
-                    session(p) { _state.value = NtripState.Streaming(p.mount); attempt = 0 }
+                    session(p) {
+                        _state.value = NtripState.Streaming(p.mount)
+                        attempt = 0
+                        authFails = 0
+                    }
                     lastError = "caster ukončil spojení"
                 } catch (e: NtripException) {
                     if (e.fatal) {
                         _state.value = NtripState.Failed(e.message ?: "chyba")
                         return@launch
+                    }
+                    if (e.auth) {
+                        authFails++
+                        if (authFails >= AUTH_MAX) {
+                            _state.value = NtripState.Failed("špatné jméno nebo heslo (caster $authFails× odmítl přihlášení)")
+                            return@launch
+                        }
+                        wait = AUTH_RETRY_MS
                     }
                     lastError = e.message
                 } catch (e: IOException) {
@@ -80,7 +106,7 @@ class NtripClient(
                 } finally {
                     closeSocket()
                 }
-                delay((2000L * attempt).coerceAtMost(20_000L))
+                delay(wait)
             }
         }
     }
@@ -125,7 +151,9 @@ class NtripClient(
                 }
             }
             status.startsWith("SOURCETABLE") -> throw NtripException("mountpoint „${p.mount}“ neexistuje", true)
-            status.contains(" 401") -> throw NtripException("špatné jméno nebo heslo", true)
+            status.contains(" 401") ->
+                if (gga == null) throw NtripException("caster odmítl spojení bez polohy – znovu po fixu", false)
+                else throw NtripException("caster odmítl přihlášení (401) – zkusím znovu", false, auth = true)
             status.contains(" 404") -> throw NtripException("mountpoint „${p.mount}“ neexistuje", true)
             else -> throw IOException("caster: $status")
         }
@@ -242,5 +270,11 @@ class NtripClient(
             if (n > 0) left -= n
             return n
         }
+    }
+
+    companion object {
+        const val WAIT_FIX = "čekám na polohu – připojí se po fixu"
+        const val AUTH_MAX = 3
+        const val AUTH_RETRY_MS = 45_000L
     }
 }

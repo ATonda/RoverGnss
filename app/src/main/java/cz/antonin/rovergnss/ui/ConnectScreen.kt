@@ -221,7 +221,8 @@ internal fun NtripSection(c: RoverController, fold: Boolean = false) {
     tick.let { }
     val ntripSummary = when (val s = state) {
         NtripState.Off -> "vypnuto" + (profiles.getOrNull(index)?.let { " (${it.name})" } ?: "")
-        is NtripState.Connecting -> "připojuji ${profiles.getOrNull(index)?.name ?: ""} (pokus ${s.attempt})"
+        is NtripState.Connecting -> if (s.attempt == 0) "čeká na polohu – ${profiles.getOrNull(index)?.name ?: ""}"
+            else "připojuji ${profiles.getOrNull(index)?.name ?: ""} (pokus ${s.attempt})"
         is NtripState.Streaming -> {
             val age = (System.currentTimeMillis() - c.ntrip.lastDataMs) / 1000.0
             "zapnuto, ${profiles.getOrNull(index)?.name ?: s.mount}, RTCM ${fmt(age, 0)} s"
@@ -285,7 +286,10 @@ internal fun NtripSection(c: RoverController, fold: Boolean = false) {
         tick.let { }
         when (val s = state) {
             NtripState.Off -> Text("Vypnuto")
-            is NtripState.Connecting -> Text("Připojuji (pokus ${s.attempt})" + (s.lastError?.let { " – $it" } ?: ""))
+            is NtripState.Connecting -> Text(
+                if (s.attempt == 0) "Čekám na polohu – mountpoint potřebuje GGA, připojí se samo po fixu"
+                else "Připojuji (pokus ${s.attempt})" + (s.lastError?.let { " – $it" } ?: "")
+            )
             is NtripState.Streaming -> {
                 val age = (System.currentTimeMillis() - c.ntrip.lastDataMs) / 1000.0
                 Text("Příjem z ${s.mount}")
@@ -310,6 +314,7 @@ internal fun NtripSection(c: RoverController, fold: Boolean = false) {
             }
         }
         if (link !is LinkState.Connected) Text("Korekce lze spustit po připojení roveru.", style = MaterialTheme.typography.bodySmall)
+        RtkCostSection(c)
     }
 }
 

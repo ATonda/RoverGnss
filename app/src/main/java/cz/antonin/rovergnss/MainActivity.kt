@@ -43,10 +43,12 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         (application as RoverApp).controller.foreground = true
+        cz.antonin.rovergnss.service.EventLog.log("aplikace na popředí")
     }
 
     override fun onStop() {
         (application as RoverApp).controller.foreground = false
+        cz.antonin.rovergnss.service.EventLog.log("aplikace na pozadí")
         super.onStop()
     }
 

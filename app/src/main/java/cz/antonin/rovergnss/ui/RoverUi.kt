@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Place
@@ -47,8 +48,11 @@ private val TABS = listOf(
     Tab("Body", Icons.Filled.Place),
     Tab("Telefon", Icons.Filled.PhoneAndroid),
     Tab("Test", Icons.Filled.Science),
+    Tab("Auto", Icons.Filled.DirectionsCar),
     Tab("Nastavení", Icons.Filled.Settings),
 )
+
+private const val TAB_AUTO = 4
 
 private val Colors = lightColorScheme(
     primary = Color(0xFF1B3A4B),
@@ -73,6 +77,12 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
             controller.measure.map { it != null }.distinctUntilChanged().collect { if (it) tab = 0 }
         }
         var target by rememberSaveable { mutableIntStateOf(-1) }   // terč: -1 zavřený, jinak TargetSource
+        // odchod ze záložky Auto při běžícím měření rychlosti: dotaz Ukončit / Pokračovat (0.9.0)
+        var leaveTo by remember { mutableIntStateOf(-1) }
+        val speedOn by controller.speedActive.collectAsStateWithLifecycle()
+        fun goTab(i: Int) {
+            if (tab == TAB_AUTO && i != TAB_AUTO && speedOn) leaveTo = i else tab = i
+        }
         Box(Modifier.fillMaxSize()) {
         Scaffold(
             snackbarHost = { SnackbarHost(snackbar) },
@@ -81,7 +91,7 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
                     TABS.forEachIndexed { i, t ->
                         NavigationBarItem(
                             selected = tab == i,
-                            onClick = { tab = i },
+                            onClick = { goTab(i) },
                             icon = { Icon(t.icon, contentDescription = t.title) },
                             label = { Text(t.title) },
                         )
@@ -111,13 +121,39 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
                         1 -> SiteScreen(controller)
                         2 -> PhoneScreen(controller)
                         3 -> TestScreen(controller)
-                        4 -> SettingsScreen(controller)
+                        TAB_AUTO -> AutoScreen(controller)
+                        5 -> SettingsScreen(controller)
                     }
                 }
             }
           }
         }
         if (target >= 0) TargetScreen(controller, target, onClose = { target = -1 })
+        if (leaveTo >= 0) androidx.compose.material3.AlertDialog(
+            onDismissRequest = { leaveTo = -1 },
+            title = { Text("Měření rychlosti běží") },
+            text = {
+                Text(
+                    "Ukončit měření (rover se vrátí na svůj profil), nebo pokračovat?\n\n" +
+                        "Při pokračování: rover zůstává na 10 Hz s modelem automotive a bez rámců NAV a satelitů každou " +
+                        "sekundu; měření kontrolního bodu a testy nejdou spustit, záznam trasy poběží v tomto režimu " +
+                        "(2× víc dat, chůze s modelem automotive)."
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    controller.stopSpeed()
+                    tab = leaveTo
+                    leaveTo = -1
+                }) { Text("Ukončit") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    tab = leaveTo
+                    leaveTo = -1
+                }) { Text("Pokračovat") }
+            },
+        )
         // průměr uložený v telefonu při minulém běhu: pokračovat / uložit jako trasu / smazat
         val restore by controller.liveRestore.collectAsStateWithLifecycle()
         restore?.let { r -> LiveRestoreDialog(r, onAction = { controller.restoreLive(it) }) }
