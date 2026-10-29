@@ -887,7 +887,7 @@ fun ObjectScreen(c: RoverController) {
                     drawPath(androidx.compose.ui.graphics.Path().apply {
                         moveTo(tip.x, tip.y); lineTo((cN + nrm).x, (cN + nrm).y); lineTo((cN - nrm).x, (cN - nrm).y); close()
                     }, Color(0xFFC62828))
-                    drawLine(Color(0xFF616161), cN, tail, 2f * density)
+                    drawLine(Color(0xFF616161), cN, tail, 2f * this.density)
                 }
                 if (mode == ObjMode.DRAW) Text(
                     "vrcholů ${sk.vertices.size}" + (if (sk.closed) ", uzavřeno" else "") +
