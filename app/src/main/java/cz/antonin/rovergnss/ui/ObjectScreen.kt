@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -188,6 +189,7 @@ fun ObjectScreen(c: RoverController) {
     // pohled
     var vScale by remember { mutableFloatStateOf(1f) }
     var vOff by remember { mutableStateOf(Offset.Zero) }
+    var vRot by remember { mutableFloatStateOf(0f) }   // otočení pohledu dvěma prsty [rad] (0.11.13)
     var fitReq by remember { mutableIntStateOf(1) }
     var canvasW by remember { mutableFloatStateOf(0f) }
     var canvasH by remember { mutableFloatStateOf(0f) }
@@ -211,8 +213,24 @@ fun ObjectScreen(c: RoverController) {
         return Offset((w[0] - origin[0]).toFloat(), (-(w[1] - origin[1])).toFloat())
     }
     fun dOfWorld(e: Double, n: Double) = Offset((e - origin[0]).toFloat(), (-(n - origin[1])).toFloat())
-    fun toScreen(d: Offset) = Offset(d.x * vScale + vOff.x, d.y * vScale + vOff.y)
-    fun toD(s: Offset) = Offset((s.x - vOff.x) / vScale, (s.y - vOff.y) / vScale)
+    // natočení náčrtu ve skutečných souřadnicích (úhel osy x náčrtu): výpočet se ukazuje natočený jako náčrt
+    val skAz = result.toWorld(0.0, 0.0)?.let { a -> result.toWorld(1.0, 0.0)?.let { b -> kotlin.math.atan2(b[1] - a[1], b[0] - a[0]).toFloat() } } ?: 0f
+    val baseRot = rememberUpdatedState(if (world) skAz else 0f)   // State: platí i v obsluze dotyku
+    fun rotNow() = vRot + baseRot.value
+    fun toScreen(d: Offset): Offset {
+        val r = rotNow()
+        val c = kotlin.math.cos(r)
+        val sn = kotlin.math.sin(r)
+        return Offset((d.x * c - d.y * sn) * vScale + vOff.x, (d.x * sn + d.y * c) * vScale + vOff.y)
+    }
+    fun toD(s: Offset): Offset {
+        val r = rotNow()
+        val c = kotlin.math.cos(r)
+        val sn = kotlin.math.sin(r)
+        val qx = (s.x - vOff.x) / vScale
+        val qy = (s.y - vOff.y) / vScale
+        return Offset(qx * c + qy * sn, -qx * sn + qy * c)
+    }
     /** Obrazovka → souřadnice náčrtu. */
     fun toSketch(s: Offset): Offset {
         val d = toD(s)
@@ -233,13 +251,6 @@ fun ObjectScreen(c: RoverController) {
         }
     }
     if (selEdge != null && selEdge!! >= sk.edges().size) selEdge = null
-    /** Změřený bod v náčrtu: s výpočtem z GNSS (≥ 2 body) jeho skutečná poloha převedená do náčrtu, jinak uložená. */
-    fun fixedPos(p: ObjPlace): Offset {
-        if (result.ok && !result.local) result.places.firstOrNull { it.placeId == p.id }?.let { pr ->
-            result.toSketch(pr.e, pr.n)?.let { return Offset(it[0].toFloat(), it[1].toFloat()) }
-        }
-        return Offset(p.x.toFloat(), p.y.toFloat())
-    }
     /** Nezměřený bod na stěně / v ose: stejný poměr podél stěny vůči aktuální (i tažené) poloze vrcholů. */
     fun followPos(p: ObjPlace): Offset? {
         if (p.type != ObjPointType.AXIS && p.type != ObjPointType.WALL) return null
@@ -249,64 +260,15 @@ fun ObjectScreen(c: RoverController) {
         val b = vPos[ib]
         return Offset(a.x + (b.x - a.x) * t.toFloat(), a.y + (b.y - a.y) * t.toFloat())
     }
-    /** Vrchol se změřeným rohem = pevný. */
-    fun vertexFixed(i: Int): Boolean {
-        val id = sk.vertices.getOrNull(i)?.id ?: return false
-        return sk.places.any { it.type == ObjPointType.CORNER && it.vertex == id && it.pointId != 0L }
-    }
-    /** Změřený bod na stěně nebo v ose (přímka stěny jím musí projít). */
-    fun wallAnchor(ei: Int): Offset? {
-        val (ia, _) = sk.edges().getOrNull(ei) ?: return null
-        val id = sk.vertices[ia].id
-        return sk.places.firstOrNull { (it.type == ObjPointType.AXIS || it.type == ObjPointType.WALL) && it.edge == id && it.pointId != 0L }
-            ?.let { fixedPos(it) }
-    }
-    /**
-     * Tažení vrcholu i na polohu q (náčrt). Pevné body drží: stěna se změřeným bodem v ose / na stěně se natáčí kolem
-     * něj (druhý vrchol si drží vzdálenost od bodu), je-li druhý vrchol pevný, vrchol jede po přímce. Null = vrchol je pevný.
-     */
-    fun dragVertex(i: Int, q: Offset): Map<Int, Offset>? {
-        if (vertexFixed(i)) return null
-        val v = sk.vertices[i]
-        val es = sk.edges()
-        val inc = es.indices.filter { es[it].first == i || es[it].second == i }
-        val anch = inc.mapNotNull { ei -> wallAnchor(ei)?.let { ei to it } }
-        if (anch.size >= 2) return null
-        if (anch.isEmpty()) return mapOf(v.id to q)
-        val (ei, a) = anch[0]
-        val ui = if (es[ei].first == i) es[ei].second else es[ei].first
-        val u = sk.vertices[ui]
-        val uo = Offset(u.x.toFloat(), u.y.toFloat())
-        if (vertexFixed(ui)) {
-            // přímka pevně daná: průmět na přímku u–bod
-            val d = a - uo
-            val l2 = d.x * d.x + d.y * d.y
-            if (l2 < 1e-12f) return mapOf(v.id to q)
-            val t = ((q.x - uo.x) * d.x + (q.y - uo.y) * d.y) / l2
-            return mapOf(v.id to uo + d * t)
-        }
-        // otočení stěny kolem bodu: u na stejné straně a ve stejné vzdálenosti od bodu jako dřív
-        val vo = Offset(v.x.toFloat(), v.y.toFloat())
-        val dv = vo - a
-        val lv = dv.getDistance()
-        val dq = q - a
-        val lq = dq.getDistance()
-        if (lv < 1e-6f || lq < 1e-6f) return mapOf(v.id to q)
-        val k = ((uo.x - a.x) * dv.x + (uo.y - a.y) * dv.y) / lv   // poloha u podél stěny vůči bodu (ve směru v)
-        return mapOf(v.id to q, u.id to a + dq * (k / lq))
-    }
-    /** Stěnu lze posunout, jen když na ní nic změřeného není. */
-    fun edgeMovable(ei: Int): Boolean {
-        val (ia, ib) = sk.edges().getOrNull(ei) ?: return false
-        return !vertexFixed(ia) && !vertexFixed(ib) && wallAnchor(ei) == null
-    }
+    /** Tažení vrcholu: jen ten vrchol (0.11.13 – nic se nenatáčí kolem změřených bodů). */
+    fun dragVertex(i: Int, q: Offset): Map<Int, Offset>? = sk.vertices.getOrNull(i)?.let { mapOf(it.id to q) }
+
     fun placePos(p: ObjPlace): Offset {
         dragP?.let { (id, q) -> if (id == p.id && !world) return q }
         if (world) result.places.firstOrNull { it.placeId == p.id }?.let { return dOfWorld(it.e, it.n) }
         if (p.type == ObjPointType.CORNER) sk.vIndex(p.vertex).takeIf { it >= 0 }?.let { return vPos[it] }
-        // změřený = pevný (s polohou z GNSS na své skutečné poloze převedené do náčrtu)
-        if (p.pointId != 0L) return fixedPos(p)
-        // nezměřený na stěně / v ose drží poměr podél své stěny (i během tažení)
+        // v náčrtu jde každý bod na stěně / v ose se svou stěnou (0.11.13: změřené už nejsou v náčrtu pevné –
+        // náčrt je jen tvar, GNSS body ho ve výpočtu umístí jako celek)
         followPos(p)?.let { return it }
         return dOfSketch(p.x, p.y)
     }
@@ -321,7 +283,11 @@ fun ObjectScreen(c: RoverController) {
     // přizpůsobení pohledu obsahu
     LaunchedEffect(fitReq, world, obj?.id, canvasW, canvasH) {
         if (canvasW <= 0f) return@LaunchedEffect
-        val pts = vPos + sk.places.map { placePos(it) }
+        // body v otočeném pohledu (bez měřítka a posunu)
+        val r = rotNow()
+        val rc = kotlin.math.cos(r)
+        val rs = kotlin.math.sin(r)
+        val pts = (vPos + sk.places.map { placePos(it) }).map { Offset(it.x * rc - it.y * rs, it.x * rs + it.y * rc) }
         if (pts.isEmpty()) {
             vScale = 1f
             vOff = Offset(0f, 0f)
@@ -531,7 +497,6 @@ fun ObjectScreen(c: RoverController) {
     val stateRef = rememberUpdatedState(Triple(mode, obj?.id, sk))
     val drawRef = rememberUpdatedState(Triple(whole, selEdge, skC))
     val dragFn = rememberUpdatedState({ i: Int, q: Offset -> dragVertex(i, q) })
-    val edgeOk = rememberUpdatedState({ ei: Int -> edgeMovable(ei) })
     val msgFn = rememberUpdatedState({ m: String -> c.postMessage(m) })
 
     val full by c.objFull.collectAsStateWithLifecycle()
@@ -598,7 +563,10 @@ fun ObjectScreen(c: RoverController) {
                         fitReq++
                     }, label = { Text(n) })
                 }
-                TextButton(onClick = { fitReq++ }) { Text("Celé") }
+                TextButton(onClick = {
+                    vRot = 0f   // natočení jako náčrt
+                    fitReq++
+                }) { Text("Celé") }
                 TextButton(onClick = { c.objFull.value = !full }) { Text(if (full) "Zmenšit" else "Celé okno") }
                 TextButton(onClick = { help = !help }) { Text(if (help) "? ✕" else "?") }
             }
@@ -610,7 +578,7 @@ fun ObjectScreen(c: RoverController) {
                         selEdge != null -> "Stěna vybrána: táhni ji = posun, nebo Vložit vrchol / Pomocný bod (P v ose stěny) / Smazat stěnu."
                         selVertex != null -> "Vrchol vybrán: pravý úhel auto / ano / ne, nebo smazat (s navázanými body po potvrzení)."
                         else -> "Táhni prstem = čára obrysu, klepni = vrchol, na vrchol / stěnu = výběr, na první vrchol = uzavřít. " +
-                            "Vrchol táhni = posun, podrž = bod rohu (REC). Bod P táhni po ose, podrž = změřit / vybrat bod. Změřené body jsou pevné. Posun a zoom dvěma prsty. " +
+                            "Vrchol táhni = posun, podrž = bod rohu (REC). Bod P táhni po ose, podrž = změřit / vybrat bod. Dvěma prsty posun, zoom a otočení pohledu. " +
                             "Pravoúhlá = rohy kolem 90° (±15°) se počítají jako pravé, Přepočítat = náčrt převezme vypočtený tvar."
                     }
                     ObjMode.POINTS -> "Klepni na roh, na stěnu (dveře), na P, nebo mimo obrys (bod v ose stěny / kontrolní): REC změří, nebo vyber změřený bod."
@@ -644,7 +612,7 @@ fun ObjectScreen(c: RoverController) {
                         val cx = s0.vertices.map { it.x }.average()
                         s0.copy(
                             vertices = s0.vertices.map { it.copy(x = 2 * cx - it.x) },
-                            places = s0.places.map { if (it.pointId != 0L) it else it.copy(x = 2 * cx - it.x) },
+                            places = s0.places.map { it.copy(x = 2 * cx - it.x) },
                         )
                     }
                 }) { Text("Zrcadlit") }
@@ -756,24 +724,17 @@ fun ObjectScreen(c: RoverController) {
                             // (od posledního vrcholu otevřeného obrysu se kreslí dál, ne táhne)
                             // bod v ose (i pomocný P): tažení jen po přímce stěny
                             val ed = md == ObjMode.DRAW && oid != null && !wh
-                            // změřené body jsou pevné: tažení za ně (nebo za pevný vrchol / stěnu) jen posune pohled
-                            var blocked: String? = null
+                            // bod v ose (i P, změřený i nezměřený): tažení po přímce stěny
                             val hp = if (ed) (cb.value.third(start, false, true) as? Hit.Place)?.let { h -> sk0.places.firstOrNull { it.id == h.id } } else null
-                            val pGrab = hp?.takeIf { it.type == ObjPointType.AXIS && it.pointId == 0L }?.id
-                            if (hp != null && hp.pointId != 0L && hp.type != ObjPointType.CORNER) blocked = "Změřený bod je pevný"
-                            val vh = if (ed && pGrab == null && blocked == null) (cb.value.third(start, false, false) as? Hit.Vertex)?.index
+                            val pGrab = hp?.takeIf { it.type == ObjPointType.AXIS }?.id
+                            val grab = if (ed && pGrab == null) (cb.value.third(start, false, false) as? Hit.Vertex)?.index
                                 ?.takeIf { sk0.closed || it != sk0.vertices.lastIndex } else null
-                            val grab = vh?.takeIf { dragFn.value(it, Offset.Zero) != null }
-                            if (vh != null && grab == null) blocked = "V${vh + 1} je pevný (změřený roh, nebo daný změřenými body v ose)"
                             // Kreslit: tažení jedním prstem mimo vrchol = čára obrysu (posun mapy dvěma prsty)
-                            // vybraná stěna: tažení = posun stěny (oba vrcholy), jen bez změřených bodů
-                            val eh = if (ed && grab == null && blocked == null && sel != null)
+                            // vybraná stěna: tažení = posun stěny (oba vrcholy)
+                            val edgeGrab = if (ed && grab == null && sel != null)
                                 (cb.value.third(start, false, false) as? Hit.Edge)?.index?.takeIf { it == sel } else null
-                            val edgeGrab = eh?.takeIf { edgeOk.value(it) }
-                            if (eh != null && edgeGrab == null) blocked = "Stěnu se změřeným bodem nejde posunout – táhni její vrchol (natočí se kolem bodu)"
                             val wholeDrag = md == ObjMode.DRAW && oid != null && wh
-                            val drawing = ed && grab == null && edgeGrab == null && pGrab == null && blocked == null
-                            var blockedShown = false
+                            val drawing = ed && grab == null && edgeGrab == null && pGrab == null
                             var moved = false
                             var multi = false
                             var long = false
@@ -803,10 +764,7 @@ fun ObjectScreen(c: RoverController) {
                                         if (t != null && oid != null) editRef.value { s0 ->
                                             s0.copy(
                                                 vertices = s0.vertices.map { v -> t.apply(Offset(v.x.toFloat(), v.y.toFloat()), cen).let { v.copy(x = it.x.toDouble(), y = it.y.toDouble()) } },
-                                                places = s0.places.map { p ->
-                                                    if (p.pointId != 0L) p   // změřené zůstávají
-                                                    else t.apply(Offset(p.x.toFloat(), p.y.toFloat()), cen).let { p.copy(x = it.x.toDouble(), y = it.y.toDouble()) }
-                                                },
+                                                places = s0.places.map { p -> t.apply(Offset(p.x.toFloat(), p.y.toFloat()), cen).let { p.copy(x = it.x.toDouble(), y = it.y.toDouble()) } },
                                             )
                                         }
                                         xf = null
@@ -840,15 +798,21 @@ fun ObjectScreen(c: RoverController) {
                                         // celý náčrt: otočení, velikost a posun (pohled zůstává)
                                         val t = xf ?: SkXf()
                                         xf = t.copy(
-                                            t = t.t + p / vScale,
+                                            t = t.t + unrot(p, rotNow()) / vScale,
                                             rot = t.rot + Math.toRadians(ev.calculateRotation().toDouble()).toFloat(),
                                             s = (t.s * z).coerceIn(0.05f, 20f),
                                         )
                                         ev.changes.forEach { it.consume() }
                                         continue
                                     }
-                                    vOff = Offset(cc.x - (cc.x - vOff.x) * z, cc.y - (cc.y - vOff.y) * z) + p
+                                    // posun, zoom a otočení pohledu kolem středu prstů
+                                    val rot = Math.toRadians(ev.calculateRotation().toDouble()).toFloat()
+                                    val rc = kotlin.math.cos(rot)
+                                    val rs = kotlin.math.sin(rot)
+                                    val dv = vOff - cc
+                                    vOff = cc + Offset((dv.x * rc - dv.y * rs) * z, (dv.x * rs + dv.y * rc) * z) + p
                                     vScale *= z
+                                    vRot += rot
                                     ev.changes.forEach { it.consume() }
                                     continue
                                 }
@@ -857,11 +821,6 @@ fun ObjectScreen(c: RoverController) {
                                 if (moved && !multi) {
                                     when {
                                         grab != null -> if (!long) dragFn.value(grab, toD(ch.position))?.let { dragV = it }
-                                        blocked != null -> {
-                                            if (!blockedShown) msgFn.value(blocked!!)
-                                            blockedShown = true
-                                            vOff += ch.position - last
-                                        }
                                         pGrab != null && !long -> {
                                             val p = sk0.places.firstOrNull { it.id == pGrab }
                                             val (ia, ib) = sk0.edges().getOrNull(sk0.edgeIndex(p?.edge)) ?: (-1 to -1)
@@ -879,7 +838,7 @@ fun ObjectScreen(c: RoverController) {
                                             }
                                         }
                                         pGrab != null -> {}
-                                        wholeDrag -> xf = (xf ?: SkXf()).let { it.copy(t = it.t + (ch.position - last) / vScale) }
+                                        wholeDrag -> xf = (xf ?: SkXf()).let { it.copy(t = it.t + unrot(ch.position - last, rotNow()) / vScale) }
                                         edgeGrab != null -> if (!long) {
                                             val (ia, ib) = sk0.edges().getOrNull(edgeGrab) ?: (0 to 0)
                                             val a = sk0.vertices.getOrNull(ia)?.id
@@ -912,6 +871,24 @@ fun ObjectScreen(c: RoverController) {
                         }
                     }
                     for (i in 1 until stroke.size) drawLine(Color(0xFFFFA000), stroke[i - 1], stroke[i], 3f * density.density)
+                }
+                // sever (jen s polohou ze 2+ bodů); klepnutí = sever nahoru
+                if (result.ok && result.fixCount >= 2) Canvas(
+                    Modifier.align(Alignment.TopEnd).padding(6.dp).size(36.dp)
+                        .background(Color.White.copy(alpha = 0.8f), RoundedCornerShape(18.dp))
+                        .clickable { vRot = -skAz },
+                ) {
+                    val th = vRot + skAz
+                    val u = Offset(kotlin.math.sin(th), -kotlin.math.cos(th))
+                    val cN = Offset(size.width / 2, size.height / 2)
+                    val L = size.minDimension * 0.36f
+                    val tip = cN + u * L
+                    val tail = cN - u * L
+                    val nrm = Offset(-u.y, u.x) * (L * 0.35f)
+                    drawPath(androidx.compose.ui.graphics.Path().apply {
+                        moveTo(tip.x, tip.y); lineTo((cN + nrm).x, (cN + nrm).y); lineTo((cN - nrm).x, (cN - nrm).y); close()
+                    }, Color(0xFFC62828))
+                    drawLine(Color(0xFF616161), cN, tail, 2f * density)
                 }
                 if (mode == ObjMode.DRAW) Text(
                     "vrcholů ${sk.vertices.size}" + (if (sk.closed) ", uzavřeno" else "") +
@@ -1265,8 +1242,8 @@ private fun DrawScope.drawObject(
             val ld = max(d.getDistance(), 1e-3f)
             var n = Offset(-d.y / ld, d.x / ld)
             if (scrV.size >= 3 && ((m + n) - cen).getDistance() > ((m - n) - cen).getDistance()) n = -n
-            val q = m + n * (16f * dens)
-            label(String.format(Locale.US, "%.2f", er.len).replace('.', ','), q.x, q.y, col, dens, center = true)
+            val q = m + n * (12f * dens)
+            labelAlong(String.format(Locale.US, "%.2f", er.len).replace('.', ','), q, d, col, dens)
         }
     }
     // prodloužení stěn s body v ose: čárkovaná přímka přes oba vrcholy až za nejvzdálenější bod, barva podle stěny
@@ -1314,19 +1291,13 @@ private fun DrawScope.drawObject(
             drawLine(col.copy(alpha = 0.6f), a + n * (3f * dens), a + n * (off + 4f * dens), 1f * dens)
             drawLine(col.copy(alpha = 0.6f), b + n * (3f * dens), b + n * (off + 4f * dens), 1f * dens)
             drawLine(col, a + n * off, b + n * off, 1.5f * dens, pathEffect = tapeDash)
-            // text ven od kóty: u svislé stěny zarovnaný od čáry (nepřekrývá stěnu), u vodorovné nad / pod
-            val txt = tapeText(t.len, tr?.diff, tr?.excluded == true)
-            if (kotlin.math.abs(n.x) > 0.7f) {
-                val lm = m0 + n * (off + 5f * dens)
-                label(txt, lm.x, lm.y, col, dens, align = if (n.x > 0) 0 else 2)
-            } else {
-                val lm = m0 + n * (off + 10f * dens)
-                label(txt, lm.x, lm.y, col, dens, center = true)
-            }
+            // text podél kóty (jako ve výkresech), vně
+            labelAlong(tapeText(t.len, tr?.diff, tr?.excluded == true), m0 + n * (off + 9f * dens), d, col, dens)
         } else {
             drawLine(col, a, b, 1.5f * dens, pathEffect = tapeDash)
             val m = Offset((a.x + b.x) / 2, (a.y + b.y) / 2)
-            label(tapeText(t.len, tr?.diff, tr?.excluded == true), m.x, m.y + 14 * dens, col, dens, center = true)
+            val nn = if (ld > 1f) Offset(-d.y / ld, d.x / ld) else Offset(0f, 1f)
+            labelAlong(tapeText(t.len, tr?.diff, tr?.excluded == true), m + nn * (9f * dens), d, col, dens)
         }
     }
     // vrcholy
@@ -1430,6 +1401,25 @@ private fun DrawScope.label(s: String, x: Float, y: Float, color: Color, dens: F
     }
     val mid = center || align >= 0
     drawContext.canvas.nativeCanvas.drawText(s, x, if (mid) y + paint.textSize * 0.35f else y, paint)
+}
+
+/** Popisek podél směru [along] (na střed [at]), vždy čitelný – ne vzhůru nohama. */
+private fun DrawScope.labelAlong(s: String, at: Offset, along: Offset, color: Color, dens: Float) {
+    var ang = Math.toDegrees(kotlin.math.atan2(along.y, along.x).toDouble()).toFloat()
+    if (ang > 90f) ang -= 180f
+    if (ang <= -90f) ang += 180f
+    val nc = drawContext.canvas.nativeCanvas
+    nc.save()
+    nc.rotate(ang, at.x, at.y)
+    label(s, at.x, at.y, color, dens, center = true)
+    nc.restore()
+}
+
+/** Pohyb na obrazovce → v souřadnicích D (bez otočení pohledu). */
+private fun unrot(o: Offset, r: Float): Offset {
+    val c = kotlin.math.cos(r)
+    val s = kotlin.math.sin(r)
+    return Offset(o.x * c + o.y * s, -o.x * s + o.y * c)
 }
 
 /** Znaménkové číslo bez „-0,0“ (desetinná čárka). */
@@ -1576,8 +1566,10 @@ private fun ResultPanel(c: RoverController, obj: SiteObject, sk: ObjSketch, r: O
             csvLauncher.launch(FileNames.job(jobName, obj.name + "_vrcholy", System.currentTimeMillis(), "csv"))
         }, enabled = r.vertices.isNotEmpty() && !r.local) { Text("Vrcholy CSV") }
     }
-    if (r.local) Text("Export až s polohou: umísti aspoň 2 změřené body (režim Body). Místní výpočet je jen pro tvar a rozměry.",
+    if (r.local) Text("Export až s polohou: umísti aspoň 1 změřený bod (režim Body). Místní výpočet je jen pro tvar a rozměry.",
         style = MaterialTheme.typography.bodySmall, color = BAD)
+    else if (r.fixCount == 1) Text("Poloha jen z 1 bodu: natočení neověřené (podle náčrtu). Pro natočení změř 2. bod.",
+        style = MaterialTheme.typography.bodySmall, color = Color(0xFFEF6C00))
     Text(
         "QGIS: projekt v EPSG:5514, vrstvy body, vrcholy, steny, pudorys, koty. Poloha bodů opravená o posun krabičky.",
         style = mono,
@@ -1901,8 +1893,8 @@ private fun wallParam(a: ObjVertex, b: ObjVertex, x: Double, y: Double): Double?
 }
 
 /**
- * Po změně vrcholů: nezměřené body na stěně / v ose (i P), které se samy nezměnily, se přesunou se svou stěnou
- * (stejný poměr podél stěny vůči původním vrcholům). Změřené zůstávají.
+ * Po změně vrcholů: body na stěně / v ose (i P), které se samy nezměnily, se přesunou se svou stěnou
+ * (stejný poměr podél stěny vůči původním vrcholům).
  */
 private fun reattach(old: ObjSketch, new: ObjSketch): ObjSketch {
     if (old.vertices == new.vertices || new.places.isEmpty()) return new
@@ -1911,7 +1903,7 @@ private fun reattach(old: ObjSketch, new: ObjSketch): ObjSketch {
     val oldEdges = old.edges()
     val newEdges = new.edges()
     val places = new.places.map { p ->
-        if (p.pointId != 0L || (p.type != ObjPointType.AXIS && p.type != ObjPointType.WALL)) return@map p
+        if (p.type != ObjPointType.AXIS && p.type != ObjPointType.WALL) return@map p
         val op = old.places.firstOrNull { it.id == p.id } ?: return@map p
         if (op.x != p.x || op.y != p.y) return@map p
         val (oa, ob) = oldEdges.getOrNull(old.edgeIndex(p.edge)) ?: return@map p

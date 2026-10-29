@@ -82,11 +82,12 @@ class ObjResult(
     val scaleKnown: Boolean = true,  // měřítko z kót (místní)
     val conflict: Boolean = false,   // rozpor: chybné měření nebo úhel mimo předpoklad (bez vynechaných)
     val excludedText: String? = null,   // „kóta V1–V4 25,50 m“ – vynechaná hrubá chyba
+    val fixCount: Int = 0,           // změřené body ve výpočtu: 0 místní, 1 jen posun (natočení neověřené), 2+ GNSS
 ) {
     /** Stejný výsledek s jinou zprávou / popisem vynechané hrubé chyby. */
     fun copyMsg(msg: String, excluded: String?) = ObjResult(
         ok, msg, vertices, edges, places, tapes, perimeter, area, axisAz, scale, sigma0, redundancy, sim, cov, local, scaleKnown,
-        conflict, excluded,
+        conflict, excluded, fixCount,
     )
 
     fun toWorld(sx: Double, sy: Double): DoubleArray? {
@@ -241,6 +242,9 @@ object ObjCalc {
             val sc = ratios.getOrNull(ratios.size / 2) ?: run { scaleKnown = false; 0.05 }
             doubleArrayOf(sc, 0.0, 0.0, 0.0)
         } else null
+        // místní výpočet (≤ 1 změřený bod): GNSS souřadnice do vyrovnání nevstupují (0.11.13 – dřív jeden bod
+        // v S-JTSK „táhl“ stěnu stovky km daleko); jeden bod náčrt po výpočtu jen posune
+        val obsEq: Map<Int, ObjObs> = if (local) emptyMap() else obs
         val sw = corr.sumOf { it[4] }
         val pcx = corr.sumOf { it[0] * it[4] } / sw
         val pcy = corr.sumOf { it[1] * it[4] } / sw
@@ -278,7 +282,7 @@ object ObjCalc {
         var red = 0
         var eqs: List<Eq> = emptyList()
         for (iter in 0 until 25) {
-            eqs = buildEqs(sk, obs, X, edges, sketchW, signedArea(X) >= 0, linearOnly = iter == 0)
+            eqs = buildEqs(sk, obsEq, X, edges, sketchW, signedArea(X) >= 0, linearOnly = iter == 0)
             val u = 2 * nV
             val nMat = Array(u) { DoubleArray(u) }
             val g = DoubleArray(u)
@@ -322,10 +326,29 @@ object ObjCalc {
                 vv += q.w * r * r
                 m++
             }
-            val unknownsFixed = 2 * nV - (0 until nV).count { i -> vertexSource(sk, i, obs, edges, emptySet()) == ObjSource.SKETCH } * 2
+            val unknownsFixed = 2 * nV - (0 until nV).count { i -> vertexSource(sk, i, obsEq, edges, emptySet()) == ObjSource.SKETCH } * 2
             red = m - unknownsFixed
             s0 = if (red > 0) sqrt(vv / red) else null
         }
+
+        // jeden změřený bod: celý vypočtený tvar se posune, aby bod seděl (tuhý posun, natočení podle náčrtu)
+        var simF = sim
+        val one = local && placesWithObs.size == 1 && scaleKnown
+        if (one) {
+            val p = placesWithObs[0]
+            val c = corrected(sk, p, obs[p.id]!!, X, edges, signedArea(X) >= 0)
+            val lp = localPos(sk, p, X, edges) { x, y -> skW(x, y) }
+            if (lp != null) {
+                val de = c[0] - lp[0]
+                val dn = c[1] - lp[1]
+                for (i in 0 until nV) {
+                    X[2 * i] += de
+                    X[2 * i + 1] += dn
+                }
+                simF = sim.copyOf().also { it[2] += de; it[3] += dn }
+            }
+        }
+        val fixCount = if (one) 1 else if (local) 0 else placesWithObs.size
 
         // --- 3. výsledky
         val ccw = signedArea(X) >= 0
@@ -334,7 +357,7 @@ object ObjCalc {
         val vRes = (0 until nV).map { i ->
             val v = sk.vertices[i]
             val corner = sk.places.firstOrNull { it.type == ObjPointType.CORNER && it.vertex == v.id && obs.containsKey(it.id) }
-            val src = vertexSource(sk, i, obs, edges, badPlaces)
+            val src = vertexSource(sk, i, obsEq, edges, badPlaces)
             val c = cov
             val sg = if (c != null) sqrt(max(0.0, c[2 * i][2 * i] + c[2 * i + 1][2 * i + 1])) else null
             val ang = interiorAngle(X, i, nV, sk.closed, ccw)
@@ -398,7 +421,8 @@ object ObjCalc {
         val axis = if (nV >= 2) principalAz(X, nV) else null
         val nGnss = vRes.count { it.source == ObjSource.GNSS }
         val msg = buildString {
-            if (local) append(if (scaleKnown) "Místní souřadnice (bez GNSS), měřítko z kót: " else "Bez měřítka (zadej kótu), jen tvar: ")
+            if (one) append("Poloha z 1 bodu (natočení neověřené), měřítko z kót: ")
+            else if (local) append(if (scaleKnown) "Místní souřadnice (bez GNSS), měřítko z kót: " else "Bez měřítka (zadej kótu), jen tvar: ")
             append("Vypočteno: ${placesWithObs.size} změřených bodů, ${sk.tapes.size} kót")
             if (nGnss > 0) append(", ${nGnss} vrcholů z GNSS")
             val nb = placeRes.count { it.bad && !it.excluded } + tRes.count { it.bad && !it.excluded }
@@ -410,7 +434,27 @@ object ObjCalc {
         }
         val conflict = placeRes.any { it.bad && !it.excluded } || tRes.any { it.bad && !it.excluded } ||
             vRes.any { it.angleBad && !it.angleExcluded }
-        return ObjResult(true, msg, vRes, eRes, placeRes, tRes, per, area, axis, scale, s0, red, sim, cov, local, scaleKnown, conflict)
+        return ObjResult(true, msg, vRes, eRes, placeRes, tRes, per, area, axis, scale, s0, red, simF, cov, local && !one, scaleKnown, conflict,
+            fixCount = fixCount)
+    }
+
+    /** Poloha umístěného bodu v (místním) výsledku: roh = vrchol, na stěně / v ose = stejný poměr podél stěny, jinak z náčrtu. */
+    private fun localPos(sk: ObjSketch, p: ObjPlace, X: DoubleArray, edges: List<Pair<Int, Int>>, skW: (Double, Double) -> DoubleArray): DoubleArray? {
+        when (p.type) {
+            ObjPointType.CORNER -> return sk.vIndex(p.vertex).takeIf { it >= 0 }?.let { doubleArrayOf(X[2 * it], X[2 * it + 1]) }
+            ObjPointType.WALL, ObjPointType.AXIS -> {
+                val (ia, ib) = edges.getOrNull(sk.edgeIndex(p.edge)) ?: return skW(p.x, p.y)
+                val a = sk.vertices[ia]
+                val b = sk.vertices[ib]
+                val dx = b.x - a.x
+                val dy = b.y - a.y
+                val l2 = dx * dx + dy * dy
+                if (l2 < 1e-12) return skW(p.x, p.y)
+                val t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2
+                return doubleArrayOf(X[2 * ia] + t * (X[2 * ib] - X[2 * ia]), X[2 * ia + 1] + t * (X[2 * ib + 1] - X[2 * ia + 1]))
+            }
+            else -> return skW(p.x, p.y)
+        }
     }
 
     /** Zdroj polohy vrcholu i. */

@@ -481,3 +481,16 @@ Specifikace: `objekt-mereni-specifikace.md` (projekt), kap. 6.
 - **Úhel rohu pásmem** (dřív „trojúhelník“): nepovinné, jen pro roh, který není pravý. Dialog s obrázkem (roh, značky a, b, spojnice c), bez předvyplněných 3 / 4. Proč nestačí kóty stěn: délky stran čtyřúhelník neurčí, dá se „naklonit“; úhel dá Pravoúhlá, GPS body, úhlopříčka nebo a, b, c.
 - **Bez zdvojených vrcholů:** bod čáry prstem u existujícího vrcholu se vynechá (obrys nejde větvit); obrys se uzavře klepnutím na první vrchol.
 - Verze 0.11.12 (versionCode 33).
+
+## 32. Stav aplikace 0.11.13 (30. 10.) – náčrt se GPS jen umístí, otočení pohledu, kóty podél stěn
+
+- **Chyba:** s jediným změřeným bodem běžel místní výpočet (kolem nuly), ale bod do něj vstoupil v S-JTSK – osa stěny se natočila k bodu stovky km daleko („kontrolní bod se protáhl o km“).
+- **Princip:** náčrt sám neujede, mění ho jen úprava (tažení, Přepočítat). Tvar a rozměry z náčrtu, kót a pravých úhlů (20 m stěna je 20 m bez GPS). GPS body náčrt jen umístí:
+  - 0 bodů: místní souřadnice;
+  - 1 bod: celý vypočtený tvar se jen posune, aby bod seděl (tuhý posun; natočení podle náčrtu, „natočení neověřené“); bod do vyrovnání nevstupuje; export povolen s upozorněním;
+  - 2+ body: podobnostní transformace celku (otočení) a pak vyrovnání s kontrolou proti kótám (rozpor se hlásí, kóty se nepřepisují).
+  Ověřeno: obdélník 20 × 12 m (kóty, Pravoúhlá) + bod P1 v ose 6 m za rohem se souřadnicemi S-JTSK → vrcholy 20 × 12 m, 90°, P1 přesně na své poloze.
+- **Kreslit:** změřené body už v náčrtu nejsou pevné, jdou se svou stěnou; tažení vrcholu nenatáčí stěnu kolem bodu (dřív deformace výkresu).
+- **Otočení pohledu dvěma prsty** (s posunem a zoomem) ve všech režimech; výpočet se ukazuje natočený jako náčrt (ne severem nahoru); „Celé“ vrátí natočení náčrtu; se 2+ body šipka severu v rohu, klepnutí = sever nahoru.
+- **Kóty a délky stěn psané podél stěny** (jako ve výkresech), vždy čitelně.
+- Verze 0.11.13 (versionCode 34).
