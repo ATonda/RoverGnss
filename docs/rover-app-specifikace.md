@@ -447,3 +447,11 @@ Specifikace: `objekt-mereni-specifikace.md` (projekt), kap. 6.
 - **Narovnat:** Kreslit → „Narovnat“ přepíše náčrt podle výpočtu (body na stěnách a v ose zůstanou na své stěně); Zpět vrátí.
 - **Pravoúhlá:** automaticky jen rohy nakreslené 90° ± 15° (dřív ± 20°). V náčrtu bez výpočtu značka „∟ (72°)“ = předpoklad pravého úhlu a v závorce úhel, jak je nakreslený.
 - Verze 0.11.8 (versionCode 29).
+
+## 28. Stav aplikace 0.11.9 (29. 10.) – změřené body pevné
+
+- **Dlouhý stisk nic nemaže** (v 0.11.8 v Kreslit mazal vrchol i s rohem, body na stěně a kótami). Na bodu nebo vrcholu otevře dialog bodu (REC / výběr změřeného), ve všech režimech; na prázdném místě celé okno.
+- **Smazání vrcholu** jen výběrem (klepnutí) → „Smazat vrchol“; visí-li na něm body nebo kóty, dotaz „Smazat V3? Smaže se i: B5, P1, 2 kóty“.
+- **Změřené body jsou pevné** (dokud se neodeberou): nejdou táhnout; s výpočtem z GNSS (≥ 2 body) se v Kreslit ukazují na své skutečné poloze převedené do náčrtu. Vrchol se změřeným rohem nejde táhnout. Stěna se změřeným bodem v ose / na stěně nejde posunout; tažení jejího vrcholu ji natočí kolem bodu (druhý vrchol drží vzdálenost od bodu; je-li pevný, vrchol jede po přímce). Vrchol daný dvěma takovými stěnami je pevný. Upravit celý / Zrcadlit změřené body nepřesouvá.
+- **Nezměřené se přizpůsobí:** nezměřené body na stěně a v ose (i P) drží poměr podél své stěny – při tažení vrcholu nebo stěny jdou živě s ní, také po vložení vrcholu a Narovnat. Dorovnání celého náčrtu do měření jen tlačítkem Narovnat (změřené body na skutečnou polohu).
+- Verze 0.11.9 (versionCode 30).
