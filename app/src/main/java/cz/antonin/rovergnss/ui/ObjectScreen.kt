@@ -497,7 +497,6 @@ fun ObjectScreen(c: RoverController) {
     val stateRef = rememberUpdatedState(Triple(mode, obj?.id, sk))
     val drawRef = rememberUpdatedState(Triple(whole, selEdge, skC))
     val dragFn = rememberUpdatedState({ i: Int, q: Offset -> dragVertex(i, q) })
-    val msgFn = rememberUpdatedState({ m: String -> c.postMessage(m) })
 
     val full by c.objFull.collectAsStateWithLifecycle()
     var resOpen by rememberSaveable { mutableStateOf(false) }
