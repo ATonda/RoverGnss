@@ -116,8 +116,9 @@ class ObjResult(
  */
 object ObjCalc {
     const val SKETCH_SIGMA = 5.0
-    const val RIGHT_SIGMA_DEG = 1.0      // předpoklad pravého úhlu ±1°
-    const val RIGHT_TOL_DEG = 2.0        // odchylka od 90° nad 2° = upozornění
+    // předpoklad pravého úhlu ±0,3° (zděná stavba); při ±1° se rozpor kót (např. 50 cm na 20 m) tiše schoval do úhlů
+    const val RIGHT_SIGMA_DEG = 0.3
+    const val RIGHT_TOL_DEG = 0.5        // odchylka „pravého“ úhlu od 90° nad 0,5° = rozpor (kóta, nebo roh není pravý)
 
     /** Přesnost úhlu z trojúhelníku pásmem [°]: ~1 cm na kratší straně, aspoň 0,2°. */
     fun angleSigma(a: ObjAngle): Double = max(0.2, Math.toDegrees(0.01 / max(min(a.a, a.b), 0.1)))
@@ -340,6 +341,10 @@ object ObjCalc {
             if (nGnss > 0) append(", ${nGnss} vrcholů z GNSS")
             val nb = placeRes.count { it.bad } + tRes.count { it.bad }
             if (nb > 0) append(" – $nb chybných měření")
+            val ab = vRes.filter { it.angleBad }
+            if (ab.isNotEmpty()) append(" – rozpor úhlů: " + ab.joinToString(", ") { v ->
+                String.format(java.util.Locale.US, "%s %.1f°", v.name, v.wallAngle ?: 0.0).replace('.', ',')
+            } + " (kóta, nebo roh není pravý)")
         }
         return ObjResult(true, msg, vRes, eRes, placeRes, tRes, per, area, axis, scale, s0, red, sim, cov, local, scaleKnown)
     }

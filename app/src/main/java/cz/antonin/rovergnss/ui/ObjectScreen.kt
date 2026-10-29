@@ -1252,10 +1252,31 @@ private fun DrawScope.drawObject(
         val b = refD(t.b)?.let(toScreen) ?: return@forEach
         val tr = r.tapes.firstOrNull { it.id == t.id }
         val col = if (tr?.bad == true) BAD else Color(0xFF8E24AA)
-        drawLine(col, a, b, 1.5f * dens, pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f * dens, 4f * dens)))
-        val m = Offset((a.x + b.x) / 2, (a.y + b.y) / 2)
-        val diff = tr?.diff?.let { String.format(Locale.US, " (%+.1f)", it * 100).replace('.', ',') } ?: ""
-        label("⟷" + String.format(Locale.US, "%.2f", t.len).replace('.', ',') + diff, m.x + 4 * dens, m.y + 14 * dens, col, dens)
+        val tapeDash = PathEffect.dashPathEffect(floatArrayOf(4f * dens, 4f * dens))
+        // kóta po stěně: odsazená ven od obrysu (s vynášecími čarami), aby nesplývala se stěnou
+        val ia = ObjCalc.refVertex(sk, t.a)
+        val ib = ObjCalc.refVertex(sk, t.b)
+        val onEdge = ia >= 0 && ib >= 0 && edges.any { (x, y) -> (x == ia && y == ib) || (x == ib && y == ia) }
+        val d = b - a
+        val ld = d.getDistance()
+        if (onEdge && ld > 1f) {
+            var n = Offset(-d.y / ld, d.x / ld)
+            val m0 = Offset((a.x + b.x) / 2, (a.y + b.y) / 2)
+            if (vPos.size >= 3) {
+                val cen = vPos.map(toScreen).let { l -> Offset(l.map { it.x }.average().toFloat(), l.map { it.y }.average().toFloat()) }
+                if (((m0 + n) - cen).getDistance() < ((m0 - n) - cen).getDistance()) n = -n
+            }
+            val off = 14f * dens
+            drawLine(col.copy(alpha = 0.6f), a + n * (3f * dens), a + n * (off + 4f * dens), 1f * dens)
+            drawLine(col.copy(alpha = 0.6f), b + n * (3f * dens), b + n * (off + 4f * dens), 1f * dens)
+            drawLine(col, a + n * off, b + n * off, 1.5f * dens, pathEffect = tapeDash)
+            val lm = m0 + n * (off + 12f * dens)
+            label(tapeText(t.len, tr?.diff), lm.x, lm.y, col, dens, center = true)
+        } else {
+            drawLine(col, a, b, 1.5f * dens, pathEffect = tapeDash)
+            val m = Offset((a.x + b.x) / 2, (a.y + b.y) / 2)
+            label(tapeText(t.len, tr?.diff), m.x, m.y + 14 * dens, col, dens, center = true)
+        }
     }
     // vrcholy
     vPos.forEachIndexed { i, p ->
@@ -1269,15 +1290,24 @@ private fun DrawScope.drawObject(
         // úhel: ∟ předpoklad 90°, ∠ pásmem; ve skutečných souřadnicích vypočtený úhel mezi stěnami
         val tapeAng = sk.vertices.getOrNull(i)?.let { v -> sk.angles.lastOrNull { it.vertex == v.id } }
         val fix = if (tapeAng != null) 2 else if (sk.isRight(i)) 1 else 0
+        // vypočtený úhel i v Kreslit (rozpor červeně); bez výpočtu v závorce úhel, jak je nakreslený
+        val rc = if (r.ok) r.vertices.getOrNull(i) else null
         if (fix != 0 || (vr?.wallAngle != null && world)) {
-            // po výpočtu výsledný úhel; v náčrtu u předpokladu ∟ v závorce úhel, jak je nakreslený
             val txt = (if (fix == 2) "∠" else if (fix == 1) "∟" else "") + when {
-                vr?.wallAngle != null -> String.format(Locale.US, "%.1f°", vr.wallAngle).replace('.', ',')
+                rc?.wallAngle != null -> String.format(Locale.US, "%.1f°", rc.wallAngle).replace('.', ',')
                 fix == 2 -> tapeAng?.wallAngle?.let { String.format(Locale.US, "%.1f°", it).replace('.', ',') } ?: ""
-                else -> sk.sketchAngle(i)?.let { String.format(Locale.US, " (%.0f°)", it) } ?: ""
+                else -> sk.sketchAngle(i)?.let { String.format(Locale.US, " (%.1f°)", it).replace('.', ',') } ?: ""
             }
-            val ac = if (vr?.angleBad == true) BAD else if (fix == 2) Color(0xFF8E24AA) else if (fix == 1) Color(0xFF00897B) else labelColor
-            label(txt, s.x + 8 * dens, s.y + 6 * dens, ac, dens)
+            val ac = if (rc?.angleBad == true) BAD else if (fix == 2) Color(0xFF8E24AA) else if (fix == 1) Color(0xFF00897B) else labelColor
+            // dovnitř rohu (osa úhlu mezi stěnami), mimo čáry stěn a kót
+            val nb = sk.neighbors(i)
+            val q = if (nb != null) {
+                val u1 = (toScreen(vPos[nb.first]) - s).let { it / max(it.getDistance(), 1e-3f) }
+                val u2 = (toScreen(vPos[nb.second]) - s).let { it / max(it.getDistance(), 1e-3f) }
+                val bi = (u1 + u2).let { if (it.getDistance() < 0.05f) Offset(-u1.y, u1.x) else it / it.getDistance() }
+                s + bi * (30f * dens)
+            } else Offset(s.x + 30f * dens, s.y + 10f * dens)
+            label(txt, q.x, q.y, ac, dens, center = true)
         }
     }
     // umístěné body
@@ -1330,14 +1360,28 @@ private fun DrawScope.drawObject(
     }
 }
 
-private fun DrawScope.label(s: String, x: Float, y: Float, color: Color, dens: Float) {
+private fun DrawScope.label(s: String, x: Float, y: Float, color: Color, dens: Float, center: Boolean = false) {
     val paint = android.graphics.Paint().apply {
         isAntiAlias = true
         textSize = 12f * dens
         this.color = android.graphics.Color.argb(255, (color.red * 255).toInt(), (color.green * 255).toInt(), (color.blue * 255).toInt())
+        if (center) textAlign = android.graphics.Paint.Align.CENTER
     }
-    drawContext.canvas.nativeCanvas.drawText(s, x, y, paint)
+    // na střed: x vodorovně, y na střed výšky písma
+    drawContext.canvas.nativeCanvas.drawText(s, x, if (center) y + paint.textSize * 0.35f else y, paint)
 }
+
+/** Znaménkové číslo bez „-0,0“ (desetinná čárka). */
+private fun signed(v: Double, dec: Int): String {
+    val f = Math.pow(10.0, dec.toDouble())
+    val x = Math.round(v * f) / f
+    return if (x == 0.0) String.format(Locale.US, "%.${dec}f", 0.0).replace('.', ',')
+    else String.format(Locale.US, "%+.${dec}f", x).replace('.', ',')
+}
+
+/** Popisek kóty: délka a rozdíl od výpočtu v cm. */
+private fun tapeText(len: Double, diff: Double?): String =
+    "⟷" + String.format(Locale.US, "%.2f", len).replace('.', ',') + (diff?.let { " (" + signed(it * 100, 1) + ")" } ?: "")
 
 /** Výsledky výpočtu, kontrola a export. */
 @Composable
@@ -1398,7 +1442,7 @@ private fun ResultPanel(c: RoverController, obj: SiteObject, sk: ObjSketch, r: O
             Text(
                 String.format(Locale.US, "%-6s %11.3f %12.3f ±%4.1f cm %s", v.label, v.y, v.x, (v.sigma ?: 0.0) * 100,
                     v.angle?.let { String.format(Locale.US, "%6.1f°", it) } ?: "") + "  " + ObjSource.NAMES[v.source] +
-                    (v.dh?.let { String.format(Locale.US, "  Δh %+.2f", it) } ?: ""),
+                    (v.dh?.let { "  Δh " + signed(it, 2) } ?: ""),
                 fontFamily = FontFamily.Monospace, style = mono, color = SRC_COLORS[v.source],
             )
         }
@@ -1408,8 +1452,8 @@ private fun ResultPanel(c: RoverController, obj: SiteObject, sk: ObjSketch, r: O
                 Text(
                     String.format(Locale.US, "%-6s %6.2f°", v.name, v.wallAngle) +
                         when (v.angleFix) {
-                            1 -> String.format(Locale.US, "  ∟ předpoklad, odchylka %+.2f°", v.wallAngle!! - 90)
-                            2 -> String.format(Locale.US, "  ∠ pásmem %.2f°, rozdíl %+.2f°", v.angleObs, v.wallAngle!! - (v.angleObs ?: 0.0))
+                            1 -> "  ∟ předpoklad, odchylka " + signed(v.wallAngle!! - 90, 2) + "°"
+                            2 -> String.format(Locale.US, "  ∠ pásmem %.2f°, rozdíl ", v.angleObs) + signed(v.wallAngle!! - (v.angleObs ?: 0.0), 2) + "°"
                             else -> "  z měření"
                         } + if (v.angleBad) "  – měření si odporují" else "",
                     fontFamily = FontFamily.Monospace, style = mono, color = if (v.angleBad) BAD else MaterialTheme.colorScheme.onSurface,
@@ -1439,7 +1483,7 @@ private fun ResultPanel(c: RoverController, obj: SiteObject, sk: ObjSketch, r: O
             Text(
                 "${p.name} · ${ObjPointType.NAMES.getOrElse(p.type) { "" }}" +
                     (p.residual?.let { " · odchylka ${PointEvaluator.cm(it)} cm" } ?: "") +
-                    (p.dh?.let { String.format(Locale.US, " · Δh %+.2f m", it) } ?: "") +
+                    (p.dh?.let { " · Δh " + signed(it, 2) + " m" } ?: "") +
                     (if (p.suspect) " · podezřelý / bez fixu" else "") + (if (p.bad) " · CHYBNÝ" else ""),
                 style = mono, color = if (p.bad) BAD else if (p.suspect) Color(0xFFEF6C00) else MaterialTheme.colorScheme.onSurface,
             )
@@ -1504,7 +1548,7 @@ private fun MeasureCard(sk: ObjSketch, r: ObjResult, a: String, b: String) {
             val hb = h(b)
             Text(
                 String.format(Locale.US, "%.3f m ±%.1f cm · směr %.1f°", m.first, (m.third ?: 0.0) * 100, m.second).replace('.', ',') +
-                    (if (ha != null && hb != null) String.format(Locale.US, " · Δh %+.2f m", hb - ha).replace('.', ',') else ""),
+                    (if (ha != null && hb != null) " · Δh " + signed(hb - ha, 2) + " m" else ""),
                 fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyMedium,
             )
             tape?.let { t ->

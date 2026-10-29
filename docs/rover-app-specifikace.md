@@ -455,3 +455,11 @@ Specifikace: `objekt-mereni-specifikace.md` (projekt), kap. 6.
 - **Změřené body jsou pevné** (dokud se neodeberou): nejdou táhnout; s výpočtem z GNSS (≥ 2 body) se v Kreslit ukazují na své skutečné poloze převedené do náčrtu. Vrchol se změřeným rohem nejde táhnout. Stěna se změřeným bodem v ose / na stěně nejde posunout; tažení jejího vrcholu ji natočí kolem bodu (druhý vrchol drží vzdálenost od bodu; je-li pevný, vrchol jede po přímce). Vrchol daný dvěma takovými stěnami je pevný. Upravit celý / Zrcadlit změřené body nepřesouvá.
 - **Nezměřené se přizpůsobí:** nezměřené body na stěně a v ose (i P) drží poměr podél své stěny – při tažení vrcholu nebo stěny jdou živě s ní, také po vložení vrcholu a Narovnat. Dorovnání celého náčrtu do měření jen tlačítkem Narovnat (změřené body na skutečnou polohu).
 - Verze 0.11.9 (versionCode 30).
+
+## 29. Stav aplikace 0.11.10 (29. 10.) – rozpor kót a pravých úhlů, popisky
+
+- Test: obdélník, Pravoúhlá, kóty 20,00 / 20,50 / 20,00 / 20,00. Dřív (předpoklad ±1°, upozornění od 2°) se rozpor 50 cm tiše schoval do úhlů 89,3° / 90,7° a kóty seděly na 0,2 cm – bez varování.
+- Předpoklad pravého úhlu ±0,3° (zděná stavba), rozpor od 0,5°: úhly červeně a ve výsledku „rozpor úhlů: V1 89,3°, … (kóta, nebo roh není pravý)“. Řešení: přeměřit kótu, nebo vrcholu nastavit pravý úhel „ne“. Regrese (kostel s polygonálním závěrem, lichoběžníkový náčrt obdélníku) bez falešných varování.
+- Vypočtený úhel se ukazuje i v Kreslit (rozpor červeně); bez výpočtu v závorce nakreslený úhel na desetinu stupně. Popisek úhlu uvnitř rohu (na ose úhlu), ne přes stěnu.
+- Kóta po stěně odsazená ven od obrysu s vynášecími čarami, nesplývá se stěnou. Rozdíly bez „-0,0“.
+- Verze 0.11.10 (versionCode 31).
