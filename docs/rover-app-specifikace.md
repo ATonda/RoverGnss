@@ -377,3 +377,22 @@ Podklad: test 29. 10. kostel Sítiny (rover u paty stojící zdi – float, fale
 - **Vynulovat** (Živě, Průměr) = průměr, terč i stopa na mapě; „Smazat stopu“ vynuluje i průměr a terč. Na REC nemá vliv.
 - Odloženo do 2. části (záložka Objekt): objekt a způsob přiložení krabičky v dialogu REC, posun antény 4,5 cm.
 - Verze 0.10.0 (versionCode 20).
+
+## 20. Stav aplikace 0.11.0 (29. 10.) – záložka Objekt, hromadné mazání; přeloženo v CI, na HW netestováno
+
+Specifikace: `objekt-mereni-specifikace.md` (projekt), kap. 6.
+
+- **Hromadný výběr a mazání:** Body → „Vybrat“ (Vše / Nic / ZIP / Jen souhrn / Smazat s potvrzením); historie měření bodu → „Vybrat“ (Vše / Smazat).
+- **Body → Objekt** (podzáložka místo dřívějších Tras): objekty lokality (nový, přejmenovat, smazat). DB v10 (migrace 9 → 10): tabulka `site_object`, náčrt jako JSON (vrcholy, uzavření, umístěné body, kóty).
+  - **Kreslit:** klepnutí = nový vrchol, na stěnu = vložit vrchol, na první vrchol = uzavřít; tažení vrcholu, podržení = smazat (s body a kótami na něm); Uzavřít / Otevřít obrys, Zpět. Posun a zoom prsty, „Celé“.
+  - **Body:** klepnutí na vrchol = roh, na stěnu = bod na stěně (dveře), mimo obrys = bod v ose nejbližší stěny (volba stěny) nebo kontrolní. Výběr bodu lokality – nejnovější měření nahoře (čas, fix %, σ, výsledek, varování); přiložení krabičky (roh vnější / vnitřní podle náčrtu, na stěně, volně). „Změřit nový (REC)“ spustí měření dalšího B a bod se rovnou umístí (aplikace nepřepne na mapu).
+  - **Pásmo:** dva prvky (vrchol / bod) → délka; klepnutím na číslo kóty úprava / smazání.
+  - **Změřit:** dva prvky → vzdálenost, směr, přesnost, Δh, případně kóta s rozdílem.
+- **Výpočet (`ObjCalc`):** podobnostní transformace náčrtu (rohy a body na stěně; body mimo obrys jen když nestačí) → vyrovnání MNČ (Gauss–Newton, neznámé e, n vrcholů). Měření: roh GNSS opravený o posun krabičky (4,5 cm od hran, d/sin(θ/2) po ose úhlu stěn; podezřelý / bez fixu σ 25 cm), bod v ose / na stěně = vzdálenost od přímky stěny 0 (σ 3 / 2 cm + σ měření), kóta σ 1 cm + 0,5 mm/m, náčrt = vektory stěn (σ 5 cm + 8 % délky) a slabě polohy (σ 5 m). První krok jen lineární vazby (správná větev u průsečíku přímky a kóty).
+  - Výsledky: vrcholy (Y/X, přesnost z kovariance, zdroj GNSS / průsečík os / pásmo / náčrt, vnitřní úhel, Δh), stěny (délka ± σ, zdroj, kóta), obvod, plocha, azimut hlavní osy, σ0 vyrovnání, odchylky bodů a kót – chybné červeně (> 3σ a > 5 cm).
+  - Zobrazení: Kreslit v náčrtu; Body / Pásmo / Změřit po 2 změřených bodech ve skutečných souřadnicích, barvy podle zdroje, čárkovaně co je jen z náčrtu.
+  - Ověřeno (Kotlin, syntetický kostel 5 × 16 m se závěrem, zkreslený náčrt, 3 rohy s krabičkou, 4 body v ose, 2 kóty): vrcholy do 6,5 cm, rohy do 2 cm, azimut osy 131,43° (skutečný 131,4°).
+- **Export:** GeoPackage EPSG:5514 nebo EPSG:25833 (UTM 33N – převod S-JTSK → ETRS89 s mřížkou, Krügerovy řady, shoda s PROJ na mm) s vrstvami `body` (opravená poloha, přiložení, přesnost, odchylka, chybný, podezřelý, fix %, Δh, Y, X), `vrcholy`, `steny`, `pudorys` (obvod, plocha, azimut osy), `koty`; formát ověřen GDAL. `Lokalita_objekt_vrcholy_YYYYMMDD.csv` (Y, X, E_5514, N_5514, φ, λ, Δh, zdroj, přesnost, úhel, stěna k dalšímu). Název `Sitiny_kostel_20261029.gpkg`.
+- Δh: od umístěného kontrolního bodu objektu, jinak od bodu lokality označeného „kontrolní“.
+- Zatím ne: vrstva `epochy`, PNG půdorysu, objekt a přiložení v dialogu REC (řeší „Změřit nový“ z náčrtu).
+- Verze 0.11.0 (versionCode 21).

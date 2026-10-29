@@ -83,7 +83,8 @@ object Gpkg {
     fun write(file: File, srs: Srs, layers: List<Layer>) {
         file.delete()
         File(file.path + "-journal").delete()
-        val db = SQLiteDatabase.openOrCreateDatabase(file, null)
+        // bez lokalizace: Android jinak přidá tabulku android_metadata
+        val db = SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.CREATE_IF_NECESSARY or SQLiteDatabase.NO_LOCALIZED_COLLATORS)
         try {
             db.execSQL("PRAGMA application_id = 1196444487")   // 'GPKG'
             db.version = 10300
