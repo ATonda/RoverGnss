@@ -494,3 +494,13 @@ Specifikace: `objekt-mereni-specifikace.md` (projekt), kap. 6.
 - **Otočení pohledu dvěma prsty** (s posunem a zoomem) ve všech režimech; výpočet se ukazuje natočený jako náčrt (ne severem nahoru); „Celé“ vrátí natočení náčrtu; se 2+ body šipka severu v rohu, klepnutí = sever nahoru.
 - **Kóty a délky stěn psané podél stěny** (jako ve výkresech), vždy čitelně.
 - Verze 0.11.13 (versionCode 34).
+
+## 33. Stav aplikace 0.11.14 (30. 10.) – nekótované stěny volně, přibližné kóty, vazby stěn, pevný pohled
+
+- **Chyba:** s polovinou okótovaných stěn hlásil výpočet rozpor (např. kóta V9–V10 0,33 m, −8,5 cm). Nekótované stěny držely nakreslenou délku s přesností 5 cm + 8 % – krátké stěny se chovaly skoro jako změřené a kóty se neměly kam „roztáhnout“.
+- **Nekótovaná stěna není měření:** vektor stěny z náčrtu rozložen na délku (±50 % délky, aspoň 1 m – jen vodítko) a směr (10 cm + 15 % délky). Délku určí kóty, úhly, vazby a GPS. Ověřeno: obrys se zkoseným rohem, polovina kót, zkosení zadané 3,00 m místo nakreslených 4,24 m – bez rozporu, ostatní stěny se přizpůsobily, rohy 90°. Regrese (kostel, lichoběžník) v pořádku.
+- **Přibližná kóta (z mapy):** v dialogu kóty „≈ přibližná“ – přesnost 30 cm + 1 %, kreslená světleji „≈4,00“, rozpor se s ní nehlásí. Po změření pásmem se zruší.
+- **Vazby stěn kolmé ⟂ / souběžné ∥:** Kreslit → stěna → „Vazba ⟂ ∥“ → druhá stěna → kolmé / souběžné. I nesousední stěny (zkosený roh, protější strany). Značka „⟂1“ u obou stěn; ve výpočtu ±0,3°, rozpor od 0,5°, kandidát hrubé chyby. Smazání: výběr stěny → „⟂1 ✕“. Výsledky: oddíl Vazby stěn s odchylkou.
+- **Nejednoznačný rozpor:** všechny možné příčiny i důsledky oranžově („podezřelé“), nic červeně. Hláška na ploše jeden řádek („⚠ Rozpor – 5 možných příčin ▸“), klepnutí rozbalí podrobnosti. Gramatika „1 chybné / 2–4 chybná / 5 chybných měření“.
+- **Pohled jen ručně:** zoom, posun a otočení jen prsty a „Celé“ (plus otevření objektu). Změna režimu, výpočtu ani velikosti plochy pohled nemění; přepnutí náčrt ↔ výpočet drží pevný bod náčrtu na stejném místě a ve stejné velikosti.
+- Verze 0.11.14 (versionCode 35).

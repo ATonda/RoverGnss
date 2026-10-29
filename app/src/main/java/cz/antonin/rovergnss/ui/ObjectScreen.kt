@@ -75,6 +75,7 @@ import cz.antonin.rovergnss.data.ObjMount
 import cz.antonin.rovergnss.data.ObjObs
 import cz.antonin.rovergnss.data.ObjPlace
 import cz.antonin.rovergnss.data.ObjPointType
+import cz.antonin.rovergnss.data.ObjRel
 import cz.antonin.rovergnss.data.ObjResult
 import cz.antonin.rovergnss.data.ObjSketch
 import cz.antonin.rovergnss.data.ObjSource
@@ -117,6 +118,7 @@ private object ObjMode {
 
 private val SRC_COLORS = listOf(Color(0xFF2E7D32), Color(0xFF1565C0), Color(0xFF8E24AA), Color(0xFF9E9E9E))
 private val BAD = Color(0xFFC62828)
+private val DOUBT = Color(0xFFEF6C00)   // podezřelé – jedna z možných příčin rozporu
 
 /** Prvek pod prstem. */
 private sealed class Hit {
@@ -173,6 +175,8 @@ fun ObjectScreen(c: RoverController) {
     var dragV by remember { mutableStateOf<Map<Int, Offset>?>(null) }    // id vrcholu → poloha v náčrtu během tažení (i otočená stěna)
     var askDelV by remember { mutableStateOf<Int?>(null) }              // id vrcholu ke smazání (s navázanými body)
     var askRecalc by remember { mutableStateOf(false) }                 // potvrzení Přepočítat (náčrt podle výpočtu)
+    var relFirst by remember { mutableStateOf<Int?>(null) }             // vazba stěn: první stěna (id počátečního vrcholu)
+    var relDialog by remember { mutableStateOf<Pair<Int, Int>?>(null) } // vazba stěn: obě stěny → kolmé / souběžné
     var stroke by remember { mutableStateOf<List<Offset>>(emptyList()) }  // kreslení prstem (obrazovka)
     var askClear by remember { mutableStateOf(false) }
     var selEdge by remember { mutableStateOf<Int?>(null) }            // vybraná stěna (index)
@@ -231,6 +235,27 @@ fun ObjectScreen(c: RoverController) {
         val qy = (s.y - vOff.y) / vScale
         return Offset(qx * c + qy * sn, -qx * sn + qy * c)
     }
+    // pohled se mění jen ručně (0.11.14): při změně výpočtu nebo přepnutí náčrt ↔ výpočet zůstane pevný bod náčrtu
+    // (těžiště při otevření objektu) na stejném místě obrazovky a ve stejné velikosti – žádný skok
+    val anchor = remember(obj?.id) { skC }
+    val view = remember(obj?.id) { ViewAnchor() }
+    run {
+        val curD = if (!world) anchor else result.toWorld(anchor.x.toDouble(), anchor.y.toDouble())?.let { dOfWorld(it[0], it[1]) }
+        val base = if (world) skAz else 0f
+        val prev = view.d
+        if (curD != null) {
+            if (prev != null && (prev != curD || view.world != world || view.base != base)) {
+                val sOld = rotOf(prev, vRot + view.base) * vScale + vOff
+                val sc = (result.scale ?: view.sc)?.toFloat()
+                if (view.world != world && sc != null && sc > 0f) vScale = if (world) vScale / sc else vScale * sc
+                vOff = sOld - rotOf(curD, vRot + base) * vScale
+            }
+            view.d = curD
+            view.world = world
+            view.base = base
+            if (result.scale != null) view.sc = result.scale
+        }
+    }
     /** Obrazovka → souřadnice náčrtu. */
     fun toSketch(s: Offset): Offset {
         val d = toD(s)
@@ -281,7 +306,8 @@ fun ObjectScreen(c: RoverController) {
     val edges = sk.edges()
 
     // přizpůsobení pohledu obsahu
-    LaunchedEffect(fitReq, world, obj?.id, canvasW, canvasH) {
+    // celý objekt jen na „Celé“, při otevření objektu a prvním změření plochy (ne při změně režimu, výpočtu, velikosti)
+    LaunchedEffect(fitReq, obj?.id, canvasW > 0f) {
         if (canvasW <= 0f) return@LaunchedEffect
         // body v otočeném pohledu (bez měřítka a posunu)
         val r = rotNow()
@@ -363,6 +389,15 @@ fun ObjectScreen(c: RoverController) {
                 val h = hitTest(s, wantTapes = false, wantPlaces = false)
                 val q = toSketch(s)
                 if (whole) return
+                // vazba: druhá stěna
+                relFirst?.let { a ->
+                    if (h is Hit.Edge) {
+                        val b = sk.vertices[edges[h.index].first].id
+                        if (b != a) relDialog = a to b else c.postMessage("Vyber jinou stěnu")
+                    }
+                    relFirst = null
+                    return
+                }
                 when (h) {
                     is Hit.Vertex -> {
                         selEdge = null
@@ -501,9 +536,9 @@ fun ObjectScreen(c: RoverController) {
     val full by c.objFull.collectAsStateWithLifecycle()
     var resOpen by rememberSaveable { mutableStateOf(false) }
     var help by rememberSaveable { mutableStateOf(false) }
+    var bannerOpen by remember { mutableStateOf(false) }   // rozbalená hláška rozporu
     BackHandler(enabled = full) { c.objFull.value = false }
     DisposableEffect(Unit) { onDispose { c.objFull.value = false } }
-    LaunchedEffect(full) { fitReq++ }
 
     Column(Modifier.fillMaxSize()) {
         // výběr objektu (menu: objekty, nový, přejmenovat, smazat) – v řádku režimů, šetří plochu (0.11.12)
@@ -559,7 +594,7 @@ fun ObjectScreen(c: RoverController) {
                         mode = i
                         tapeFirst = null
                         measSel = emptyList()
-                        fitReq++
+                        relFirst = null
                     }, label = { Text(n) })
                 }
                 TextButton(onClick = {
@@ -703,6 +738,17 @@ fun ObjectScreen(c: RoverController) {
                     else edit { s0 -> deleteEdge(s0, se) }
                     selEdge = null
                 }) { Text("Smazat stěnu", color = MaterialTheme.colorScheme.error) }
+                OutlinedButton(onClick = {
+                    relFirst = sk.vertices[ia].id
+                    selEdge = null
+                }) { Text("Vazba ⟂ ∥") }
+                // vazby této stěny: klepnutí = smazat
+                val sid = sk.vertices.getOrNull(ia)?.id
+                sk.rels.forEachIndexed { k, r ->
+                    if (r.a == sid || r.b == sid) TextButton(onClick = { edit { s0 -> s0.copy(rels = s0.rels.filter { it.id != r.id }) } }) {
+                        Text("${ObjRel.SYMBOL[r.kind]}${k + 1} ✕")
+                    }
+                }
                 TextButton(onClick = { selEdge = null }) { Text("Zrušit výběr") }
             }
             // plátno
@@ -864,6 +910,11 @@ fun ObjectScreen(c: RoverController) {
                         tapeFirst, measSel, labelColor, density.density,
                         names = obs.mapValues { it.value.name }, selEdge = selEdge.takeIf { mode == ObjMode.DRAW }, selVertex = selVertex.takeIf { mode == ObjMode.DRAW },
                     )
+                    relFirst?.let { sk.edgeIndex(it) }?.takeIf { it >= 0 }?.let { ei ->
+                        edges.getOrNull(ei)?.let { (ia, ib) ->
+                            drawLine(Color(0xFF00897B), toScreen(vPos[ia]), toScreen(vPos[ib]), 6f * density.density)
+                        }
+                    }
                     selEdge?.takeIf { mode == ObjMode.DRAW }?.let { ei ->
                         edges.getOrNull(ei)?.let { (ia, ib) ->
                             drawLine(Color(0xFFFFA000), toScreen(vPos[ia]), toScreen(vPos[ib]), 6f * density.density)
@@ -901,10 +952,20 @@ fun ObjectScreen(c: RoverController) {
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.align(Alignment.Center).padding(24.dp),
                 )
-                if (result.ok && (result.conflict || result.excludedText != null)) Text(
-                    result.message.substringAfter("Vypočteno: ").let { if (result.excludedText != null) "Hrubá chyba: ${result.excludedText} – vynechána" else it },
-                    style = MaterialTheme.typography.bodySmall, color = BAD,
+                // hláška rozporu: jeden řádek, klepnutí rozbalí podrobnosti
+                val head = result.headline
+                if (result.ok && head != null) Text(
+                    if (bannerOpen) head + "\n" + result.message.substringAfter("Vypočteno: ") else "$head ▸",
+                    style = MaterialTheme.typography.bodySmall, color = if (head.contains("možných")) DOUBT else BAD,
+                    maxLines = if (bannerOpen) 30 else 1,
                     modifier = Modifier.align(Alignment.TopCenter).padding(6.dp)
+                        .background(Color.White.copy(alpha = 0.9f), RoundedCornerShape(6.dp))
+                        .clickable { bannerOpen = !bannerOpen }.padding(6.dp),
+                )
+                if (relFirst != null) Text(
+                    "Vazba: klepni na druhou stěnu (kolmou nebo souběžnou)",
+                    style = MaterialTheme.typography.bodySmall, color = Color(0xFF00897B),
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(6.dp)
                         .background(Color.White.copy(alpha = 0.9f), RoundedCornerShape(6.dp)).padding(6.dp),
                 )
                 if (mode != ObjMode.DRAW && !result.ok) Text(
@@ -1058,10 +1119,30 @@ fun ObjectScreen(c: RoverController) {
     }
     tapeDialog?.let { (a, b) ->
         val o = obj
-        TapeDialog(null, onSave = { len ->
+        TapeDialog(null, false, onSave = { len, approx ->
             tapeDialog = null
-            if (o != null) edit { s0 -> s0.copy(tapes = s0.tapes + ObjTape(s0.nextId, a, b, len), nextId = s0.nextId + 1) }
+            if (o != null) edit { s0 -> s0.copy(tapes = s0.tapes + ObjTape(s0.nextId, a, b, len, approx), nextId = s0.nextId + 1) }
         }, onDelete = null, onDismiss = { tapeDialog = null })
+    }
+    relDialog?.let { (a, b) ->
+        fun en(id: Int) = sk.edges().getOrNull(sk.edgeIndex(id))?.let { (x, y) -> "V${x + 1}–V${y + 1}" } ?: "?"
+        AlertDialog(
+            onDismissRequest = { relDialog = null },
+            title = { Text("Vazba stěn ${en(a)} a ${en(b)}") },
+            text = { Text("Kolmé = pravý úhel i přes zkosený roh. Souběžné = stejný směr, i když nejsou v jedné ose.") },
+            confirmButton = {
+                Row {
+                    ObjRel.NAMES.forEachIndexed { k, n ->
+                        TextButton(onClick = {
+                            relDialog = null
+                            edit { s0 -> s0.copy(rels = s0.rels.filter { !((it.a == a && it.b == b) || (it.a == b && it.b == a)) } +
+                                ObjRel(s0.nextId, a, b, k), nextId = s0.nextId + 1) }
+                        }) { Text("${ObjRel.SYMBOL[k]} $n") }
+                    }
+                }
+            },
+            dismissButton = { TextButton(onClick = { relDialog = null }) { Text("Zrušit") } },
+        )
     }
     angleDialog?.let { vi ->
         val v = sk.vertices.getOrNull(vi)
@@ -1082,9 +1163,9 @@ fun ObjectScreen(c: RoverController) {
     }
     tapeEdit?.let { t ->
         val o = obj
-        TapeDialog(t.len, onSave = { len ->
+        TapeDialog(t.len, t.approx, onSave = { len, approx ->
             tapeEdit = null
-            if (o != null) edit { s0 -> s0.copy(tapes = s0.tapes.map { if (it.id == t.id) it.copy(len = len) else it }) }
+            if (o != null) edit { s0 -> s0.copy(tapes = s0.tapes.map { if (it.id == t.id) it.copy(len = len, approx = approx) else it }) }
         }, onDelete = {
             tapeEdit = null
             if (o != null) edit { s0 -> s0.copy(tapes = s0.tapes.filter { it.id != t.id }) }
@@ -1134,6 +1215,7 @@ private fun removeVertex(s: ObjSketch, id: Int): ObjSketch {
         places = s.places.filter { it.id !in placesGone },
         tapes = s.tapes.filter { t -> listOf(t.a, t.b).none { it == "v:$id" || placesGone.any { p -> it == "p:$p" } } },
         closed = s.closed && s.vertices.size > 3,
+        rels = s.rels.filter { it.a != id && it.b != id },
     )
 }
 
@@ -1164,6 +1246,7 @@ private fun deleteEdge(s: ObjSketch, ei: Int): ObjSketch {
             vertices = order.map { s.vertices[it] }, closed = false,
             places = s.places.filter { it.id !in gone },
             tapes = s.tapes.filter { t -> gone.none { g -> t.a == "p:$g" || t.b == "p:$g" } },
+            rels = s.rels.filter { it.a != startId && it.b != startId },
         )
     }
     return when {
@@ -1245,6 +1328,28 @@ private fun DrawScope.drawObject(
             labelAlong(String.format(Locale.US, "%.2f", er.len).replace('.', ','), q, d, col, dens)
         }
     }
+    // vazby stěn: značka ⟂n / ∥n u obou stěn (uvnitř obrysu, ve čtvrtině stěny)
+    sk.rels.forEachIndexed { k, rel ->
+        val rr = r.rels.firstOrNull { it.id == rel.id }
+        val rcol = when {
+            rr?.excluded == true -> Color(0xFF9E9E9E)
+            rr?.bad == true -> BAD
+            rr?.doubt == true -> DOUBT
+            else -> Color(0xFF00897B)
+        }
+        for (wid in listOf(rel.a, rel.b)) {
+            val (ia, ib) = edges.getOrNull(sk.edgeIndex(wid)) ?: continue
+            val a = toScreen(vPos[ia])
+            val b = toScreen(vPos[ib])
+            val d = b - a
+            val ld = max(d.getDistance(), 1e-3f)
+            val p0 = a + d * 0.25f
+            var n = Offset(-d.y / ld, d.x / ld)
+            if (scrV.size >= 3 && ((p0 + n) - cen).getDistance() > ((p0 - n) - cen).getDistance()) n = -n
+            val q = p0 + n * (12f * dens)
+            label(ObjRel.SYMBOL[rel.kind] + (k + 1), q.x, q.y, rcol, dens, center = true)
+        }
+    }
     // prodloužení stěn s body v ose: čárkovaná přímka přes oba vrcholy až za nejvzdálenější bod, barva podle stěny
     val axisCol = axisColors(sk)
     axisCol.forEach { (ei, col) ->
@@ -1274,7 +1379,12 @@ private fun DrawScope.drawObject(
         val a = refD(t.a)?.let(toScreen) ?: return@forEach
         val b = refD(t.b)?.let(toScreen) ?: return@forEach
         val tr = r.tapes.firstOrNull { it.id == t.id }
-        val col = if (tr?.bad == true) BAD else Color(0xFF8E24AA)
+        val col = when {
+            tr?.bad == true -> BAD
+            tr?.doubt == true -> DOUBT
+            t.approx -> Color(0xFF8E24AA).copy(alpha = 0.55f)
+            else -> Color(0xFF8E24AA)
+        }
         val tapeDash = PathEffect.dashPathEffect(floatArrayOf(4f * dens, 4f * dens))
         // kóta po stěně: odsazená ven od obrysu (s vynášecími čarami), aby nesplývala se stěnou
         val ia = ObjCalc.refVertex(sk, t.a)
@@ -1291,12 +1401,12 @@ private fun DrawScope.drawObject(
             drawLine(col.copy(alpha = 0.6f), b + n * (3f * dens), b + n * (off + 4f * dens), 1f * dens)
             drawLine(col, a + n * off, b + n * off, 1.5f * dens, pathEffect = tapeDash)
             // text podél kóty (jako ve výkresech), vně
-            labelAlong(tapeText(t.len, tr?.diff, tr?.excluded == true), m0 + n * (off + 9f * dens), d, col, dens)
+            labelAlong(tapeText(t.len, tr?.diff, tr?.excluded == true, t.approx), m0 + n * (off + 9f * dens), d, col, dens)
         } else {
             drawLine(col, a, b, 1.5f * dens, pathEffect = tapeDash)
             val m = Offset((a.x + b.x) / 2, (a.y + b.y) / 2)
             val nn = if (ld > 1f) Offset(-d.y / ld, d.x / ld) else Offset(0f, 1f)
-            labelAlong(tapeText(t.len, tr?.diff, tr?.excluded == true), m + nn * (9f * dens), d, col, dens)
+            labelAlong(tapeText(t.len, tr?.diff, tr?.excluded == true, t.approx), m + nn * (9f * dens), d, col, dens)
         }
     }
     // vrcholy
@@ -1328,7 +1438,7 @@ private fun DrawScope.drawObject(
                 fix == 2 -> tapeAng?.wallAngle?.let { String.format(Locale.US, "%.1f°", it).replace('.', ',') } ?: ""
                 else -> sk.sketchAngle(i)?.let { String.format(Locale.US, " (%.1f°)", it).replace('.', ',') } ?: ""
             }
-            val ac = if (rc?.angleBad == true) BAD else if (fix == 2) Color(0xFF8E24AA) else if (fix == 1) Color(0xFF00897B) else labelColor
+            val ac = if (rc?.angleBad == true) BAD else if (rc?.angleDoubt == true) DOUBT else if (fix == 2) Color(0xFF8E24AA) else if (fix == 1) Color(0xFF00897B) else labelColor
             // dovnitř rohu (osa úhlu mezi stěnami), mimo čáry stěn a kót
             val q = if (bi != null) s + bi * (30f * dens) else Offset(s.x + 30f * dens, s.y + 10f * dens)
             label(txt, q.x, q.y, ac, dens, center = true)
@@ -1342,6 +1452,7 @@ private fun DrawScope.drawObject(
         val col = when {
             pr == null && p.pointId == 0L -> Color(0xFF9E9E9E)
             pr?.bad == true -> BAD
+            pr?.doubt == true -> DOUBT
             pr?.suspect == true -> Color(0xFFEF6C00)
             wallCol != null -> wallCol
             else -> Color(0xFF2E7D32)
@@ -1414,6 +1525,21 @@ private fun DrawScope.labelAlong(s: String, at: Offset, along: Offset, color: Co
     nc.restore()
 }
 
+/** Poslední stav převodu pohledu (pevný bod náčrtu v souřadnicích D, režim, natočení, měřítko) – 0.11.14. */
+private class ViewAnchor {
+    var d: Offset? = null
+    var world = false
+    var base = 0f
+    var sc: Double? = null
+}
+
+/** Otočení vektoru o úhel [r] (y dolů). */
+private fun rotOf(o: Offset, r: Float): Offset {
+    val c = kotlin.math.cos(r)
+    val s = kotlin.math.sin(r)
+    return Offset(o.x * c - o.y * s, o.x * s + o.y * c)
+}
+
 /** Pohyb na obrazovce → v souřadnicích D (bez otočení pohledu). */
 private fun unrot(o: Offset, r: Float): Offset {
     val c = kotlin.math.cos(r)
@@ -1430,8 +1556,8 @@ private fun signed(v: Double, dec: Int): String {
 }
 
 /** Popisek kóty: délka a rozdíl od výpočtu v cm. */
-private fun tapeText(len: Double, diff: Double?, excluded: Boolean = false): String =
-    "⟷" + String.format(Locale.US, "%.2f", len).replace('.', ',') +
+private fun tapeText(len: Double, diff: Double?, excluded: Boolean = false, approx: Boolean = false): String =
+    (if (approx) "≈" else "⟷") + String.format(Locale.US, "%.2f", len).replace('.', ',') +
         if (excluded) " vynechána" else (diff?.let { " (" + signed(it * 100, 1) + ")" } ?: "")
 
 /** Výsledky výpočtu, kontrola a export. */
@@ -1546,8 +1672,22 @@ private fun ResultPanel(c: RoverController, obj: SiteObject, sk: ObjSketch, r: O
             Text(
                 String.format(Locale.US, "%.3f m", t.len) + (t.calc?.let { String.format(Locale.US, " / %.3f m", it) } ?: "") +
                     (t.diff?.let { " · rozdíl ${PointEvaluator.cm(it)} cm" } ?: "") +
-                    if (t.excluded) " · VYNECHÁNA (hrubá chyba)" else if (t.bad) " · CHYBNÁ" else "",
-                style = mono, color = if (t.bad) BAD else MaterialTheme.colorScheme.onSurface,
+                    (if (t.approx) " · přibližná" else "") +
+                    if (t.excluded) " · VYNECHÁNA (hrubá chyba)" else if (t.bad) " · CHYBNÁ" else if (t.doubt) " · PODEZŘELÁ" else "",
+                style = mono, color = if (t.bad) BAD else if (t.doubt) DOUBT else MaterialTheme.colorScheme.onSurface,
+            )
+        }
+    }
+    if (r.rels.isNotEmpty()) {
+        Text("Vazby stěn (odchylka)", style = MaterialTheme.typography.titleSmall)
+        r.rels.forEachIndexed { k, v ->
+            val rel = sk.rels.firstOrNull { it.id == v.id }
+            fun en(id: Int?) = sk.edges().getOrNull(sk.edgeIndex(id))?.let { (x, y) -> "V${x + 1}–V${y + 1}" } ?: "?"
+            Text(
+                "${ObjRel.SYMBOL[v.kind]}${k + 1} ${en(rel?.a)} a ${en(rel?.b)} ${ObjRel.NAMES[v.kind]}" +
+                    (v.dev?.let { " · " + signed(it, 2) + "°" } ?: "") +
+                    if (v.excluded) " · VYNECHÁNA" else if (v.bad) " · ROZPOR" else if (v.doubt) " · PODEZŘELÁ" else "",
+                style = mono, color = if (v.bad) BAD else if (v.doubt) DOUBT else MaterialTheme.colorScheme.onSurface,
             )
         }
     }
@@ -1833,19 +1973,28 @@ private fun AngleSketch(method: Int) {
 
 /** Kóta pásmem: délka v metrech (čárka i tečka). */
 @Composable
-private fun TapeDialog(initial: Double?, onSave: (Double) -> Unit, onDelete: (() -> Unit)?, onDismiss: () -> Unit) {
+private fun TapeDialog(initial: Double?, initialApprox: Boolean, onSave: (Double, Boolean) -> Unit, onDelete: (() -> Unit)?, onDismiss: () -> Unit) {
     var text by remember { mutableStateOf(initial?.let { String.format(Locale.US, "%.3f", it).trimEnd('0').trimEnd('.').replace('.', ',') } ?: "") }
+    var approx by remember { mutableStateOf(initialApprox) }
     val v = text.replace(',', '.').toDoubleOrNull()?.takeIf { it > 0 && it < 1000 }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (initial == null) "Kóta pásmem" else "Upravit kótu") },
         text = {
-            OutlinedTextField(
-                text, { text = it }, singleLine = true, label = { Text("Délka [m]") }, isError = text.isNotEmpty() && v == null,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedTextField(
+                    text, { text = it }, singleLine = true, label = { Text("Délka [m]") }, isError = text.isNotEmpty() && v == null,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                )
+                FilterChip(selected = approx, onClick = { approx = !approx }, label = { Text("≈ přibližná (z mapy, ±30 cm)") })
+                Text(
+                    if (approx) "Rozpor s přibližnou kótou se nehlásí. Po změření pásmem zruš „přibližná“."
+                    else "Změřená pásmem (±1 cm).",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         },
-        confirmButton = { TextButton(onClick = { v?.let(onSave) }, enabled = v != null) { Text("Uložit") } },
+        confirmButton = { TextButton(onClick = { v?.let { onSave(it, approx) } }, enabled = v != null) { Text("Uložit") } },
         dismissButton = {
             Row {
                 onDelete?.let { TextButton(onClick = it) { Text("Smazat", color = MaterialTheme.colorScheme.error) } }

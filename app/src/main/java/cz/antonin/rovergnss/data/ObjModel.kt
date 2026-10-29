@@ -38,8 +38,21 @@ data class ObjPlace(
     val label: String = "",   // plánovaný název (pomocný bod P1…), dokud není změřen
 )
 
-/** Kóta pásmem mezi dvěma prvky: odkaz „v:id“ (vrchol) nebo „p:id“ (umístěný bod). */
-data class ObjTape(val id: Int, val a: String, val b: String, val len: Double)
+/**
+ * Kóta pásmem mezi dvěma prvky: odkaz „v:id“ (vrchol) nebo „p:id“ (umístěný bod).
+ * [approx] přibližná (např. z mapy, ±30 cm) – rozpor s ní se nehlásí jako chyba; po změření pásmem zrušit (0.11.14).
+ */
+data class ObjTape(val id: Int, val a: String, val b: String, val len: Double, val approx: Boolean = false)
+
+/** Vazba dvou stěn (id počátečních vrcholů [a], [b]), i nesousedních (zkosený roh): [kind] kolmé / souběžné (0.11.14). */
+data class ObjRel(val id: Int, val a: Int, val b: Int, val kind: Int) {
+    companion object {
+        const val PERP = 0
+        const val PARALLEL = 1
+        val SYMBOL = listOf("⟂", "∥")
+        val NAMES = listOf("kolmé", "souběžné")
+    }
+}
 
 /**
  * Úhel rohu pásmem (trojúhelník, 0.11.7) ve vrcholu [vertex]: [a], [b] odměřeno od rohu, [c] mezi konci.
@@ -79,6 +92,7 @@ data class ObjSketch(
     val angles: List<ObjAngle> = emptyList(),
     val square: Boolean = false,
     val right: Map<Int, Int> = emptyMap(),
+    val rels: List<ObjRel> = emptyList(),
 ) {
     /** Stěny: dvojice (počáteční, koncový) index vrcholu. */
     fun edges(): List<Pair<Int, Int>> {

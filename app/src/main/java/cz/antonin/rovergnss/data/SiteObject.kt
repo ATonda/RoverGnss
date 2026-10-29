@@ -40,7 +40,10 @@ fun ObjSketch.toJson(): String {
             )
         }
     })
-    o.put("tapes", JSONArray().also { a -> tapes.forEach { a.put(JSONObject().put("id", it.id).put("a", it.a).put("b", it.b).put("len", it.len)) } })
+    o.put("tapes", JSONArray().also { a ->
+        tapes.forEach { a.put(JSONObject().put("id", it.id).put("a", it.a).put("b", it.b).put("len", it.len).put("approx", it.approx)) }
+    })
+    o.put("rels", JSONArray().also { a -> rels.forEach { a.put(JSONObject().put("id", it.id).put("a", it.a).put("b", it.b).put("kind", it.kind)) } })
     o.put("angles", JSONArray().also { a ->
         angles.forEach { a.put(JSONObject().put("id", it.id).put("vertex", it.vertex).put("method", it.method).put("a", it.a).put("b", it.b).put("c", it.c)) }
     })
@@ -70,7 +73,7 @@ object ObjSketchJson {
                 }
             },
             // mezi dvěma body jen jedna kóta (0.11.11): starší duplicity sloučeny, platí poslední zadaná
-            tapes = (0 until ta.length()).map { ta.getJSONObject(it).let { j -> ObjTape(j.getInt("id"), j.getString("a"), j.getString("b"), j.getDouble("len")) } }
+            tapes = (0 until ta.length()).map { ta.getJSONObject(it).let { j -> ObjTape(j.getInt("id"), j.getString("a"), j.getString("b"), j.getDouble("len"), j.optBoolean("approx")) } }
                 .let { l -> l.filterIndexed { i, t -> l.drop(i + 1).none { u -> (u.a == t.a && u.b == t.b) || (u.a == t.b && u.b == t.a) } } },
             nextId = o.optInt("nextId", 1),
             angles = (o.optJSONArray("angles") ?: JSONArray()).let { aa ->
@@ -79,6 +82,9 @@ object ObjSketchJson {
                 } }
             },
             square = o.optBoolean("square"),
+            rels = (o.optJSONArray("rels") ?: JSONArray()).let { ra ->
+                (0 until ra.length()).map { ra.getJSONObject(it).let { j -> ObjRel(j.getInt("id"), j.getInt("a"), j.getInt("b"), j.optInt("kind")) } }
+            },
             right = o.optJSONObject("right")?.let { r -> r.keys().asSequence().mapNotNull { k -> k.toIntOrNull()?.let { it to r.optInt(k) } }.toMap() } ?: emptyMap(),
         )
     } catch (e: Exception) {
