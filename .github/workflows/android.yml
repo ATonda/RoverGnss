@@ -37,7 +37,12 @@ jobs:
       - name: Překlad (debug APK)
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug
+          # chyby překladu i jako anotace (čitelné přes API bez přihlášení)
+          set -o pipefail
+          ./gradlew --no-daemon assembleDebug 2>&1 | tee build.log || {
+            grep -E '^e: ' build.log | head -20 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          }
 
       - name: Verze
         id: ver
