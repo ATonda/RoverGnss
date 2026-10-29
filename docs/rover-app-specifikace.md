@@ -402,3 +402,10 @@ Specifikace: `objekt-mereni-specifikace.md` (projekt), kap. 6.
 - Hlášení: „nefunguje kreslení na ploše“ – v 0.11.0 jednoprstové tažení posouvalo plátno, vrcholy jen klepnutím.
 - **Kreslit:** tažení jedním prstem = čára obrysu, zjednodušená na vrcholy (Douglas–Peucker, tolerance ~12 dp); od posledního vrcholu otevřeného obrysu čára navazuje, konec u prvního vrcholu obrys uzavře (i u první uzavřené čáry). Klepnutí = vrchol (beze změny). Posun a zoom dvěma prsty. Tažení vrcholu (kromě posledního u otevřeného obrysu) = posun. Nápověda na prázdném plátně, tlačítko „Smazat náčrt“ (s potvrzením; kontrolní body zůstávají).
 - Verze 0.11.1 (versionCode 22).
+
+## 22. Stav aplikace 0.11.2 (29. 10.) – úpravy náčrtu
+
+- **Výběr stěny:** v Kreslit klepnutí na stěnu ji vybere (oranžově). Tažení vybrané stěny = posun obou vrcholů; „Vložit vrchol“ (v místě klepnutí), „Smazat stěnu“ – uzavřený obrys se na ní rozpojí, u otevřeného jen krajní stěna (prostřední nejde – hláška). Body a kóty na smazané stěně se odeberou. Vložení vrcholu už není přímo klepnutím na stěnu.
+- **Upravit celý:** přepínač – tažení jedním prstem posune celý náčrt, dvěma prsty otočení a zvětšení kolem těžiště (pohled se nemění); „Zrcadlit“ podle svislé osy. Body umístěné v náčrtu se mění s ním.
+- **Zpět / Znovu** pro všechny změny náčrtu z obrazovky (posledních 50 kroků na objekt, v paměti – po restartu aplikace se historie maže). Dřívější „Zpět“ (smazání posledního vrcholu) nahrazeno.
+- Verze 0.11.2 (versionCode 23).

@@ -860,8 +860,48 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         db.objects().get(objectId)?.let { db.objects().update(it.copy(data = sk.toJson())) }
     }
 
-    /** Úprava náčrtu z UI (vždy nad aktuálním stavem v databázi). */
-    fun editObject(objectId: Long, f: (ObjSketch) -> ObjSketch) = scope.launch { updateObject(objectId, f) }
+    // Zpět / Znovu náčrtu: v paměti, pro každý objekt posledních [UNDO_MAX] stavů (JSON)
+    private val undoStacks = HashMap<Long, ArrayDeque<String>>()
+    private val redoStacks = HashMap<Long, ArrayDeque<String>>()
+    private val _undoVersion = MutableStateFlow(0)
+    /** Mění se při každé změně historie (pro překreslení tlačítek Zpět / Znovu). */
+    val undoVersion: StateFlow<Int> = _undoVersion.asStateFlow()
+
+    fun canUndo(objectId: Long) = synchronized(undoStacks) { undoStacks[objectId]?.isNotEmpty() == true }
+    fun canRedo(objectId: Long) = synchronized(undoStacks) { redoStacks[objectId]?.isNotEmpty() == true }
+
+    /** Úprava náčrtu z UI (vždy nad aktuálním stavem v databázi), uloží krok pro Zpět. */
+    fun editObject(objectId: Long, f: (ObjSketch) -> ObjSketch) = scope.launch {
+        objLock.withLock {
+            val o = db.objects().get(objectId) ?: return@withLock
+            val nw = f(o.sketch).toJson()
+            if (nw == o.data) return@withLock
+            synchronized(undoStacks) {
+                val u = undoStacks.getOrPut(objectId) { ArrayDeque() }
+                u.addLast(o.data)
+                while (u.size > UNDO_MAX) u.removeFirst()
+                redoStacks[objectId]?.clear()
+            }
+            db.objects().update(o.copy(data = nw))
+        }
+        _undoVersion.value++
+    }
+
+    /** Zpět (true) / Znovu (false) poslední změny náčrtu. */
+    fun undoObject(objectId: Long, undo: Boolean = true) = scope.launch {
+        objLock.withLock {
+            val o = db.objects().get(objectId) ?: return@withLock
+            val prev = synchronized(undoStacks) {
+                val from = (if (undo) undoStacks else redoStacks)[objectId]
+                val to = (if (undo) redoStacks else undoStacks).getOrPut(objectId) { ArrayDeque() }
+                val p = from?.removeLastOrNull() ?: return@synchronized null
+                to.addLast(o.data)
+                p
+            } ?: return@withLock
+            db.objects().update(o.copy(data = prev))
+        }
+        _undoVersion.value++
+    }
 
     private val objLock = kotlinx.coroutines.sync.Mutex()
 
@@ -2413,6 +2453,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         private const val AUTO_CONNECT_MS = 5 * 60_000L
         private const val TAG = "RoverController"
         const val TRAIL_MAX = 7200  // 2 h při 1 Hz
+        const val UNDO_MAX = 50     // kroků Zpět u náčrtu objektu
         const val LIVE_MAX = 50_000       // průběžný průměr: nejvýš posledních 50 000 epoch (14 h při 1 Hz)
         const val LIVE_SPEED = 0.3        // [m/s] rychlost GNSS, nad kterou se počítá pohyb
         const val LIVE_FAST_EPOCHS = 5    // tolik epoch po sobě nad rychlostí = pohyb
