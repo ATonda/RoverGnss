@@ -648,7 +648,10 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         )
         val point = db.points().get(pid) ?: return@launch
         // měření spuštěné z náčrtu objektu: bod se hned umístí do náčrtu
-        objPlace?.let { (oid, pl) -> updateObject(oid) { s -> s.copy(places = s.places + pl.copy(pointId = pid)) } }
+        objPlace?.let { (oid, pl) ->
+            // nové umístění se přidá, připravené (pomocný bod P) se doplní o změřený bod
+            updateObject(oid) { s -> s.copy(places = s.places.filter { it.id != pl.id } + pl.copy(pointId = pid)) }
+        }
         val header = JSONObject()
             .put("rg", "hlavicka").put("aplikace", appVersion()).put("lokalita", job.name).put("bod", n)
             .put("zacatek_utc", isoUtc(now)).put("vyska_anteny_m", u.antennaH).put("profil", u.name)

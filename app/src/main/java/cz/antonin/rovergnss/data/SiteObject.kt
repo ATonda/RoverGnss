@@ -36,7 +36,7 @@ fun ObjSketch.toJson(): String {
             a.put(
                 JSONObject().put("id", p.id).put("pointId", p.pointId).put("type", p.type)
                     .put("vertex", p.vertex ?: JSONObject.NULL).put("edge", p.edge ?: JSONObject.NULL)
-                    .put("mount", p.mount).put("x", p.x).put("y", p.y)
+                    .put("mount", p.mount).put("x", p.x).put("y", p.y).put("label", p.label)
             )
         }
     })
@@ -65,7 +65,7 @@ object ObjSketchJson {
                 pa.getJSONObject(it).let { j ->
                     ObjPlace(
                         j.getInt("id"), j.optLong("pointId"), j.optInt("type"), intOrNull(j, "vertex"), intOrNull(j, "edge"),
-                        j.optInt("mount", ObjMount.FREE), j.optDouble("x"), j.optDouble("y"),
+                        j.optInt("mount", ObjMount.FREE), j.optDouble("x"), j.optDouble("y"), j.optString("label", ""),
                     )
                 }
             },

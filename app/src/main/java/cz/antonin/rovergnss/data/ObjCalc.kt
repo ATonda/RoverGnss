@@ -32,7 +32,10 @@ data class ObjVertexRes(
     // úhel mezi stěnami (0.11.7): [wallAngle] vypočtený, [angleFix] 0 bez vazby, 1 předpoklad 90°, 2 pásmem (trojúhelník);
     // [angleObs] předepsaný / změřený, [angleBad] výsledek se od něj liší víc, než odpovídá přesnosti
     val wallAngle: Double? = null, val angleFix: Int = 0, val angleObs: Double? = null, val angleBad: Boolean = false,
+    val pointName: String? = null,   // změřený bod na rohu (B…)
 ) {
+    /** „V3“ nebo „V3 (B5)“. */
+    val label: String get() = name + (pointName?.let { " ($it)" } ?: "")
     val y get() = -e
     val x get() = -n
 }
@@ -68,6 +71,8 @@ class ObjResult(
     val redundancy: Int = 0,
     private val sim: DoubleArray? = null,   // [a, b, te, tn]: e + i n = (a + i b)(sx − i sy) + (te + i tn)
     private val cov: Array<DoubleArray>? = null,
+    val local: Boolean = false,      // místní souřadnice (bez 2 změřených bodů) – bez exportu
+    val scaleKnown: Boolean = true,  // měřítko z kót (místní)
 ) {
     fun toWorld(sx: Double, sy: Double): DoubleArray? {
         val s = sim ?: return null
@@ -155,9 +160,26 @@ object ObjCalc {
             corr.add(doubleArrayOf(sx, -sy, -o.y, -o.x, 1 / (s * s)))
         }
         val spread = if (corr.size >= 2) corr.maxOf { a -> corr.maxOf { b -> hypot(a[0] - b[0], a[1] - b[1]) } } else 0.0
-        if (corr.size < 2 || spread < 1e-9) {
-            return ObjResult(false, if (nV == 0) "Nakresli půdorys (režim Kreslit)." else "Pro výpočet umísti aspoň 2 změřené body (režim Body).")
-        }
+        // bez 2 změřených bodů: místní souřadnice (tvar z kót, úhlů a pravých úhlů; měřítko z kót) – 0.11.8
+        var local = false
+        var scaleKnown = true
+        val simLocal: DoubleArray? = if (corr.size < 2 || spread < 1e-9) {
+            val hasShape = nV >= 2 && (sk.tapes.isNotEmpty() || sk.angles.isNotEmpty() || sk.vertices.indices.any { sk.isRight(it) })
+            if (!hasShape) return ObjResult(
+                false,
+                if (nV == 0) "Nakresli půdorys (režim Kreslit)."
+                else "Pro výpočet zadej kótu pásmem nebo pravé úhly, pro polohu umísti aspoň 2 změřené body (režim Body).",
+            )
+            local = true
+            val ratios = sk.tapes.mapNotNull { t ->
+                val pa = sketchPos(sk, t.a) ?: return@mapNotNull null
+                val pb = sketchPos(sk, t.b) ?: return@mapNotNull null
+                val d = hypot(pa[0] - pb[0], pa[1] - pb[1])
+                if (d > 1e-6) t.len / d else null
+            }.sorted()
+            val sc = ratios.getOrNull(ratios.size / 2) ?: run { scaleKnown = false; 0.05 }
+            doubleArrayOf(sc, 0.0, 0.0, 0.0)
+        } else null
         val sw = corr.sumOf { it[4] }
         val pcx = corr.sumOf { it[0] * it[4] } / sw
         val pcy = corr.sumOf { it[1] * it[4] } / sw
@@ -176,9 +198,9 @@ object ObjCalc {
             num2 += c[4] * (qn * px - qe * py)
             den += c[4] * (px * px + py * py)
         }
-        val a = num1 / den
-        val b = num2 / den
-        val sim = doubleArrayOf(a, b, qce - (a * pcx - b * pcy), qcn - (b * pcx + a * pcy))
+        val sim = simLocal ?: (num1 / den).let { a0 -> (num2 / den).let { b0 -> doubleArrayOf(a0, b0, qce - (a0 * pcx - b0 * pcy), qcn - (b0 * pcx + a0 * pcy)) } }
+        val a = sim[0]
+        val b = sim[1]
         fun skW(sx: Double, sy: Double) = doubleArrayOf(a * sx - b * (-sy) + sim[2], b * sx + a * (-sy) + sim[3])
         val scale = hypot(a, b)
         val sketchW = sk.vertices.map { skW(it.x, it.y) }
@@ -265,8 +287,8 @@ object ObjCalc {
             }
             val obsAng = if (fix == 2) tapeAng!!.wallAngle else if (fix == 1) 90.0 else null
             val bad = wa != null && obsAng != null && abs(wa - obsAng) > (if (fix == 2) max(3 * angleSigma(tapeAng!!), 0.5) else RIGHT_TOL_DEG)
-            ObjVertexRes(i, v.id, corner?.let { obs[it.id]?.name } ?: "V${i + 1}", X[2 * i], X[2 * i + 1], sg, src, ang, h,
-                if (h != null && controlH != null) h - controlH else null, wa, fix, obsAng, bad)
+            ObjVertexRes(i, v.id, "V${i + 1}", X[2 * i], X[2 * i + 1], sg, src, ang, h,
+                if (h != null && controlH != null) h - controlH else null, wa, fix, obsAng, bad, corner?.let { obs[it.id]?.name })
         }
         val tapeOf = { ia: Int, ib: Int ->
             sk.tapes.firstOrNull { t ->
@@ -313,12 +335,13 @@ object ObjCalc {
         val axis = if (nV >= 2) principalAz(X, nV) else null
         val nGnss = vRes.count { it.source == ObjSource.GNSS }
         val msg = buildString {
+            if (local) append(if (scaleKnown) "Místní souřadnice (bez GNSS), měřítko z kót: " else "Bez měřítka (zadej kótu), jen tvar: ")
             append("Vypočteno: ${placesWithObs.size} změřených bodů, ${sk.tapes.size} kót")
             if (nGnss > 0) append(", ${nGnss} vrcholů z GNSS")
             val nb = placeRes.count { it.bad } + tRes.count { it.bad }
             if (nb > 0) append(" – $nb chybných měření")
         }
-        return ObjResult(true, msg, vRes, eRes, placeRes, tRes, per, area, axis, scale, s0, red, sim, cov)
+        return ObjResult(true, msg, vRes, eRes, placeRes, tRes, per, area, axis, scale, s0, red, sim, cov, local, scaleKnown)
     }
 
     /** Zdroj polohy vrcholu i. */
@@ -337,6 +360,14 @@ object ObjCalc {
         val tapes = sk.tapes.any { refVertex(sk, it.a) == i || refVertex(sk, it.b) == i }
         if (tapes) return ObjSource.TAPE
         return ObjSource.SKETCH
+    }
+
+    /** Poloha prvku kóty v náčrtu (vrchol, nebo místo umístěného bodu). */
+    private fun sketchPos(sk: ObjSketch, ref: String): DoubleArray? {
+        val vi = refVertex(sk, ref)
+        if (vi >= 0) return sk.vertices[vi].let { doubleArrayOf(it.x, it.y) }
+        val id = ref.substring(2).toIntOrNull() ?: return null
+        return sk.places.firstOrNull { it.id == id }?.let { doubleArrayOf(it.x, it.y) }
     }
 
     /** Odkaz kóty → index vrcholu (vrchol nebo roh), jinak −1. */

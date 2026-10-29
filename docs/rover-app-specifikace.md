@@ -437,3 +437,13 @@ Specifikace: `objekt-mereni-specifikace.md` (projekt), kap. 6.
 - Na ploše u vrcholu ∟ (předpoklad) / ∠ (pásmem) a úhel; výsledky: oddíl „Úhly mezi stěnami“ s odchylkami.
 - Ověřeno (Kotlin): obdélník 5 × 16 m, náčrt jako lichoběžník, 2 rohy GNSS + 3 kóty stran – bez vazby chyba vrcholů 1,7 m, s „Pravoúhlá“ 5 cm, s jedním úhlem pásmem (3-4-5) 1,3 cm.
 - Verze 0.11.7 (versionCode 28).
+
+## 27. Stav aplikace 0.11.8 (29. 10.) – pomocné body P, místní výpočet
+
+- **Názvy:** V = vrchol půdorysu (V1, V2…), B = změřený bod (B1…), P = pomocný bod v ose stěny. Roh ukazuje název bodu (B…) pod kroužkem, vrchol své V.
+- **Pomocný bod P:** Kreslit → klepnout na stěnu → „Pomocný bod“: na prodloužení stěny za bližší konec vznikne P# (5 m, bez známého měřítka 30 % délky stěny). P se táhne jen po přímce stěny. Dlouhý stisk na P (v každém režimu) nebo klepnutí v režimu Body otevře dialog: nahoře „Změřit P1 (REC)“, nebo výběr změřeného bodu. Nezměřený P je šedý („P1 ?“) a existuje jen v objektu; REC ho změří pod jeho jménem (je-li v lokalitě obsazené, další volné P) a doplní změřený bod do stejného umístění.
+- **REC v dialogu bodu:** u rohu (vrcholu), bodu na stěně, v ose i kontrolního je REC nahoře („REC – změřit nový bod“ = další B).
+- **Místní výpočet bez GNSS:** bez 2 změřených bodů se náčrt vyrovná podle kót, úhlů pásmem a pravých úhlů; měřítko z kót (medián poměru), bez kót jen tvar. Změřit (vzdálenosti) funguje; export GeoPackage / CSV až s polohou.
+- **Narovnat:** Kreslit → „Narovnat“ přepíše náčrt podle výpočtu (body na stěnách a v ose zůstanou na své stěně); Zpět vrátí.
+- **Pravoúhlá:** automaticky jen rohy nakreslené 90° ± 15° (dřív ± 20°). V náčrtu bez výpočtu značka „∟ (72°)“ = předpoklad pravého úhlu a v závorce úhel, jak je nakreslený.
+- Verze 0.11.8 (versionCode 29).

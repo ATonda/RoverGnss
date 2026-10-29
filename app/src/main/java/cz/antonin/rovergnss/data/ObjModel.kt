@@ -35,6 +35,7 @@ data class ObjPlace(
     val mount: Int = ObjMount.FREE,
     val x: Double = 0.0,
     val y: Double = 0.0,
+    val label: String = "",   // plánovaný název (pomocný bod P1…), dokud není změřen
 )
 
 /** Kóta pásmem mezi dvěma prvky: odkaz „v:id“ (vrchol) nebo „p:id“ (umístěný bod). */
@@ -57,7 +58,7 @@ data class ObjAngle(val id: Int, val vertex: Int, val method: Int, val a: Double
     val wallAngle: Double? get() = measured?.let { if (method == 1) 180 - it else it }
 }
 
-/** Pravý úhel ve vrcholu: automaticky podle náčrtu (u pravoúhlé budovy), vždy, nikdy. */
+/** Pravý úhel ve vrcholu: automaticky podle náčrtu (u pravoúhlé budovy, 90° ± 15°), vždy, nikdy. */
 object ObjRight {
     const val AUTO = 0
     const val YES = 1
@@ -117,7 +118,7 @@ data class ObjSketch(
         return when (right[id] ?: ObjRight.AUTO) {
             ObjRight.YES -> true
             ObjRight.NO -> false
-            else -> square && (sketchAngle(i)?.let { kotlin.math.abs(it - 90) <= 20 } == true)
+            else -> square && (sketchAngle(i)?.let { kotlin.math.abs(it - 90) <= 15 } == true)
         }
     }
 

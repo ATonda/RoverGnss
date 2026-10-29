@@ -63,7 +63,7 @@ object ObjExport {
                 Gpkg.Column("dh_m", "REAL"), Gpkg.Column("Y", "REAL"), Gpkg.Column("X", "REAL")),
             r.vertices.map { v ->
                 val xy = c(v.e, v.n)
-                Gpkg.point(xy[0], xy[1]).with(listOf(v.name, ObjSource.NAMES[v.source], cm(v.sigma), v.angle?.let { Math.round(it * 100) / 100.0 },
+                Gpkg.point(xy[0], xy[1]).with(listOf(v.label, ObjSource.NAMES[v.source], cm(v.sigma), v.angle?.let { Math.round(it * 100) / 100.0 },
                     r3(v.dh), r3(v.y), r3(v.x)))
             },
             "vrcholy půdorysu",
@@ -127,7 +127,7 @@ object ObjExport {
             val e = r.edges.firstOrNull { it.a == v.index }
             w.write(
                 listOf(
-                    v.name, f(v.y, 3), f(v.x, 3), f(v.e, 3), f(v.n, 3), f(g.lat, 9), f(g.lon, 9), f(v.dh, 3),
+                    v.label, f(v.y, 3), f(v.x, 3), f(v.e, 3), f(v.n, 3), f(g.lat, 9), f(g.lon, 9), f(v.dh, 3),
                     ObjSource.NAMES[v.source], f(v.sigma?.times(100), 1), f(v.angle, 2),
                     e?.let { r.vertices[it.b].name } ?: "", f(e?.len, 3), f(e?.sigma?.times(100), 1),
                     e?.let { ObjSource.NAMES[it.source] } ?: "", f(e?.tape, 3),

@@ -21,8 +21,8 @@ android {
         applicationId = "cz.antonin.rovergnss"
         minSdk = 26
         targetSdk = 35
-        versionCode = 28
-        versionName = "0.11.7"
+        versionCode = 29
+        versionName = "0.11.8"
     }
 
     // Vlastní ladicí klíč: keystore/ v kořeni projektu (mimo Git). Na PC ho má Android Studio, na GitHubu ho
