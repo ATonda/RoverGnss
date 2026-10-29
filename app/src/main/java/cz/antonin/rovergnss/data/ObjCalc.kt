@@ -33,6 +33,7 @@ data class ObjVertexRes(
     // [angleObs] předepsaný / změřený, [angleBad] výsledek se od něj liší víc, než odpovídá přesnosti
     val wallAngle: Double? = null, val angleFix: Int = 0, val angleObs: Double? = null, val angleBad: Boolean = false,
     val pointName: String? = null,   // změřený bod na rohu (B…)
+    val angleExcluded: Boolean = false,   // úhel (pásmem / předpoklad 90°) jako hrubá chyba vynechán
 ) {
     /** „V3“ nebo „V3 (B5)“. */
     val label: String get() = name + (pointName?.let { " ($it)" } ?: "")
@@ -47,10 +48,16 @@ data class ObjEdgeRes(val a: Int, val b: Int, val len: Double, val sigma: Double
 data class ObjPlaceRes(
     val placeId: Int, val name: String, val type: Int, val e: Double, val n: Double, val antE: Double, val antN: Double,
     val residual: Double?, val sigma: Double, val bad: Boolean, val suspect: Boolean, val h: Double?, val dh: Double?,
+    val excluded: Boolean = false,   // hrubá chyba – ve výpočtu vynechán
 )
 
 /** Kóta pásmem: zadaná a vypočtená délka (null = nelze), rozdíl zadaná − vypočtená. */
-data class ObjTapeRes(val id: Int, val len: Double, val calc: Double?, val diff: Double?, val bad: Boolean)
+data class ObjTapeRes(val id: Int, val len: Double, val calc: Double?, val diff: Double?, val bad: Boolean, val excluded: Boolean = false)
+
+/** Měření vynechaná z výpočtu (hrubá chyba): kóty, umístěné body (id), úhly pásmem a předpoklady 90° (id vrcholů). */
+data class ObjExcl(val tapes: Set<Int> = emptySet(), val places: Set<Int> = emptySet(), val angles: Set<Int> = emptySet(), val rights: Set<Int> = emptySet()) {
+    val empty get() = tapes.isEmpty() && places.isEmpty() && angles.isEmpty() && rights.isEmpty()
+}
 
 /**
  * Výsledek výpočtu objektu. [ok] = aspoň 2 změřené body (převod náčrtu); jinak jen náčrt.
@@ -73,7 +80,15 @@ class ObjResult(
     private val cov: Array<DoubleArray>? = null,
     val local: Boolean = false,      // místní souřadnice (bez 2 změřených bodů) – bez exportu
     val scaleKnown: Boolean = true,  // měřítko z kót (místní)
+    val conflict: Boolean = false,   // rozpor: chybné měření nebo úhel mimo předpoklad (bez vynechaných)
+    val excludedText: String? = null,   // „kóta V1–V4 25,50 m“ – vynechaná hrubá chyba
 ) {
+    /** Stejný výsledek s jinou zprávou / popisem vynechané hrubé chyby. */
+    fun copyMsg(msg: String, excluded: String?) = ObjResult(
+        ok, msg, vertices, edges, places, tapes, perimeter, area, axisAz, scale, sigma0, redundancy, sim, cov, local, scaleKnown,
+        conflict, excluded,
+    )
+
     fun toWorld(sx: Double, sy: Double): DoubleArray? {
         val s = sim ?: return null
         val px = sx
@@ -141,7 +156,52 @@ object ObjCalc {
 
     private class Eq(val w: Double, val f: (DoubleArray) -> Double, val obs: Double, val vars: IntArray, val sketch: Boolean = false)
 
+    /**
+     * Výpočet s vyhledáním hrubé chyby: při rozporu se zkusmo vynechá po jednom každá kóta, umístěný bod, úhel pásmem
+     * a předpoklad 90°. Odstraní-li rozpor právě jedno vynechání, je to hrubá chyba – výsledek bez ní, měření
+     * označené „vynecháno“. Odstraní-li ho víc možností (např. protější kóty obdélníku), nejde určit, které – jen výpis.
+     */
     fun compute(sk: ObjSketch, obs: Map<Int, ObjObs>, controlH: Double? = null): ObjResult {
+        val r0 = core(sk, obs, controlH, ObjExcl())
+        if (!r0.ok || !r0.conflict) return r0
+        val cands = ArrayList<Pair<ObjExcl, String>>()
+        sk.tapes.forEach { t -> cands += ObjExcl(tapes = setOf(t.id)) to "kóta ${refLabel(sk, obs, t.a)}–${refLabel(sk, obs, t.b)} ${fmt2(t.len)} m" }
+        sk.places.filter { obs.containsKey(it.id) }.forEach { p -> cands += ObjExcl(places = setOf(p.id)) to "bod ${obs[p.id]!!.name}" }
+        sk.vertices.forEachIndexed { i, v ->
+            val ta = sk.angles.lastOrNull { it.vertex == v.id && it.wallAngle != null }
+            if (ta != null) cands += ObjExcl(angles = setOf(v.id)) to "úhel pásmem V${i + 1}"
+            else if (sk.isRight(i)) cands += ObjExcl(rights = setOf(v.id)) to "pravý úhel V${i + 1}"
+        }
+        val fixes = cands.mapNotNull { (ex, nm) -> core(sk, obs, controlH, ex).takeIf { it.ok && !it.conflict }?.let { Triple(ex, nm, it) } }
+        return when (fixes.size) {
+            0 -> r0
+            1 -> {
+                val (_, nm, r) = fixes[0]
+                r.copyMsg("Hrubá chyba: $nm – ve výpočtu vynechána. " + r.message, nm)
+            }
+            else -> r0.copyMsg(r0.message + " – nelze určit, které: " + fixes.joinToString(" / ") { it.second }, null)
+        }
+    }
+
+    private fun fmt2(v: Double) = String.format(java.util.Locale.US, "%.2f", v).replace('.', ',')
+
+    /** Název prvku kóty: V3, nebo název změřeného bodu. */
+    private fun refLabel(sk: ObjSketch, obs: Map<Int, ObjObs>, ref: String): String {
+        val vi = refVertex(sk, ref)
+        if (vi >= 0) return "V${vi + 1}"
+        val id = ref.substring(2).toIntOrNull()
+        val p = sk.places.firstOrNull { it.id == id }
+        return p?.let { obs[it.id]?.name ?: it.label.ifEmpty { null } } ?: "?"
+    }
+
+    private fun core(skAll: ObjSketch, obsAll: Map<Int, ObjObs>, controlH: Double?, ex: ObjExcl): ObjResult {
+        // vynechaná měření se do vyrovnání nedostanou; ve výsledcích jsou (odchylka od výsledku, „vynecháno“)
+        val sk = if (ex.empty) skAll else skAll.copy(
+            tapes = skAll.tapes.filter { it.id !in ex.tapes },
+            angles = skAll.angles.filter { it.vertex !in ex.angles },
+            right = skAll.right + ex.rights.associateWith { ObjRight.NO },
+        )
+        val obs = if (ex.places.isEmpty()) obsAll else obsAll - ex.places
         val nV = sk.vertices.size
         val edges = sk.edges()
         val placesWithObs = sk.places.filter { obs.containsKey(it.id) }
@@ -269,7 +329,7 @@ object ObjCalc {
 
         // --- 3. výsledky
         val ccw = signedArea(X) >= 0
-        val placeRes = placeResults(sk, obs, X, edges, controlH)
+        val placeRes = placeResults(skAll, obsAll, X, edges, controlH).map { if (it.placeId in ex.places) it.copy(bad = true, excluded = true) else it }
         val badPlaces = placeRes.filter { it.bad }.map { it.placeId }.toSet()
         val vRes = (0 until nV).map { i ->
             val v = sk.vertices[i]
@@ -280,16 +340,17 @@ object ObjCalc {
             val ang = interiorAngle(X, i, nV, sk.closed, ccw)
             val h = corner?.let { obs[it.id]?.h }
             val wa = sk.neighbors(i)?.let { (p, q) -> wallAngleDeg(X, i, p, q) }
-            val tapeAng = sk.angles.lastOrNull { it.vertex == v.id && it.wallAngle != null }
+            val tapeAng = skAll.angles.lastOrNull { it.vertex == v.id && it.wallAngle != null }
             val fix = when {
                 tapeAng != null -> 2
-                sk.isRight(i) -> 1
+                skAll.isRight(i) -> 1
                 else -> 0
             }
+            val angEx = v.id in ex.angles || v.id in ex.rights
             val obsAng = if (fix == 2) tapeAng!!.wallAngle else if (fix == 1) 90.0 else null
             val bad = wa != null && obsAng != null && abs(wa - obsAng) > (if (fix == 2) max(3 * angleSigma(tapeAng!!), 0.5) else RIGHT_TOL_DEG)
             ObjVertexRes(i, v.id, "V${i + 1}", X[2 * i], X[2 * i + 1], sg, src, ang, h,
-                if (h != null && controlH != null) h - controlH else null, wa, fix, obsAng, bad, corner?.let { obs[it.id]?.name })
+                if (h != null && controlH != null) h - controlH else null, wa, fix, obsAng, bad || angEx, corner?.let { obs[it.id]?.name }, angEx)
         }
         val tapeOf = { ia: Int, ib: Int ->
             sk.tapes.firstOrNull { t ->
@@ -320,12 +381,13 @@ object ObjCalc {
             }
             ObjEdgeRes(ia, ib, len, sg, src, tp?.len)
         }
-        val tRes = sk.tapes.map { t ->
-            val pa = refPos(sk, t.a, X, obs, edges, ccw)
-            val pb = refPos(sk, t.b, X, obs, edges, ccw)
+        val tRes = skAll.tapes.map { t ->
+            val pa = refPos(skAll, t.a, X, obsAll, edges, ccw)
+            val pb = refPos(skAll, t.b, X, obsAll, edges, ccw)
             val calc = if (pa != null && pb != null) hypot(pa[0] - pb[0], pa[1] - pb[1]) else null
             val diff = calc?.let { t.len - it }
-            ObjTapeRes(t.id, t.len, calc, diff, diff != null && abs(diff) > max(3 * tapeSigma(t.len), 0.05))
+            val exT = t.id in ex.tapes
+            ObjTapeRes(t.id, t.len, calc, diff, exT || (diff != null && abs(diff) > max(3 * tapeSigma(t.len), 0.05)), exT)
         }
         var per: Double? = null
         var area: Double? = null
@@ -339,14 +401,16 @@ object ObjCalc {
             if (local) append(if (scaleKnown) "Místní souřadnice (bez GNSS), měřítko z kót: " else "Bez měřítka (zadej kótu), jen tvar: ")
             append("Vypočteno: ${placesWithObs.size} změřených bodů, ${sk.tapes.size} kót")
             if (nGnss > 0) append(", ${nGnss} vrcholů z GNSS")
-            val nb = placeRes.count { it.bad } + tRes.count { it.bad }
+            val nb = placeRes.count { it.bad && !it.excluded } + tRes.count { it.bad && !it.excluded }
             if (nb > 0) append(" – $nb chybných měření")
-            val ab = vRes.filter { it.angleBad }
+            val ab = vRes.filter { it.angleBad && !it.angleExcluded }
             if (ab.isNotEmpty()) append(" – rozpor úhlů: " + ab.joinToString(", ") { v ->
                 String.format(java.util.Locale.US, "%s %.1f°", v.name, v.wallAngle ?: 0.0).replace('.', ',')
             } + " (kóta, nebo roh není pravý)")
         }
-        return ObjResult(true, msg, vRes, eRes, placeRes, tRes, per, area, axis, scale, s0, red, sim, cov, local, scaleKnown)
+        val conflict = placeRes.any { it.bad && !it.excluded } || tRes.any { it.bad && !it.excluded } ||
+            vRes.any { it.angleBad && !it.angleExcluded }
+        return ObjResult(true, msg, vRes, eRes, placeRes, tRes, per, area, axis, scale, s0, red, sim, cov, local, scaleKnown, conflict)
     }
 
     /** Zdroj polohy vrcholu i. */

@@ -463,3 +463,12 @@ Specifikace: `objekt-mereni-specifikace.md` (projekt), kap. 6.
 - Vypočtený úhel se ukazuje i v Kreslit (rozpor červeně); bez výpočtu v závorce nakreslený úhel na desetinu stupně. Popisek úhlu uvnitř rohu (na ose úhlu), ne přes stěnu.
 - Kóta po stěně odsazená ven od obrysu s vynášecími čarami, nesplývá se stěnou. Rozdíly bez „-0,0“.
 - Verze 0.11.10 (versionCode 31).
+
+## 30. Stav aplikace 0.11.11 (29. 10.) – hrubá chyba, jedna kóta, Přepočítat
+
+- **Jedna kóta mezi dvěma body:** nové zadání na stejné dvojici otevře stávající kótu k přepsání; starší duplicity se při načtení sloučí (platí poslední). Dřív šlo na jednu stěnu zadat víc kót a popisky se překrývaly.
+- **Vyhledání hrubé chyby:** při rozporu se zkusmo vynechá po jednom každá kóta, změřený bod, úhel pásmem a předpoklad 90°. Odstraní-li rozpor právě jedno vynechání, výpočet je bez něj a měření je označené „vynechána / vynechán (hrubá chyba)“ (červeně, na ploše i ve výsledcích; nahoře na ploše „Hrubá chyba: kóta V1–V3 30,00 m – vynechána“). Odstraní-li ho víc možností (protější kóty obdélníku), nejde určit, které – výpis „nelze určit, které: kóta … / kóta …“. Ověřeno: obdélník + chybná úhlopříčka 30 m → úhlopříčka vynechána, rohy 90,00°.
+- **Přepočítat** (dřív Narovnat): náčrt převezme vypočtený tvar, s potvrzením; při rozporu zakázáno (náčrt by převzal chybu a automatický pravý úhel by vypadl).
+- Režim **Vzdálenost** (dřív Změřit) – neplést s REC.
+- Popisky: vypočtená délka stěny uvnitř obrysu, kóta vně; u svislé stěny text kóty zarovnaný od čáry; jméno vrcholu vně rohu, úhel uvnitř.
+- Verze 0.11.11 (versionCode 32).

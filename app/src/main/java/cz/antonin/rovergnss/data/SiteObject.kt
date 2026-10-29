@@ -69,7 +69,9 @@ object ObjSketchJson {
                     )
                 }
             },
-            tapes = (0 until ta.length()).map { ta.getJSONObject(it).let { j -> ObjTape(j.getInt("id"), j.getString("a"), j.getString("b"), j.getDouble("len")) } },
+            // mezi dvěma body jen jedna kóta (0.11.11): starší duplicity sloučeny, platí poslední zadaná
+            tapes = (0 until ta.length()).map { ta.getJSONObject(it).let { j -> ObjTape(j.getInt("id"), j.getString("a"), j.getString("b"), j.getDouble("len")) } }
+                .let { l -> l.filterIndexed { i, t -> l.drop(i + 1).none { u -> (u.a == t.a && u.b == t.b) || (u.a == t.b && u.b == t.a) } } },
             nextId = o.optInt("nextId", 1),
             angles = (o.optJSONArray("angles") ?: JSONArray()).let { aa ->
                 (0 until aa.length()).map { aa.getJSONObject(it).let { j ->

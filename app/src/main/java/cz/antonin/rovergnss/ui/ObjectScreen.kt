@@ -109,7 +109,8 @@ private object ObjMode {
     const val POINTS = 1
     const val TAPE = 2
     const val MEASURE = 3
-    val NAMES = listOf("Kreslit", "Body", "Pásmo", "Změřit")
+    // „Vzdálenost“ (dřív Změřit): odměření v náčrtu, neplést s REC (měření GPS)
+    val NAMES = listOf("Kreslit", "Body", "Pásmo", "Vzdálenost")
 }
 
 private val SRC_COLORS = listOf(Color(0xFF2E7D32), Color(0xFF1565C0), Color(0xFF8E24AA), Color(0xFF9E9E9E))
@@ -169,6 +170,7 @@ fun ObjectScreen(c: RoverController) {
     var placeDialog by remember { mutableStateOf<ObjPlace?>(null) }
     var dragV by remember { mutableStateOf<Map<Int, Offset>?>(null) }    // id vrcholu → poloha v náčrtu během tažení (i otočená stěna)
     var askDelV by remember { mutableStateOf<Int?>(null) }              // id vrcholu ke smazání (s navázanými body)
+    var askRecalc by remember { mutableStateOf(false) }                 // potvrzení Přepočítat (náčrt podle výpočtu)
     var stroke by remember { mutableStateOf<List<Offset>>(emptyList()) }  // kreslení prstem (obrazovka)
     var askClear by remember { mutableStateOf(false) }
     var selEdge by remember { mutableStateOf<Int?>(null) }            // vybraná stěna (index)
@@ -453,7 +455,9 @@ fun ObjectScreen(c: RoverController) {
                 }
                 val f = tapeFirst
                 if (f == null || f == r) tapeFirst = r else {
-                    tapeDialog = f to r
+                    // mezi dvěma body jen jedna kóta: existující se otevře k přepsání
+                    val ex = sk.tapes.lastOrNull { (it.a == f && it.b == r) || (it.a == r && it.b == f) }
+                    if (ex != null) tapeEdit = ex else tapeDialog = f to r
                     tapeFirst = null
                 }
             }
@@ -593,11 +597,11 @@ fun ObjectScreen(c: RoverController) {
                         selVertex != null -> "Vrchol vybrán: pravý úhel auto / ano / ne, nebo smazat (s navázanými body po potvrzení)."
                         else -> "Táhni prstem = čára obrysu, klepni = vrchol, na vrchol / stěnu = výběr, na první vrchol = uzavřít. " +
                             "Vrchol táhni = posun, podrž = bod rohu (REC). Bod P táhni po ose, podrž = změřit / vybrat bod. Změřené body jsou pevné. Posun a zoom dvěma prsty. " +
-                            "Pravoúhlá = rohy kolem 90° (±15°) se počítají jako pravé, Narovnat = náčrt podle výpočtu."
+                            "Pravoúhlá = rohy kolem 90° (±15°) se počítají jako pravé, Přepočítat = náčrt převezme vypočtený tvar."
                     }
                     ObjMode.POINTS -> "Klepni na roh, na stěnu (dveře), na P, nebo mimo obrys (bod v ose stěny / kontrolní): REC změří, nebo vyber změřený bod."
                     ObjMode.TAPE -> if (angleMode) "Klepni na roh a zadej trojúhelník: a, b od rohu podél stěn (nebo prodloužení), c mezi konci."
-                    else if (tapeFirst == null) "Klepni na první bod kóty (vrchol nebo bod), pak na druhý. Klepnutí na číslo kóty = úprava."
+                    else if (tapeFirst == null) "Klepni na první bod kóty (vrchol nebo bod), pak na druhý. Mezi dvěma body jedna kóta – znovu = přepsat. Klepnutí na číslo kóty = úprava."
                     else "Klepni na druhý bod kóty."
                     else -> "Klepni na dva body – vzdálenost, směr, rozdíl výšek a přesnost."
                 },
@@ -613,10 +617,9 @@ fun ObjectScreen(c: RoverController) {
                 }
                 FilterChip(selected = sk.square, onClick = { edit { it.copy(square = !it.square) } },
                     label = { Text("Pravoúhlá") }, enabled = sk.vertices.size >= 3)
-                OutlinedButton(onClick = {
-                    // náčrt podle výpočtu (pravé úhly, kóty, měření); body v ose zůstanou na své stěně (Zpět vrátí)
-                    edit { s0 -> straighten(s0, result) }
-                }, enabled = result.ok && result.vertices.size == sk.vertices.size) { Text("Narovnat") }
+                // Přepočítat (dřív Narovnat): náčrt převezme vypočtený tvar; při rozporu zakázáno (náčrt by převzal chybu)
+                OutlinedButton(onClick = { askRecalc = true },
+                    enabled = result.ok && !result.conflict && result.vertices.size == sk.vertices.size) { Text("Přepočítat") }
                 FilterChip(selected = whole, onClick = {
                     whole = !whole
                     selEdge = null
@@ -908,6 +911,12 @@ fun ObjectScreen(c: RoverController) {
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.align(Alignment.Center).padding(24.dp),
                 )
+                if (result.ok && (result.conflict || result.excludedText != null)) Text(
+                    result.message.substringAfter("Vypočteno: ").let { if (result.excludedText != null) "Hrubá chyba: ${result.excludedText} – vynechána" else it },
+                    style = MaterialTheme.typography.bodySmall, color = BAD,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(6.dp)
+                        .background(Color.White.copy(alpha = 0.9f), RoundedCornerShape(6.dp)).padding(6.dp),
+                )
                 if (mode != ObjMode.DRAW && !result.ok) Text(
                     result.message, style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.align(Alignment.TopCenter).padding(6.dp)
@@ -971,6 +980,21 @@ fun ObjectScreen(c: RoverController) {
             }) { Text("Smazat", color = MaterialTheme.colorScheme.error) }
         },
         dismissButton = { TextButton(onClick = { askClear = false }) { Text("Zrušit") } },
+    )
+    if (askRecalc && obj != null) AlertDialog(
+        onDismissRequest = { askRecalc = false },
+        title = { Text("Přepočítat náčrt?") },
+        text = {
+            Text("Náčrt převezme tvar z výpočtu (kóty, pravé úhly, změřené body). Změřené body se posunou na svou polohu, " +
+                "body na stěnách zůstanou na své stěně. Zpět vrátí původní náčrt.")
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                askRecalc = false
+                edit { s0 -> straighten(s0, result) }
+            }) { Text("Přepočítat") }
+        },
+        dismissButton = { TextButton(onClick = { askRecalc = false }) { Text("Zrušit") } },
     )
     askDelV?.let { vid ->
         val vi = sk.vIndex(vid)
@@ -1211,6 +1235,9 @@ private fun DrawScope.drawObject(
     val sw = 2.5f * dens
     val dash = PathEffect.dashPathEffect(floatArrayOf(10f * dens, 6f * dens))
     // stěny
+    // těžiště obrysu na obrazovce: vypočtené délky dovnitř, kóty ven
+    val scrV = vPos.map(toScreen)
+    val cen = if (scrV.isEmpty()) Offset.Zero else Offset(scrV.map { it.x }.average().toFloat(), scrV.map { it.y }.average().toFloat())
     edges.forEachIndexed { i, (ia, ib) ->
         val a = toScreen(vPos[ia])
         val b = toScreen(vPos[ib])
@@ -1219,7 +1246,12 @@ private fun DrawScope.drawObject(
         drawLine(col, a, b, sw, pathEffect = if (er != null && er.source == ObjSource.SKETCH) dash else null)
         if (er != null) {
             val m = Offset((a.x + b.x) / 2, (a.y + b.y) / 2)
-            label(String.format(Locale.US, "%.2f", er.len).replace('.', ','), m.x + 4 * dens, m.y - 4 * dens, col, dens)
+            val d = b - a
+            val ld = max(d.getDistance(), 1e-3f)
+            var n = Offset(-d.y / ld, d.x / ld)
+            if (scrV.size >= 3 && ((m + n) - cen).getDistance() > ((m - n) - cen).getDistance()) n = -n
+            val q = m + n * (16f * dens)
+            label(String.format(Locale.US, "%.2f", er.len).replace('.', ','), q.x, q.y, col, dens, center = true)
         }
     }
     // prodloužení stěn s body v ose: čárkovaná přímka přes oba vrcholy až za nejvzdálenější bod, barva podle stěny
@@ -1262,20 +1294,24 @@ private fun DrawScope.drawObject(
         if (onEdge && ld > 1f) {
             var n = Offset(-d.y / ld, d.x / ld)
             val m0 = Offset((a.x + b.x) / 2, (a.y + b.y) / 2)
-            if (vPos.size >= 3) {
-                val cen = vPos.map(toScreen).let { l -> Offset(l.map { it.x }.average().toFloat(), l.map { it.y }.average().toFloat()) }
-                if (((m0 + n) - cen).getDistance() < ((m0 - n) - cen).getDistance()) n = -n
-            }
+            if (scrV.size >= 3 && ((m0 + n) - cen).getDistance() < ((m0 - n) - cen).getDistance()) n = -n
             val off = 14f * dens
             drawLine(col.copy(alpha = 0.6f), a + n * (3f * dens), a + n * (off + 4f * dens), 1f * dens)
             drawLine(col.copy(alpha = 0.6f), b + n * (3f * dens), b + n * (off + 4f * dens), 1f * dens)
             drawLine(col, a + n * off, b + n * off, 1.5f * dens, pathEffect = tapeDash)
-            val lm = m0 + n * (off + 12f * dens)
-            label(tapeText(t.len, tr?.diff), lm.x, lm.y, col, dens, center = true)
+            // text ven od kóty: u svislé stěny zarovnaný od čáry (nepřekrývá stěnu), u vodorovné nad / pod
+            val txt = tapeText(t.len, tr?.diff, tr?.excluded == true)
+            if (kotlin.math.abs(n.x) > 0.7f) {
+                val lm = m0 + n * (off + 5f * dens)
+                label(txt, lm.x, lm.y, col, dens, align = if (n.x > 0) 0 else 2)
+            } else {
+                val lm = m0 + n * (off + 10f * dens)
+                label(txt, lm.x, lm.y, col, dens, center = true)
+            }
         } else {
             drawLine(col, a, b, 1.5f * dens, pathEffect = tapeDash)
             val m = Offset((a.x + b.x) / 2, (a.y + b.y) / 2)
-            label(tapeText(t.len, tr?.diff), m.x, m.y + 14 * dens, col, dens, center = true)
+            label(tapeText(t.len, tr?.diff, tr?.excluded == true), m.x, m.y + 14 * dens, col, dens, center = true)
         }
     }
     // vrcholy
@@ -1286,7 +1322,15 @@ private fun DrawScope.drawObject(
         val sel = sk.vertices.getOrNull(i)?.let { v -> tapeFirst == "v:${v.id}" || "v:${v.id}" in measSel } == true || selVertex == i
         drawCircle(col, radius = (if (sel) 9f else 6f) * dens, center = s)
         if (sel) drawCircle(Color(0xFFFFA000), radius = 12f * dens, center = s, style = Stroke(2.5f * dens))
-        label(vr?.name ?: "V${i + 1}", s.x + 8 * dens, s.y - 8 * dens, labelColor, dens)
+        // osa úhlu rohu: jméno vrcholu ven, úhel dovnitř (mimo stěny a kóty)
+        val nbv = sk.neighbors(i)
+        val bi = nbv?.let {
+            val u1 = (toScreen(vPos[it.first]) - s).let { o -> o / max(o.getDistance(), 1e-3f) }
+            val u2 = (toScreen(vPos[it.second]) - s).let { o -> o / max(o.getDistance(), 1e-3f) }
+            (u1 + u2).let { o -> if (o.getDistance() < 0.05f) Offset(-u1.y, u1.x) else o / o.getDistance() }
+        }
+        if (bi != null) (s - bi * (16f * dens)).let { label(vr?.name ?: "V${i + 1}", it.x, it.y, labelColor, dens, center = true) }
+        else label(vr?.name ?: "V${i + 1}", s.x + 8 * dens, s.y - 8 * dens, labelColor, dens)
         // úhel: ∟ předpoklad 90°, ∠ pásmem; ve skutečných souřadnicích vypočtený úhel mezi stěnami
         val tapeAng = sk.vertices.getOrNull(i)?.let { v -> sk.angles.lastOrNull { it.vertex == v.id } }
         val fix = if (tapeAng != null) 2 else if (sk.isRight(i)) 1 else 0
@@ -1294,19 +1338,14 @@ private fun DrawScope.drawObject(
         val rc = if (r.ok) r.vertices.getOrNull(i) else null
         if (fix != 0 || (vr?.wallAngle != null && world)) {
             val txt = (if (fix == 2) "∠" else if (fix == 1) "∟" else "") + when {
+                rc?.angleExcluded == true -> String.format(Locale.US, "%.1f° vynechán", rc.wallAngle ?: 0.0).replace('.', ',')
                 rc?.wallAngle != null -> String.format(Locale.US, "%.1f°", rc.wallAngle).replace('.', ',')
                 fix == 2 -> tapeAng?.wallAngle?.let { String.format(Locale.US, "%.1f°", it).replace('.', ',') } ?: ""
                 else -> sk.sketchAngle(i)?.let { String.format(Locale.US, " (%.1f°)", it).replace('.', ',') } ?: ""
             }
             val ac = if (rc?.angleBad == true) BAD else if (fix == 2) Color(0xFF8E24AA) else if (fix == 1) Color(0xFF00897B) else labelColor
             // dovnitř rohu (osa úhlu mezi stěnami), mimo čáry stěn a kót
-            val nb = sk.neighbors(i)
-            val q = if (nb != null) {
-                val u1 = (toScreen(vPos[nb.first]) - s).let { it / max(it.getDistance(), 1e-3f) }
-                val u2 = (toScreen(vPos[nb.second]) - s).let { it / max(it.getDistance(), 1e-3f) }
-                val bi = (u1 + u2).let { if (it.getDistance() < 0.05f) Offset(-u1.y, u1.x) else it / it.getDistance() }
-                s + bi * (30f * dens)
-            } else Offset(s.x + 30f * dens, s.y + 10f * dens)
+            val q = if (bi != null) s + bi * (30f * dens) else Offset(s.x + 30f * dens, s.y + 10f * dens)
             label(txt, q.x, q.y, ac, dens, center = true)
         }
     }
@@ -1360,15 +1399,20 @@ private fun DrawScope.drawObject(
     }
 }
 
-private fun DrawScope.label(s: String, x: Float, y: Float, color: Color, dens: Float, center: Boolean = false) {
+/** Popisek: [center] na střed x i y; [align] 0 od x doprava, 2 do x zleva (y na střed písma). */
+private fun DrawScope.label(s: String, x: Float, y: Float, color: Color, dens: Float, center: Boolean = false, align: Int = -1) {
     val paint = android.graphics.Paint().apply {
         isAntiAlias = true
         textSize = 12f * dens
         this.color = android.graphics.Color.argb(255, (color.red * 255).toInt(), (color.green * 255).toInt(), (color.blue * 255).toInt())
-        if (center) textAlign = android.graphics.Paint.Align.CENTER
+        textAlign = when {
+            center -> android.graphics.Paint.Align.CENTER
+            align == 2 -> android.graphics.Paint.Align.RIGHT
+            else -> android.graphics.Paint.Align.LEFT
+        }
     }
-    // na střed: x vodorovně, y na střed výšky písma
-    drawContext.canvas.nativeCanvas.drawText(s, x, if (center) y + paint.textSize * 0.35f else y, paint)
+    val mid = center || align >= 0
+    drawContext.canvas.nativeCanvas.drawText(s, x, if (mid) y + paint.textSize * 0.35f else y, paint)
 }
 
 /** Znaménkové číslo bez „-0,0“ (desetinná čárka). */
@@ -1380,8 +1424,9 @@ private fun signed(v: Double, dec: Int): String {
 }
 
 /** Popisek kóty: délka a rozdíl od výpočtu v cm. */
-private fun tapeText(len: Double, diff: Double?): String =
-    "⟷" + String.format(Locale.US, "%.2f", len).replace('.', ',') + (diff?.let { " (" + signed(it * 100, 1) + ")" } ?: "")
+private fun tapeText(len: Double, diff: Double?, excluded: Boolean = false): String =
+    "⟷" + String.format(Locale.US, "%.2f", len).replace('.', ',') +
+        if (excluded) " vynechána" else (diff?.let { " (" + signed(it * 100, 1) + ")" } ?: "")
 
 /** Výsledky výpočtu, kontrola a export. */
 @Composable
@@ -1484,7 +1529,7 @@ private fun ResultPanel(c: RoverController, obj: SiteObject, sk: ObjSketch, r: O
                 "${p.name} · ${ObjPointType.NAMES.getOrElse(p.type) { "" }}" +
                     (p.residual?.let { " · odchylka ${PointEvaluator.cm(it)} cm" } ?: "") +
                     (p.dh?.let { " · Δh " + signed(it, 2) + " m" } ?: "") +
-                    (if (p.suspect) " · podezřelý / bez fixu" else "") + (if (p.bad) " · CHYBNÝ" else ""),
+                    (if (p.suspect) " · podezřelý / bez fixu" else "") + (if (p.excluded) " · VYNECHÁN (hrubá chyba)" else if (p.bad) " · CHYBNÝ" else ""),
                 style = mono, color = if (p.bad) BAD else if (p.suspect) Color(0xFFEF6C00) else MaterialTheme.colorScheme.onSurface,
             )
         }
@@ -1494,7 +1539,8 @@ private fun ResultPanel(c: RoverController, obj: SiteObject, sk: ObjSketch, r: O
         r.tapes.forEach { t ->
             Text(
                 String.format(Locale.US, "%.3f m", t.len) + (t.calc?.let { String.format(Locale.US, " / %.3f m", it) } ?: "") +
-                    (t.diff?.let { " · rozdíl ${PointEvaluator.cm(it)} cm" } ?: "") + if (t.bad) " · CHYBNÁ" else "",
+                    (t.diff?.let { " · rozdíl ${PointEvaluator.cm(it)} cm" } ?: "") +
+                    if (t.excluded) " · VYNECHÁNA (hrubá chyba)" else if (t.bad) " · CHYBNÁ" else "",
                 style = mono, color = if (t.bad) BAD else MaterialTheme.colorScheme.onSurface,
             )
         }
