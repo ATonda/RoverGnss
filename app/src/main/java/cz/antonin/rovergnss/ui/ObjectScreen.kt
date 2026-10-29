@@ -147,6 +147,9 @@ fun ObjectScreen(c: RoverController) {
     val dbSk = remember(obj?.data) { obj?.sketch ?: ObjSketch() }
     // změny se zobrazí hned (místní stav), uložení do databáze běží na pozadí; nová data z databáze místní stav nahradí
     var localSk by remember { mutableStateOf<Pair<Long, ObjSketch>?>(null) }
+    // diagnostika kreslení (0.11.4): počet tahů, bodů čáry a vrcholů z posledního tahu
+    var dbgStrokes by remember { mutableIntStateOf(0) }
+    var dbgLast by remember { mutableStateOf("") }
     LaunchedEffect(obj?.data) { localSk = null }
     val sk = localSk?.takeIf { it.first == obj?.id }?.second ?: dbSk
     val lastMeas = remember(meas) { meas.filter { it.endMs != null }.groupBy { it.pointId }.mapValues { it.value.last() } }
@@ -369,7 +372,9 @@ fun ObjectScreen(c: RoverController) {
      * když začne u posledního vrcholu; skončí-li u prvního vrcholu, obrys se uzavře.
      */
     fun onStroke(pts: List<Offset>) {
-        val o = obj ?: return
+        dbgStrokes++
+        dbgLast = "čára ${pts.size} b."
+        val o = obj ?: run { dbgLast += ", bez objektu"; return }
         if (pts.size < 2) return
         val tol = hitR * 0.55f
         val simp = rdp(pts, tol)
@@ -384,6 +389,7 @@ fun ObjectScreen(c: RoverController) {
         if (startNearLast) add = add.drop(1)
         if (endNearFirst && add.isNotEmpty()) add = add.dropLast(1)
         val sketchPts = add.map { toSketch(it) }
+        dbgLast += " → ${simp.size} vrch., přidat ${sketchPts.size}" + (sketchPts.firstOrNull()?.let { " (${it.x.toInt()}, ${it.y.toInt()})" } ?: "")
         edit { s0 ->
             var id = s0.nextId
             val nv = sketchPts.map { q -> ObjVertex(id++, q.x.toDouble(), q.y.toDouble()) }
@@ -664,6 +670,14 @@ fun ObjectScreen(c: RoverController) {
                     }
                     for (i in 1 until stroke.size) drawLine(Color(0xFFFFA000), stroke[i - 1], stroke[i], 3f * density.density)
                 }
+                if (mode == ObjMode.DRAW) Text(
+                    "tahů $dbgStrokes · $dbgLast · zobrazeno ${sk.vertices.size} vrch. (databáze ${dbSk.vertices.size}" +
+                        (localSk?.let { ", místní ${it.second.vertices.size}" } ?: "") + ")" +
+                        String.format(java.util.Locale.US, " · měřítko %.3g", vScale) +
+                        (cz.antonin.rovergnss.data.ObjSketchJson.lastError?.let { " · chyba čtení $it" } ?: ""),
+                    style = MaterialTheme.typography.labelSmall, color = Color(0xFF616161),
+                    modifier = Modifier.align(Alignment.BottomStart).padding(4.dp),
+                )
                 if (mode == ObjMode.DRAW && sk.vertices.isEmpty() && stroke.isEmpty()) Text(
                     "Táhni prstem obrys budovy (lomy = vrcholy), nebo klepej vrcholy jeden po druhém. " +
                         "Konec čáry u začátku obrys uzavře. Posun a zoom dvěma prsty.",

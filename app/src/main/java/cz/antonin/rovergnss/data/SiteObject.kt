@@ -68,6 +68,10 @@ object ObjSketchJson {
             nextId = o.optInt("nextId", 1),
         )
     } catch (e: Exception) {
+        lastError = "${e.javaClass.simpleName}: ${e.message}"
         ObjSketch()
     }
+
+    /** Poslední chyba čtení (diagnostika). */
+    @Volatile var lastError: String? = null
 }
