@@ -15,20 +15,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import cz.antonin.rovergnss.service.RoverController
 
-/** Karta Body: výběr lokality a přepínač Body | Vytyčování (záznam trasy jen v testech – 0.10.0). */
+/** Karta Body: výběr lokality a přepínač Body | Vytyčování | Objekt (náčrt půdorysu, 0.11.0). */
 @Composable
 fun SiteScreen(c: RoverController) {
     var sub by rememberSaveable { mutableIntStateOf(0) }
-    if (sub > 1) sub = 0
+    if (sub > 2) sub = 0
     Column(Modifier.fillMaxSize()) {
         JobBar(c)
         TabRow(selectedTabIndex = sub) {
             Tab(selected = sub == 0, onClick = { sub = 0 }, text = { Text("Body") })
             Tab(selected = sub == 1, onClick = { sub = 1 }, text = { Text("Vytyčování") })
+            Tab(selected = sub == 2, onClick = { sub = 2 }, text = { Text("Objekt") })
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when (sub) {
                 1 -> StakeScreen(c)
+                2 -> ObjectScreen(c)
                 else -> PointsScreen(c)
             }
         }

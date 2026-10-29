@@ -96,6 +96,10 @@ fun PointExtras(c: RoverController, p: Point, onClose: () -> Unit) {
     val list by listFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     var sec by remember { mutableIntStateOf(c.prefs.measureSec) }
     var toDelete by remember { mutableStateOf<Measurement?>(null) }
+    // hromadný výběr měření ke smazání
+    var selecting by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf(setOf<Long>()) }
+    var askDeleteSel by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf<Long?>(null) }
 
     var ubxPending by remember { mutableStateOf<Measurement?>(null) }
@@ -189,10 +193,29 @@ fun PointExtras(c: RoverController, p: Point, onClose: () -> Unit) {
 
     val done = list.filter { it.endMs != null }
     if (done.isNotEmpty()) {
-        Text("Historie měření (${done.size})", style = MaterialTheme.typography.titleSmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Historie měření (${done.size})", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            TextButton(onClick = {
+                selecting = !selecting
+                selected = emptySet()
+            }) { Text(if (selecting) "Konec výběru" else "Vybrat") }
+        }
+        if (selecting) Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            OutlinedButton(onClick = { selected = done.map { it.id }.toSet() }) { Text("Vše") }
+            OutlinedButton(onClick = { askDeleteSel = true }, enabled = selected.isNotEmpty()) {
+                Text("Smazat (${selected.size})", color = MaterialTheme.colorScheme.error)
+            }
+        }
         MeasureCharts(done)
         done.asReversed().forEach { m ->
-            MeasureRow(
+            if (selecting) Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.Checkbox(m.id in selected, { on -> selected = if (on) selected + m.id else selected - m.id })
+                Text(
+                    SimpleDateFormat("d. M. yyyy HH:mm", Locale.getDefault()).format(Date(m.startMs)) +
+                        " · " + (if (m.result != PointResult.NONE) PointResult.name(m.result) else qualityName(m.usedQuality)),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            } else MeasureRow(
                 m, expanded == m.id, onClick = { expanded = if (expanded == m.id) null else m.id }, onDelete = { toDelete = m },
                 onExportUbx = {
                     ubxPending = m
@@ -208,6 +231,21 @@ fun PointExtras(c: RoverController, p: Point, onClose: () -> Unit) {
             exportLauncher.launch(FileNames.point(jobName, p.name + "_mereni", System.currentTimeMillis(), "csv"))
         }) { Text("Export měření CSV") }
     }
+
+    if (askDeleteSel) AlertDialog(
+        onDismissRequest = { askDeleteSel = false },
+        title = { Text("Smazat ${selected.size} měření?") },
+        text = { Text("Měření i s jejich záznamy a soubory. Souřadnice bodu se nemění. Nelze vrátit.") },
+        confirmButton = {
+            TextButton(onClick = {
+                askDeleteSel = false
+                c.deleteMeasurements(done.filter { it.id in selected })
+                selected = emptySet()
+                selecting = false
+            }) { Text("Smazat", color = MaterialTheme.colorScheme.error) }
+        },
+        dismissButton = { TextButton(onClick = { askDeleteSel = false }) { Text("Zrušit") } },
+    )
 
     toDelete?.let { m ->
         AlertDialog(

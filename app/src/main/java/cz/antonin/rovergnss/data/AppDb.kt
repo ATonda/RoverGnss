@@ -130,6 +130,24 @@ interface MeasurementDao {
 }
 
 @Dao
+interface ObjectDao {
+    @Insert
+    suspend fun insert(o: SiteObject): Long
+
+    @Update
+    suspend fun update(o: SiteObject)
+
+    @Query("DELETE FROM site_object WHERE id = :id")
+    suspend fun delete(id: Long)
+
+    @Query("SELECT * FROM site_object WHERE id = :id")
+    suspend fun get(id: Long): SiteObject?
+
+    @Query("SELECT * FROM site_object WHERE jobId = :jobId ORDER BY createdMs")
+    fun byJob(jobId: Long): Flow<List<SiteObject>>
+}
+
+@Dao
 interface PhoneDao {
     @Insert
     suspend fun insertSession(s: PhoneSession): Long
@@ -206,11 +224,23 @@ val MIGRATION_8_9 = object : Migration(8, 9) {
     }
 }
 
-// Verze 9. Od verze 5 se převádí (MIGRATION_5_6 … MIGRATION_8_9), starší databáze se smaže.
+/** 9 → 10: objekty lokality – náčrt půdorysu, body, kóty (0.11.0) – data zůstávají. */
+val MIGRATION_9_10 = object : Migration(9, 10) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `site_object` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `jobId` INTEGER NOT NULL, " +
+                "`name` TEXT NOT NULL, `createdMs` INTEGER NOT NULL, `data` TEXT NOT NULL, " +
+                "FOREIGN KEY(`jobId`) REFERENCES `job`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )"
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_site_object_jobId` ON `site_object` (`jobId`)")
+    }
+}
+
+// Verze 10. Od verze 5 se převádí (MIGRATION_5_6 … MIGRATION_9_10), starší databáze se smaže.
 @Database(
     entities = [Job::class, Track::class, TrackPoint::class, TrackDiag::class, Point::class, Measurement::class,
-        PhoneSession::class, PhoneSample::class],
-    version = 9, exportSchema = true,
+        PhoneSession::class, PhoneSample::class, SiteObject::class],
+    version = 10, exportSchema = true,
 )
 abstract class AppDb : RoomDatabase() {
     abstract fun jobs(): JobDao
@@ -218,11 +248,12 @@ abstract class AppDb : RoomDatabase() {
     abstract fun points(): PointDao
     abstract fun measurements(): MeasurementDao
     abstract fun phone(): PhoneDao
+    abstract fun objects(): ObjectDao
 
     companion object {
         fun create(context: Context): AppDb =
             Room.databaseBuilder(context, AppDb::class.java, "rovergnss.db")
-                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
                 .fallbackToDestructiveMigration()
                 .build()
     }

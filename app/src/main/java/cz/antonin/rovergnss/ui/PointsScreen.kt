@@ -61,6 +61,7 @@ fun PointsScreen(c: RoverController) {
     // výběr bodů k exportu (ZIP: surový proud .log každého bodu + souhrn.csv)
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf(setOf<Long>()) }
+    var askDelete by remember { mutableStateOf(false) }
     val lastMeas = remember(meas) { meas.filter { it.endMs != null }.groupBy { it.pointId }.mapValues { it.value.last() } }
     fun exportPoints(uri: Uri?, logs: Boolean) {
         if (uri == null) return
@@ -159,7 +160,7 @@ fun PointsScreen(c: RoverController) {
     }
 
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.padding(horizontal = 12.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = {
                 scope.launch {
                     val j = c.ensureJob()
@@ -167,6 +168,10 @@ fun PointsScreen(c: RoverController) {
                 }
             }) { Text("Nový bod") }
             OutlinedButton(onClick = { importLauncher.launch(arrayOf("text/*", "application/octet-stream")) }) { Text("Import") }
+            OutlinedButton(onClick = {
+                selecting = !selecting
+                selected = emptySet()
+            }, enabled = points.isNotEmpty()) { Text(if (selecting) "Konec výběru" else "Vybrat") }
             androidx.compose.foundation.layout.Box {
                 OutlinedButton(onClick = { exportMenu = true }, enabled = points.isNotEmpty()) { Text("Export") }
                 androidx.compose.material3.DropdownMenu(expanded = exportMenu, onDismissRequest = { exportMenu = false }) {
@@ -208,6 +213,9 @@ fun PointsScreen(c: RoverController) {
                 OutlinedButton(onClick = {
                     sumLauncher.launch(FileNames.job(job?.name ?: "lokalita", "souhrn", System.currentTimeMillis(), "csv"))
                 }, enabled = selected.isNotEmpty()) { Text("Jen souhrn") }
+                OutlinedButton(onClick = { askDelete = true }, enabled = selected.isNotEmpty()) {
+                    Text("Smazat", color = MaterialTheme.colorScheme.error)
+                }
                 TextButton(onClick = {
                     selecting = false
                     selected = emptySet()
@@ -288,6 +296,21 @@ fun PointsScreen(c: RoverController) {
             }
         }
     }
+
+    if (askDelete) androidx.compose.material3.AlertDialog(
+        onDismissRequest = { askDelete = false },
+        title = { Text("Smazat ${selected.size} bodů?") },
+        text = { Text("Body i s měřeními a soubory (surový proud). Nelze vrátit.") },
+        confirmButton = {
+            TextButton(onClick = {
+                askDelete = false
+                c.deletePoints(points.filter { it.id in selected })
+                selected = emptySet()
+                selecting = false
+            }) { Text("Smazat", color = MaterialTheme.colorScheme.error) }
+        },
+        dismissButton = { TextButton(onClick = { askDelete = false }) { Text("Zrušit") } },
+    )
 
     editing?.let { p ->
         PointEditor(

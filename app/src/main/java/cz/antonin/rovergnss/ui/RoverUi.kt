@@ -74,7 +74,7 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
             controller.navTarget.collect { if (it != null) tab = 0 }
         }
         LaunchedEffect(Unit) {
-            controller.measure.map { it != null }.distinctUntilChanged().collect { if (it) tab = 0 }
+            controller.measure.map { it != null && !it.fromObject }.distinctUntilChanged().collect { if (it) tab = 0 }
         }
         var target by rememberSaveable { mutableIntStateOf(-1) }   // terč: -1 zavřený, jinak TargetSource
         // odchod ze záložky Auto při běžícím měření rychlosti: dotaz Ukončit / Pokračovat (0.9.0)

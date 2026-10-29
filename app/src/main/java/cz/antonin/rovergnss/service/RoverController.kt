@@ -12,6 +12,12 @@ import cz.antonin.rovergnss.data.MeasureResult
 import cz.antonin.rovergnss.data.Measurement
 import cz.antonin.rovergnss.data.Point
 import cz.antonin.rovergnss.data.PointCoords
+import cz.antonin.rovergnss.data.ObjPlace
+import cz.antonin.rovergnss.data.ObjSketch
+import cz.antonin.rovergnss.data.SiteObject
+import cz.antonin.rovergnss.data.sketch
+import cz.antonin.rovergnss.data.toJson
+import kotlinx.coroutines.sync.withLock
 import cz.antonin.rovergnss.data.EvalEpoch
 import cz.antonin.rovergnss.data.PointEvaluator
 import cz.antonin.rovergnss.data.PointGoal
@@ -128,6 +134,7 @@ data class MeasureState(
     val jobName: String = "",
     val verifyRequested: Boolean = false,
     val failedNotified: Boolean = false,
+    val fromObject: Boolean = false,  // spuštěno z náčrtu objektu – aplikace nepřepíná na mapu
 )
 
 /**
@@ -396,10 +403,19 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         if (q.id == 0L) db.points().insert(q) else db.points().update(q)
     }
 
-    fun deletePoint(p: Point) = scope.launch {
+    fun deletePoint(p: Point) = scope.launch { deletePointNow(p) }
+
+    /** Hromadné smazání bodů (i s měřeními a jejich soubory). */
+    fun deletePoints(list: List<Point>) = scope.launch {
+        var n = 0
+        list.forEach { if (deletePointNow(it)) n++ }
+        _messages.tryEmit("Smazáno $n bodů")
+    }
+
+    private suspend fun deletePointNow(p: Point): Boolean {
         if (_measure.value?.point?.id == p.id) {
-            _messages.tryEmit("Na bodě probíhá měření")
-            return@launch
+            _messages.tryEmit("Na bodě ${p.name} probíhá měření")
+            return false
         }
         if (_navTarget.value?.id == p.id) _navTarget.value = null
         // stopy měření bodu (trasy „M …“) se smažou s ním
@@ -408,6 +424,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             m.rawUbx?.let { rawFile(it).delete() }
         }
         db.points().delete(p.id)
+        return true
     }
 
     // ------------------------------------------------------------------ navigace k bodu
@@ -594,7 +611,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
      * (hlavička JSON na začátku, souhrn na konci), statický model, průběžné vyhodnocení fixu, zvuky; konec sám
      * při splnění cíle z profilu, „nejde změřit“ po limitu (rozhoduje uživatel), ručně kdykoli.
      */
-    fun startPointMeasure(jobId: Long?, newJob: String?, name: String) = scope.launch {
+    fun startPointMeasure(jobId: Long?, newJob: String?, name: String, objPlace: Pair<Long, ObjPlace>? = null) = scope.launch {
         if (_measure.value != null) {
             _messages.tryEmit("Probíhá jiné měření")
             return@launch
@@ -630,6 +647,8 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                 note = "měří se…")
         )
         val point = db.points().get(pid) ?: return@launch
+        // měření spuštěné z náčrtu objektu: bod se hned umístí do náčrtu
+        objPlace?.let { (oid, pl) -> updateObject(oid) { s -> s.copy(places = s.places + pl.copy(pointId = pid)) } }
         val header = JSONObject()
             .put("rg", "hlavicka").put("aplikace", appVersion()).put("lokalita", job.name).put("bod", n)
             .put("zacatek_utc", isoUtc(now)).put("vyska_anteny_m", u.antennaH).put("profil", u.name)
@@ -658,7 +677,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         db.measurements().get(id)?.let { db.measurements().update(it.copy(staticModel = static)) }
         _measure.value = MeasureState(
             id, trackId, point, now, 0, u.antennaH, staticModel = static, mode = MeasureMode.POINT,
-            goal = goal, jobName = job.name,
+            goal = goal, jobName = job.name, fromObject = objPlace != null,
         )
         EventLog.log("REC: měření bodu $n (${job.name})")
         pointTicker = scope.launch { pointLoop() }
@@ -822,6 +841,36 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         "?"
     }
 
+    // ------------------------------------------------------------------ objekty (náčrt půdorysu, 0.11.0)
+    fun createObject(jobId: Long, name: String, onCreated: (Long) -> Unit = {}) = scope.launch {
+        val n = name.trim().ifEmpty { return@launch }
+        val id = db.objects().insert(SiteObject(jobId = jobId, name = n))
+        withContext(Dispatchers.Main) { onCreated(id) }
+    }
+
+    fun renameObject(o: SiteObject, name: String) = scope.launch {
+        val n = name.trim().ifEmpty { return@launch }
+        db.objects().update(o.copy(name = n))
+    }
+
+    fun deleteObject(o: SiteObject) = scope.launch { db.objects().delete(o.id) }
+
+    /** Uloží náčrt objektu. */
+    fun saveSketch(objectId: Long, sk: ObjSketch) = scope.launch {
+        db.objects().get(objectId)?.let { db.objects().update(it.copy(data = sk.toJson())) }
+    }
+
+    /** Úprava náčrtu z UI (vždy nad aktuálním stavem v databázi). */
+    fun editObject(objectId: Long, f: (ObjSketch) -> ObjSketch) = scope.launch { updateObject(objectId, f) }
+
+    private val objLock = kotlinx.coroutines.sync.Mutex()
+
+    /** Změna náčrtu podle aktuálního stavu v databázi (souběh s UI). */
+    suspend fun updateObject(objectId: Long, f: (ObjSketch) -> ObjSketch) = objLock.withLock {
+        val o = db.objects().get(objectId) ?: return@withLock
+        db.objects().update(o.copy(data = f(o.sketch).toJson()))
+    }
+
     /** Vytyčení: krátké průměrování polohy na vytyčovaném bodě, uloží odchylku a pokračuje dalším bodem. */
     fun startStakeCheck(p: Point) = scope.launch {
         if (_measure.value != null) return@launch
@@ -949,11 +998,21 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     private fun hSigma(r: MeasureResult): Double? =
         if (r.sN != null && r.sE != null) kotlin.math.sqrt(r.sN * r.sN + r.sE * r.sE) else null
 
-    fun deleteMeasurement(m: Measurement) = scope.launch {
-        if (_measure.value?.measurementId == m.id && m.id != 0L) return@launch
+    fun deleteMeasurement(m: Measurement) = scope.launch { deleteMeasurementNow(m) }
+
+    /** Hromadné smazání měření (i s trasou a soubory). */
+    fun deleteMeasurements(list: List<Measurement>) = scope.launch {
+        var n = 0
+        list.forEach { if (deleteMeasurementNow(it)) n++ }
+        _messages.tryEmit("Smazáno $n měření")
+    }
+
+    private suspend fun deleteMeasurementNow(m: Measurement): Boolean {
+        if (_measure.value?.measurementId == m.id && m.id != 0L) return false
         m.rawUbx?.let { rawFile(it).delete() }
         db.measurements().delete(m.id)
         m.trackId?.let { deleteTrackFiles(it) }
+        return true
     }
 
     /** Smaže trasu i se surovým souborem (ne probíhající záznam). */
