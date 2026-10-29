@@ -396,3 +396,9 @@ Specifikace: `objekt-mereni-specifikace.md` (projekt), kap. 6.
 - Δh: od umístěného kontrolního bodu objektu, jinak od bodu lokality označeného „kontrolní“.
 - Zatím ne: vrstva `epochy`, PNG půdorysu, objekt a přiložení v dialogu REC (řeší „Změřit nový“ z náčrtu).
 - Verze 0.11.0 (versionCode 21).
+
+## 21. Stav aplikace 0.11.1 (29. 10.) – kreslení prstem
+
+- Hlášení: „nefunguje kreslení na ploše“ – v 0.11.0 jednoprstové tažení posouvalo plátno, vrcholy jen klepnutím.
+- **Kreslit:** tažení jedním prstem = čára obrysu, zjednodušená na vrcholy (Douglas–Peucker, tolerance ~12 dp); od posledního vrcholu otevřeného obrysu čára navazuje, konec u prvního vrcholu obrys uzavře (i u první uzavřené čáry). Klepnutí = vrchol (beze změny). Posun a zoom dvěma prsty. Tažení vrcholu (kromě posledního u otevřeného obrysu) = posun. Nápověda na prázdném plátně, tlačítko „Smazat náčrt“ (s potvrzením; kontrolní body zůstávají).
+- Verze 0.11.1 (versionCode 22).
