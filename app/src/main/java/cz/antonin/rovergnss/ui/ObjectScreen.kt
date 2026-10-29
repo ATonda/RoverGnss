@@ -144,7 +144,11 @@ fun ObjectScreen(c: RoverController) {
     var nameText by remember { mutableStateOf("") }
     var askDeleteObj by remember { mutableStateOf(false) }
 
-    val sk = remember(obj?.data) { obj?.sketch ?: ObjSketch() }
+    val dbSk = remember(obj?.data) { obj?.sketch ?: ObjSketch() }
+    // změny se zobrazí hned (místní stav), uložení do databáze běží na pozadí; nová data z databáze místní stav nahradí
+    var localSk by remember { mutableStateOf<Pair<Long, ObjSketch>?>(null) }
+    LaunchedEffect(obj?.data) { localSk = null }
+    val sk = localSk?.takeIf { it.first == obj?.id }?.second ?: dbSk
     val lastMeas = remember(meas) { meas.filter { it.endMs != null }.groupBy { it.pointId }.mapValues { it.value.last() } }
     val pointById = remember(points) { points.associateBy { it.id } }
     val obs = remember(sk, pointById, lastMeas) { obsOf(sk, pointById, lastMeas) }
@@ -249,6 +253,15 @@ fun ObjectScreen(c: RoverController) {
         vOff = Offset(canvasW / 2 - (minX + maxX) / 2 * s, canvasH / 2 - (minY + maxY) / 2 * s)
     }
 
+    /** Změna náčrtu: hned na obrazovce, uložení (krok pro Zpět) na pozadí. */
+    fun edit(f: (ObjSketch) -> ObjSketch) {
+        val o = obj ?: return
+        val n = f(sk)
+        if (n == sk) return
+        localSk = o.id to n
+        c.setSketch(o.id, n)
+    }
+
     fun hitTest(s: Offset, wantTapes: Boolean, wantPlaces: Boolean): Hit? {
         var best: Hit? = null
         var bd = hitR
@@ -295,7 +308,7 @@ fun ObjectScreen(c: RoverController) {
                 when (h) {
                     is Hit.Vertex -> {
                         selEdge = null
-                        if (!sk.closed && h.index == 0 && sk.vertices.size >= 3) c.editObject(o.id) { it.copy(closed = true) }
+                        if (!sk.closed && h.index == 0 && sk.vertices.size >= 3) edit { it.copy(closed = true) }
                     }
                     is Hit.Edge -> {
                         // výběr stěny: posun tažením, vložit vrchol, smazat
@@ -304,7 +317,7 @@ fun ObjectScreen(c: RoverController) {
                     }
                     else -> if (selEdge != null) selEdge = null
                     else if (sk.closed) c.postMessage("Obrys je uzavřený – vrchol vložíš výběrem stěny (klepnutím na ni)")
-                    else c.editObject(o.id) { s0 -> s0.copy(vertices = s0.vertices + ObjVertex(s0.nextId, q.x.toDouble(), q.y.toDouble()), nextId = s0.nextId + 1) }
+                    else edit { s0 -> s0.copy(vertices = s0.vertices + ObjVertex(s0.nextId, q.x.toDouble(), q.y.toDouble()), nextId = s0.nextId + 1) }
                 }
             }
             ObjMode.POINTS -> {
@@ -371,7 +384,7 @@ fun ObjectScreen(c: RoverController) {
         if (startNearLast) add = add.drop(1)
         if (endNearFirst && add.isNotEmpty()) add = add.dropLast(1)
         val sketchPts = add.map { toSketch(it) }
-        c.editObject(o.id) { s0 ->
+        edit { s0 ->
             var id = s0.nextId
             val nv = sketchPts.map { q -> ObjVertex(id++, q.x.toDouble(), q.y.toDouble()) }
             val all = s0.vertices + nv
@@ -385,12 +398,13 @@ fun ObjectScreen(c: RoverController) {
         val h = hitTest(s, wantTapes = false, wantPlaces = false)
         if (h is Hit.Vertex && !whole) {
             selEdge = null
-            c.editObject(o.id) { s0 -> removeVertex(s0, s0.vertices.getOrNull(h.index)?.id ?: -1) }
+            edit { s0 -> removeVertex(s0, s0.vertices.getOrNull(h.index)?.id ?: -1) }
         }
     }
 
     val cb = rememberUpdatedState(Triple(::onTap, ::onLongPress, ::hitTest))
     val strokeCb = rememberUpdatedState(::onStroke)
+    val editRef = rememberUpdatedState(::edit)
     val stateRef = rememberUpdatedState(Triple(mode, obj?.id, sk))
     val drawRef = rememberUpdatedState(Triple(whole, selEdge, skC))
 
@@ -463,7 +477,7 @@ fun ObjectScreen(c: RoverController) {
                 style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp),
             )
             if (mode == ObjMode.DRAW) Row(Modifier.padding(horizontal = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedButton(onClick = { c.editObject(obj.id) { it.copy(closed = !it.closed) } }, enabled = sk.vertices.size >= 3 || sk.closed) {
+                OutlinedButton(onClick = { edit { it.copy(closed = !it.closed) } }, enabled = sk.vertices.size >= 3 || sk.closed) {
                     Text(if (sk.closed) "Otevřít obrys" else "Uzavřít obrys")
                 }
                 key(undoVer) {
@@ -476,7 +490,7 @@ fun ObjectScreen(c: RoverController) {
                 }, label = { Text("Upravit celý") }, enabled = sk.vertices.isNotEmpty())
                 if (whole) OutlinedButton(onClick = {
                     // zrcadlení podle svislé osy těžiště
-                    c.editObject(obj.id) { s0 ->
+                    edit { s0 ->
                         val cx = s0.vertices.map { it.x }.average()
                         s0.copy(
                             vertices = s0.vertices.map { it.copy(x = 2 * cx - it.x) },
@@ -487,6 +501,10 @@ fun ObjectScreen(c: RoverController) {
                 OutlinedButton(onClick = { askClear = true }, enabled = sk.vertices.isNotEmpty()) {
                     Text("Smazat náčrt", color = MaterialTheme.colorScheme.error)
                 }
+                Text(
+                    "vrcholů ${sk.vertices.size}" + if (sk.closed) ", uzavřeno" else "",
+                    style = MaterialTheme.typography.bodySmall, modifier = Modifier.align(Alignment.CenterVertically),
+                )
             }
             val se = selEdge
             if (mode == ObjMode.DRAW && se != null && !whole) Row(
@@ -496,8 +514,8 @@ fun ObjectScreen(c: RoverController) {
                 Text("Stěna V${ia + 1}–V${ib + 1}:", style = MaterialTheme.typography.titleSmall, modifier = Modifier.align(Alignment.CenterVertically))
                 OutlinedButton(onClick = {
                     val q = selEdgePt
-                    if (q != null) c.editObject(obj.id) { s0 ->
-                        val (a, b) = s0.edges().getOrNull(se) ?: return@editObject s0
+                    if (q != null) edit { s0 ->
+                        val (a, b) = s0.edges().getOrNull(se) ?: return@edit s0
                         val v = ObjVertex(s0.nextId, q.x.toDouble(), q.y.toDouble())
                         val l = s0.vertices.toMutableList()
                         if (b == 0) l.add(v) else l.add(a + 1, v)
@@ -508,7 +526,7 @@ fun ObjectScreen(c: RoverController) {
                 OutlinedButton(onClick = {
                     if (!sk.closed && ia != 0 && ib != sk.vertices.lastIndex)
                         c.postMessage("Prostřední stěnu otevřeného obrysu nejde smazat – smaž vrchol, nebo obrys uzavři")
-                    else c.editObject(obj.id) { s0 -> deleteEdge(s0, se) }
+                    else edit { s0 -> deleteEdge(s0, se) }
                     selEdge = null
                 }) { Text("Smazat stěnu", color = MaterialTheme.colorScheme.error) }
                 TextButton(onClick = { selEdge = null }) { Text("Zrušit výběr") }
@@ -557,7 +575,7 @@ fun ObjectScreen(c: RoverController) {
                                 if (pressed.isEmpty()) {
                                     if (wholeDrag) {
                                         val t = xf
-                                        if (t != null && oid != null) c.editObject(oid) { s0 ->
+                                        if (t != null && oid != null) editRef.value { s0 ->
                                             s0.copy(
                                                 vertices = s0.vertices.map { v -> t.apply(Offset(v.x.toFloat(), v.y.toFloat()), cen).let { v.copy(x = it.x.toDouble(), y = it.y.toDouble()) } },
                                                 places = s0.places.map { p -> t.apply(Offset(p.x.toFloat(), p.y.toFloat()), cen).let { p.copy(x = it.x.toDouble(), y = it.y.toDouble()) } },
@@ -566,7 +584,7 @@ fun ObjectScreen(c: RoverController) {
                                         xf = null
                                     } else if (edgeGrab != null && moved) {
                                         val d = dragEdge
-                                        if (d != null && oid != null) c.editObject(oid) { s0 ->
+                                        if (d != null && oid != null) editRef.value { s0 ->
                                             s0.copy(vertices = s0.vertices.map {
                                                 if (it.id == d.first || it.id == d.second) it.copy(x = it.x + d.third.x, y = it.y + d.third.y) else it
                                             })
@@ -577,7 +595,7 @@ fun ObjectScreen(c: RoverController) {
                                         stroke = emptyList()
                                     } else if (grab != null && moved) {
                                         val v = dragV
-                                        if (v != null && oid != null) c.editObject(oid) { s0 ->
+                                        if (v != null && oid != null) editRef.value { s0 ->
                                             s0.copy(vertices = s0.vertices.map { if (it.id == v.first) it.copy(x = v.second.x.toDouble(), y = v.second.y.toDouble()) else it })
                                         }
                                         dragV = null
@@ -696,7 +714,7 @@ fun ObjectScreen(c: RoverController) {
         confirmButton = {
             TextButton(onClick = {
                 askClear = false
-                c.editObject(obj.id) { s0 ->
+                edit { s0 ->
                     val keep = s0.places.filter { it.type == ObjPointType.CONTROL }
                     val keepIds = keep.map { "p:${it.id}" }.toSet()
                     s0.copy(vertices = emptyList(), closed = false, places = keep, tapes = s0.tapes.filter { it.a in keepIds && it.b in keepIds })
@@ -725,7 +743,7 @@ fun ObjectScreen(c: RoverController) {
             canMeasure = link is LinkState.Connected && running == null,
             onSave = { np ->
                 placeDialog = null
-                c.editObject(o.id) { s0 ->
+                edit { s0 ->
                     if (np.id == 0) s0.copy(places = s0.places + np.copy(id = s0.nextId), nextId = s0.nextId + 1)
                     else s0.copy(places = s0.places.map { if (it.id == np.id) np else it })
                 }
@@ -745,7 +763,7 @@ fun ObjectScreen(c: RoverController) {
             },
             onRemove = if (pl.id != 0) ({
                 placeDialog = null
-                c.editObject(o.id) { s0 -> removePlace(s0, pl.id) }
+                edit { s0 -> removePlace(s0, pl.id) }
             }) else null,
             onDismiss = { placeDialog = null },
         )
@@ -754,17 +772,17 @@ fun ObjectScreen(c: RoverController) {
         val o = obj
         TapeDialog(null, onSave = { len ->
             tapeDialog = null
-            if (o != null) c.editObject(o.id) { s0 -> s0.copy(tapes = s0.tapes + ObjTape(s0.nextId, a, b, len), nextId = s0.nextId + 1) }
+            if (o != null) edit { s0 -> s0.copy(tapes = s0.tapes + ObjTape(s0.nextId, a, b, len), nextId = s0.nextId + 1) }
         }, onDelete = null, onDismiss = { tapeDialog = null })
     }
     tapeEdit?.let { t ->
         val o = obj
         TapeDialog(t.len, onSave = { len ->
             tapeEdit = null
-            if (o != null) c.editObject(o.id) { s0 -> s0.copy(tapes = s0.tapes.map { if (it.id == t.id) it.copy(len = len) else it }) }
+            if (o != null) edit { s0 -> s0.copy(tapes = s0.tapes.map { if (it.id == t.id) it.copy(len = len) else it }) }
         }, onDelete = {
             tapeEdit = null
-            if (o != null) c.editObject(o.id) { s0 -> s0.copy(tapes = s0.tapes.filter { it.id != t.id }) }
+            if (o != null) edit { s0 -> s0.copy(tapes = s0.tapes.filter { it.id != t.id }) }
         }, onDismiss = { tapeEdit = null })
     }
 }

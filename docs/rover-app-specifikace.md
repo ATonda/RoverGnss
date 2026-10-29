@@ -409,3 +409,9 @@ Specifikace: `objekt-mereni-specifikace.md` (projekt), kap. 6.
 - **Upravit celý:** přepínač – tažení jedním prstem posune celý náčrt, dvěma prsty otočení a zvětšení kolem těžiště (pohled se nemění); „Zrcadlit“ podle svislé osy. Body umístěné v náčrtu se mění s ním.
 - **Zpět / Znovu** pro všechny změny náčrtu z obrazovky (posledních 50 kroků na objekt, v paměti – po restartu aplikace se historie maže). Dřívější „Zpět“ (smazání posledního vrcholu) nahrazeno.
 - Verze 0.11.2 (versionCode 23).
+
+## 23. Stav aplikace 0.11.3 (29. 10.) – oprava kreslení
+
+- Hlášení: čára se nakreslí, po zvednutí prstu zmizí (i v 0.11.1). Náčrt se zobrazoval až po návratu z databáze.
+- Změny náčrtu se zobrazí hned (místní stav), uložení do databáze běží na pozadí jako krok pro Zpět; nová data z databáze místní stav nahradí. Chyba uložení se ohlásí („Náčrt nelze uložit: …“). Počet vrcholů a stav uzavření v liště Kreslit (diagnostika).
+- Verze 0.11.3 (versionCode 24).

@@ -871,18 +871,32 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     fun canRedo(objectId: Long) = synchronized(undoStacks) { redoStacks[objectId]?.isNotEmpty() == true }
 
     /** Úprava náčrtu z UI (vždy nad aktuálním stavem v databázi), uloží krok pro Zpět. */
-    fun editObject(objectId: Long, f: (ObjSketch) -> ObjSketch) = scope.launch {
-        objLock.withLock {
-            val o = db.objects().get(objectId) ?: return@withLock
-            val nw = f(o.sketch).toJson()
-            if (nw == o.data) return@withLock
-            synchronized(undoStacks) {
-                val u = undoStacks.getOrPut(objectId) { ArrayDeque() }
-                u.addLast(o.data)
-                while (u.size > UNDO_MAX) u.removeFirst()
-                redoStacks[objectId]?.clear()
+    fun editObject(objectId: Long, f: (ObjSketch) -> ObjSketch) = scope.launch { saveSketchStep(objectId, f) }
+
+    /** Uloží náčrt [sk] (stav zobrazený v UI) jako jeden krok pro Zpět. */
+    fun setSketch(objectId: Long, sk: ObjSketch) = scope.launch { saveSketchStep(objectId) { sk } }
+
+    private suspend fun saveSketchStep(objectId: Long, f: (ObjSketch) -> ObjSketch) {
+        try {
+            objLock.withLock {
+                val o = db.objects().get(objectId)
+                if (o == null) {
+                    _messages.tryEmit("Náčrt nelze uložit: objekt $objectId nenalezen")
+                    return@withLock
+                }
+                val nw = f(o.sketch).toJson()
+                if (nw == o.data) return@withLock
+                synchronized(undoStacks) {
+                    val u = undoStacks.getOrPut(objectId) { ArrayDeque() }
+                    u.addLast(o.data)
+                    while (u.size > UNDO_MAX) u.removeFirst()
+                    redoStacks[objectId]?.clear()
+                }
+                db.objects().update(o.copy(data = nw))
             }
-            db.objects().update(o.copy(data = nw))
+        } catch (e: Exception) {
+            Log.e(TAG, "náčrt", e)
+            _messages.tryEmit("Náčrt nelze uložit: ${e.javaClass.simpleName} ${e.message ?: ""}")
         }
         _undoVersion.value++
     }
