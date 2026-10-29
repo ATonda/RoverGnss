@@ -125,6 +125,16 @@ class Prefs(context: Context) {
         get() = sp.getString("lastSurveyName", null)
         set(v) = sp.edit().putString("lastSurveyName", v).apply()
 
+    /** Signalizace měření bodu: 0 vypnuto, 1 zvuk, 2 vibrace, 3 zvuk i vibrace (0.10.0). */
+    var signalMode: Int
+        get() = sp.getInt("signalMode", 3)
+        set(v) = sp.edit().putInt("signalMode", v).apply()
+
+    /** Dosavadní trasy (mimo testy a měření bodů) smazány při přechodu na 0.10.0. */
+    var tracksPurged010: Boolean
+        get() = sp.getBoolean("tracksPurged010", false)
+        set(v) = sp.edit().putBoolean("tracksPurged010", v).apply()
+
     /** Panel Živě: false = okamžité hodnoty, true = průměr od posledního ustálení. */
     var liveAverage: Boolean
         get() = sp.getBoolean("liveAverage", false)

@@ -80,6 +80,9 @@ interface TrackDao {
     @Query("DELETE FROM track WHERE id = :id")
     suspend fun delete(id: Long)
 
+    @Query("SELECT * FROM track")
+    suspend fun listAll(): List<Track>
+
     @Insert
     suspend fun insertPoints(p: List<TrackPoint>)
 
@@ -121,6 +124,9 @@ interface MeasurementDao {
 
     @Query("SELECT m.* FROM measurement m JOIN point p ON p.id = m.pointId WHERE p.jobId = :jobId ORDER BY m.startMs")
     fun byJob(jobId: Long): Flow<List<Measurement>>
+
+    @Query("SELECT trackId FROM measurement WHERE trackId IS NOT NULL")
+    suspend fun allTrackIds(): List<Long>
 }
 
 @Dao
@@ -189,11 +195,22 @@ val MIGRATION_7_8 = object : Migration(7, 8) {
     }
 }
 
-// Verze 8. Od verze 5 se převádí (MIGRATION_5_6 … MIGRATION_7_8), starší databáze se smaže.
+/** 8 → 9: vyhodnocení měření bodu tlačítkem REC (0.10.0) – data zůstávají. */
+val MIGRATION_8_9 = object : Migration(8, 9) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        for (c in listOf("result INTEGER NOT NULL DEFAULT 0", "fixSec REAL", "fixPct REAL", "sMeanH REAL", "sMeanU REAL",
+            "maxDev REAL", "segments INTEGER NOT NULL DEFAULT 0", "jumps INTEGER NOT NULL DEFAULT 0",
+            "clusters INTEGER NOT NULL DEFAULT 0", "clusterDiffH REAL", "verify INTEGER NOT NULL DEFAULT 0")) {
+            db.execSQL("ALTER TABLE measurement ADD COLUMN $c")
+        }
+    }
+}
+
+// Verze 9. Od verze 5 se převádí (MIGRATION_5_6 … MIGRATION_8_9), starší databáze se smaže.
 @Database(
     entities = [Job::class, Track::class, TrackPoint::class, TrackDiag::class, Point::class, Measurement::class,
         PhoneSession::class, PhoneSample::class],
-    version = 8, exportSchema = true,
+    version = 9, exportSchema = true,
 )
 abstract class AppDb : RoomDatabase() {
     abstract fun jobs(): JobDao
@@ -205,7 +222,7 @@ abstract class AppDb : RoomDatabase() {
     companion object {
         fun create(context: Context): AppDb =
             Room.databaseBuilder(context, AppDb::class.java, "rovergnss.db")
-                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
                 .fallbackToDestructiveMigration()
                 .build()
     }

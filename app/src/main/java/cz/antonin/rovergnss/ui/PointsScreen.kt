@@ -11,6 +11,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.TextButton
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
@@ -34,15 +37,14 @@ import cz.antonin.rovergnss.data.Point
 import cz.antonin.rovergnss.data.PointIo
 import cz.antonin.rovergnss.data.PointSource
 import cz.antonin.rovergnss.export.Exporter
+import cz.antonin.rovergnss.export.FileNames
 import cz.antonin.rovergnss.geo.Angles
 import cz.antonin.rovergnss.service.RoverController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.Locale
 
 @Composable
 fun PointsScreen(c: RoverController) {
@@ -56,6 +58,42 @@ fun PointsScreen(c: RoverController) {
     val meas by measFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     val measByPoint = remember(meas) { meas.filter { it.endMs != null }.groupBy { it.pointId } }
     var editing by remember { mutableStateOf<Point?>(null) }
+    // výběr bodů k exportu (ZIP: surový proud .log každého bodu + souhrn.csv)
+    var selecting by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf(setOf<Long>()) }
+    val lastMeas = remember(meas) { meas.filter { it.endMs != null }.groupBy { it.pointId }.mapValues { it.value.last() } }
+    fun exportPoints(uri: Uri?, logs: Boolean) {
+        if (uri == null) return
+        val chosen = points.filter { it.id in selected }
+        val jName = job?.name ?: "lokalita"
+        scope.launch {
+            val n = withContext(Dispatchers.IO) {
+                try {
+                    val m = lastMeas.filterKeys { k -> chosen.any { it.id == k } }
+                    val files = m.values.associate { mm ->
+                        mm.id to mm.trackId?.let { t -> c.db.tracks().get(t)?.rawFile?.let { c.rawFile(it) } }
+                    }
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        if (logs) Exporter.pointsZip(jName, chosen, m, true, { files[it.id] }, out)
+                        else Exporter.pointsSummaryCsv(jName, chosen, m, out)
+                    } ?: -1
+                } catch (e: Exception) {
+                    -1
+                }
+            }
+            c.postMessage(
+                when {
+                    n < 0 -> "Soubor nelze zapsat"
+                    logs -> "Exportováno ${chosen.size} bodů ($n souborů v ZIPu)"
+                    else -> "Exportováno $n bodů (souhrn)"
+                }
+            )
+            selecting = false
+            selected = emptySet()
+        }
+    }
+    val zipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { exportPoints(it, true) }
+    val sumLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { exportPoints(it, false) }
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -132,24 +170,54 @@ fun PointsScreen(c: RoverController) {
             androidx.compose.foundation.layout.Box {
                 OutlinedButton(onClick = { exportMenu = true }, enabled = points.isNotEmpty()) { Text("Export") }
                 androidx.compose.material3.DropdownMenu(expanded = exportMenu, onDismissRequest = { exportMenu = false }) {
+                    androidx.compose.material3.DropdownMenuItem(text = { Text("Vybrat body – ZIP (.log + souhrn) …") }, onClick = {
+                        exportMenu = false
+                        selecting = true
+                        selected = emptySet()
+                    })
                     androidx.compose.material3.DropdownMenuItem(text = { Text("CSV (S-JTSK, ETRS89, Bpv)") }, onClick = {
                         exportMenu = false
-                        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                        exportLauncher.launch("RG_${stamp}_body_lokality.csv")
+                        exportLauncher.launch(FileNames.job(job?.name ?: "lokalita", "body", System.currentTimeMillis(), "csv"))
                     })
                     androidx.compose.material3.DropdownMenuItem(text = { Text("KML (Google Earth, mapy)") }, onClick = {
                         exportMenu = false
-                        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                        kmlLauncher.launch("RG_${stamp}_body_lokality.kml")
+                        kmlLauncher.launch(FileNames.job(job?.name ?: "lokalita", "body", System.currentTimeMillis(), "kml"))
                     })
                 }
             }
         }
         if (points.any { it.control }) Row(Modifier.padding(horizontal = 12.dp)) {
             OutlinedButton(onClick = {
-                val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                measLauncher.launch("RG_${stamp}_mereni_bodu.csv")
+                measLauncher.launch(FileNames.job(job?.name ?: "lokalita", "mereni", System.currentTimeMillis(), "csv"))
             }) { Text("Export měření bodů") }
+        }
+        if (selecting) {
+            Text(
+                "Vybráno ${selected.size} z ${points.size}",
+                style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(horizontal = 12.dp),
+            )
+            Row(
+                Modifier.padding(horizontal = 12.dp).horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                OutlinedButton(onClick = { selected = points.map { it.id }.toSet() }) { Text("Vše") }
+                OutlinedButton(onClick = { selected = emptySet() }) { Text("Nic") }
+                Button(onClick = {
+                    zipLauncher.launch(FileNames.jobDate(job?.name ?: "lokalita", System.currentTimeMillis(), "zip"))
+                }, enabled = selected.isNotEmpty()) { Text("ZIP") }
+                OutlinedButton(onClick = {
+                    sumLauncher.launch(FileNames.job(job?.name ?: "lokalita", "souhrn", System.currentTimeMillis(), "csv"))
+                }, enabled = selected.isNotEmpty()) { Text("Jen souhrn") }
+                TextButton(onClick = {
+                    selecting = false
+                    selected = emptySet()
+                }) { Text("Zrušit") }
+            }
+            Text(
+                "ZIP: surový proud .log každého bodu (hlavička a souhrn uvnitř) a souhrn.csv – jeden řádek na bod, " +
+                    "Y/X S-JTSK a E_5514/N_5514 pro QGIS (načíst jako text s oddělovačem ';', CRS EPSG:5514).",
+                style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp),
+            )
         }
         Text(
             "Body bodových polí ČÚZK: na mapě (Živě) zapni vrstvu ČÚZK a klepni na bod.",
@@ -164,9 +232,15 @@ fun PointsScreen(c: RoverController) {
         LazyColumn(Modifier.fillMaxSize()) {
             items(points, key = { it.id }) { p ->
                 Column(
-                    Modifier.fillMaxWidth().clickable { editing = p }.padding(horizontal = 16.dp, vertical = 8.dp)
+                    Modifier.fillMaxWidth().clickable {
+                        if (selecting) selected = if (p.id in selected) selected - p.id else selected + p.id
+                        else editing = p
+                    }.padding(horizontal = 16.dp, vertical = 8.dp)
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (selecting) androidx.compose.material3.Checkbox(
+                            p.id in selected, { on -> selected = if (on) selected + p.id else selected - p.id },
+                        )
                         Text(p.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
                         Text(
                             listOf(if (p.control) "kontrolní" else "", p.kind, PointSource.NAMES.getOrElse(p.source) { "" })
@@ -183,7 +257,18 @@ fun PointsScreen(c: RoverController) {
                         val (d, az) = Angles.distanceBearing(g.lat, g.lon, p.lat, p.lon)
                         Text("od roveru ${fmtDist(d)}, směr ${fmt(az, 0)}°", style = MaterialTheme.typography.bodySmall)
                     }
-                    measByPoint[p.id]?.let { ms ->
+                    lastMeas[p.id]?.takeIf { it.result != cz.antonin.rovergnss.data.PointResult.NONE }?.let { m ->
+                        Text(
+                            cz.antonin.rovergnss.data.PointResult.name(m.result) +
+                                (m.fixPct?.let { " · fix ${it.toInt()} %" } ?: "") +
+                                (m.sMeanH?.let { " · σ ${cz.antonin.rovergnss.data.PointEvaluator.cm(it)} cm" } ?: "") +
+                                (if (m.clusters >= 2) " · PODEZŘELÝ FIX" else ""),
+                            color = if (m.result == cz.antonin.rovergnss.data.PointResult.OK && m.clusters < 2)
+                                androidx.compose.ui.graphics.Color(0xFF2E7D32) else androidx.compose.ui.graphics.Color(0xFFC62828),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    measByPoint[p.id]?.takeIf { p.source != PointSource.MEASURED }?.let { ms ->
                         val last = ms.last()
                         val d2 = if (last.dN != null && last.dE != null) kotlin.math.hypot(last.dN, last.dE) else null
                         Text(

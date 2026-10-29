@@ -160,6 +160,72 @@ object Exporter {
         return n
     }
 
+    /**
+     * Souhrn bodů (0.10.0): jeden řádek na bod – výsledná souřadnice, ne epochy. Y/X S-JTSK kladné (geodetické),
+     * E_5514 / N_5514 záporné pro QGIS (EPSG:5514: E = −Y, N = −X). Poloha = anténa s odečtenou výškou antény
+     * (posun krabičky od rohu se neodečítá). [meas] = poslední měření bodu. Δh od kontrolního bodu lokality
+     * (bod označený „kontrolní“ s výškou; při více takových nejstarší).
+     */
+    fun pointsSummaryCsv(jobName: String, points: List<Point>, meas: Map<Long, Measurement>, out: OutputStream): Int {
+        val fmt = iso()
+        val w = out.bufferedWriter(Charsets.UTF_8)
+        w.write("nazev;lokalita;cas_utc;Y;X;E_5514;N_5514;lat_etrs89;lon_etrs89;h_ell;h_bpv;dh_kontrolni;" +
+            "sN_cm;sE_cm;sU_cm;s_prumer_h_cm;s_prumer_u_cm;fix_pct;fix_s;vysledek;skoky;shluky;overeni;vyska_anteny_cm;zdroj;poznamka\r\n")
+        val ctrl = points.filter { it.control && it.hEll != null }.minByOrNull { it.createdMs }
+        var n = 0
+        for (p in points) {
+            val m = meas[p.id]
+            val dh = if (ctrl != null && ctrl.id != p.id && p.hEll != null) p.hEll - ctrl.hEll!! else null
+            w.write(
+                listOf(
+                    p.name, jobName, m?.let { fmt.format(it.startMs) } ?: "",
+                    f(p.y, 3), f(p.x, 3), f(p.y?.let { -it }, 3), f(p.x?.let { -it }, 3),
+                    f(p.lat, 9), f(p.lon, 9), f(p.hEll, 3), f(p.bpv, 3), f(dh, 3),
+                    f(m?.sN?.times(100), 1), f(m?.sE?.times(100), 1), f(m?.sU?.times(100), 1),
+                    f(m?.sMeanH?.times(100), 1), f(m?.sMeanU?.times(100), 1), f(m?.fixPct, 0), f(m?.fixSec, 0),
+                    m?.let { cz.antonin.rovergnss.data.PointResult.name(it.result) } ?: "",
+                    m?.jumps?.toString() ?: "", m?.clusters?.toString() ?: "",
+                    when (m?.verify) { 1 -> "OK"; 2 -> "nesouhlasi"; else -> "" },
+                    f(m?.antennaH?.times(100), 1),
+                    cz.antonin.rovergnss.data.PointSource.NAMES.getOrElse(p.source) { "" }, p.note,
+                ).joinToString(";") { it.replace(";", ",").replace("\r", " ").replace("\n", " ") }
+            )
+            w.write("\r\n")
+            n++
+        }
+        w.flush()
+        return n
+    }
+
+    /**
+     * Export bodů do ZIPu: surový proud `.log` každého bodu (název `Lokalita_Bod_HHMM_YYYYMMDD.log`) a `souhrn.csv`.
+     * [logs] = false jen souhrn. [rawOf] vrací surový soubor měření (null = bez souboru). Vrací počet souborů.
+     */
+    fun pointsZip(
+        jobName: String, points: List<Point>, meas: Map<Long, Measurement>, logs: Boolean,
+        rawOf: (Measurement) -> java.io.File?, out: OutputStream,
+    ): Int {
+        var n = 0
+        val used = HashSet<String>()
+        java.util.zip.ZipOutputStream(out).use { z ->
+            if (logs) for (p in points) {
+                val m = meas[p.id] ?: continue
+                val f = rawOf(m)?.takeIf { it.exists() } ?: continue
+                z.putNextEntry(java.util.zip.ZipEntry(FileNames.unique(FileNames.point(jobName, p.name, m.startMs, "log"), used)))
+                f.inputStream().use { it.copyTo(z) }
+                z.closeEntry()
+                n++
+            }
+            z.putNextEntry(java.util.zip.ZipEntry("souhrn.csv"))
+            pointsSummaryCsv(jobName, points, meas, object : java.io.FilterOutputStream(z) {
+                override fun close() {}   // ZIP zavírá až use
+            })
+            z.closeEntry()
+            n++
+        }
+        return n
+    }
+
     /** Body do KML (Google Earth, mapy): ETRS89, výška elipsoidu; v popisu S-JTSK a Bpv. */
     fun pointsKml(name: String, points: List<Point>, out: OutputStream): Int {
         val w = out.bufferedWriter(Charsets.UTF_8)

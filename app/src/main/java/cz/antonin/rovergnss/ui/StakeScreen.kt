@@ -89,8 +89,9 @@ fun StakeScreen(c: RoverController) {
                     Text("Vytyčovat (${todo.size})")
                 } else OutlinedButton(onClick = { c.stopStake() }) { Text("Ukončit vytyčování") }
                 OutlinedButton(onClick = {
-                    val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                    protoLauncher.launch("RG_${stamp}_vytyceni.csv")
+                    protoLauncher.launch(
+                        cz.antonin.rovergnss.export.FileNames.job(c.activeJob.value?.name ?: "lokalita", "vytyceni", System.currentTimeMillis(), "csv")
+                    )
                 }, enabled = points.any { it.stakeMs != null }) { Text("Protokol CSV") }
             }
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(2.dp)) {

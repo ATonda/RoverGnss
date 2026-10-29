@@ -447,6 +447,8 @@ class TestSession(private val context: Context, private val scope: CoroutineScop
     fun delete(t: TestFile) = scope.launch(Dispatchers.IO) {
         t.file.delete()
         motionFileOf(t.trackId).delete()
+        // karta Trasy už není (0.10.0) – záznam testu se maže s testem
+        c.db.tracks().get(t.trackId)?.let { c.deleteTrack(it) }
         refreshFiles()
     }
 

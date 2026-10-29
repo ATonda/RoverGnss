@@ -355,3 +355,25 @@ Cíl: kratší studený start X20 po delším vypnutí bez účtu a bez internet
 - **Ukládání surových dat při měření rychlosti (důležité pro EKF):** v profilu Rychlost ukládat polohu 10 Hz a rámce IMU 120 Hz do ZIPu jako u testů (nejjednodušeji povolit záznam testu i během měření rychlosti). Souhrny výsledků k ladění filtru nestačí.
 - **Záložka Auto – řádek „Max. zrychlení / brzdění / příčně“:** hodnoty se zalamují na druhý řádek; kratší popisek nebo hodnoty pod popisek.
 
+
+## 19. Stav aplikace 0.10.0 (29. 10.) – měření bodu tlačítkem REC; přeloženo v CI, na HW netestováno
+
+Podklad: test 29. 10. kostel Sítiny (rover u paty stojící zdi – float, falešné fixy, skoky). Specifikace: `objekt-mereni-specifikace.md` (projekt), kap. 1–5.
+
+- **REC = jen měření stacionárního bodu.** Dialog: lokalita (aktuální / jiná / nová) a název bodu B1, B2, … (číslování v každé lokalitě zvlášť). Bod se založí hned (zdroj „změřený“, druh „REC“), měření má vlastní trasu „M …“ se surovým proudem vždy a statickým modelem podle profilu.
+- **Záznam trasy jen pro testy** (karta Test). Záložka Body → Trasy zrušena, tlačítko „Zaměřit bod“ v Živě zrušeno (nahrazeno REC). Při prvním startu 0.10.0 se smažou dosavadní trasy kromě testů („TEST …“) a tras měření bodů. Smazání testu maže i jeho záznam.
+- **Vyhodnocení (`PointEvaluator`):** do výsledku jen RTK fix. Úsek = nepřerušený fix; nový úsek po ztrátě fixu, pohybu (IMU) nebo skoku (3 epochy po sobě dál než práh od průměru úseku). Úseky shodné do prahu skoku tvoří shluk; výsledek = shluk s nejvíce epochami; 2 shluky ≥ 5 s = podezřelý fix. σ průměru = σ epoch / √(doba fixu / 10 s) (korelace epoch).
+  - **Stačí** (konec sám): fix ≥ 30 s ve shluku výsledku, σ průměru ≤ 2 cm vodorovně a ≤ 3 cm výška, poslední epocha fix, bez skoku za 30 s, bez podezření; s ověřením navíc ≥ 2 nezávislá určení fixu ve shluku a nové ≥ 10 s.
+  - **Nejde změřit:** po 3 min bez splnění – důvod (jen float / bez korekcí / nestabilní fix / krátký fix / velký rozptyl), měření běží dál, ukončuje uživatel.
+  - Prahy v profilu (Nastavení → Profil → Měření bodu REC): fix 10 s–2 min, σ vodorovně 1–5 cm, výška 2–10 cm, skok 3–20 / 5–30 cm, limit 1–10 min, ověření fixu.
+  - **Ověření fixu** (volitelně): po splnění cíle aplikace jednou pošle horký start X20 (nové určení fixu) – samotné přerušení RTCM na 10–15 s by nestačilo, X20 drží fix bez korekcí desítky sekund. Nový úsek se shodou = ověřeno, jinak podezřelý fix.
+  - Ověřeno na logách 29. 10. (přepis do Pythonu i překlad Kotlinem): T19, přední rohy, zadní střed konec po 30 s; střed dveří, zadní pravý, kontrola dveří „podezřelý fix“ (skoky 5–22 cm); zadní levý a kontrolní v ose „jen float“.
+- **Pruh měření** (nad všemi kartami): velký barevný pruh RTK FIX / FLOAT / BEZ KOREKCÍ, „fix 82 s z 95 s (86 %)“, σ průměru proti cíli, σ epoch, ukazatel splnění 0–100 %, doporučení (Pokračuj – co chybí / Ověřuji fix / Podezřelý fix / Nejde změřit + rada „změř v ose stěny mimo budovu“), úseky a skoky. Tlačítka Zrušit (smaže bod i záznam) a Ukončit; REC v mapě ukazuje STOP s časem.
+- **Signalizace** (telefon, kanál alarmu, i se zhasnutým displejem): fix naskočil 1 vysoké pípnutí, fix ztracen 2 nízká, bod změřen 3 stoupající tóny, podezřelý fix 2 střídavé tóny, nejde změřit dlouhý nízký tón; vibrace odlišné. Nastavení → Aplikace: vypnuto / zvuk / vibrace / obojí, tlačítka na vyzkoušení. Hlasové hlášení zatím ne.
+- **Uložení:** bod dostane průměr shluku (bez fixu nejlepší dostupná kvalita, označeno), kvalita bodu „přesná“ jen při výsledku „změřen“ bez podezření. Měření (DB v9, migrace 8 → 9): výsledek (změřen / cíl nesplněn / nejde změřit), doba a % fixu, σ průměru, max. odchylka, úseky, skoky, shluky, rozdíl shluků, ověření.
+- **Surový proud** `.log`: 1. řádek JSON `{"rg":"hlavicka",…}` (lokalita, bod, anténa, profil, přijímač, FW, cíl), poslední řádek `{"rg":"souhrn",…}` (výsledek, důvod, epochy, fix s / %, ETRS89, S-JTSK, Bpv, σ, σ průměru, úseky s odchylkami, skoky, shluky, ověření). Souhrn se zapisuje po zavření záznamu.
+- **Export bodů** (Body → Export → Vybrat body): výběr zaškrtnutím, Vše / Nic; ZIP `Lokalita_YYYYMMDD.zip` = `.log` každého bodu + `souhrn.csv`, nebo jen souhrn. `souhrn.csv` jeden řádek na bod: Y, X (kladné), E_5514, N_5514 (záporné, QGIS), φ, λ, h, Bpv, Δh od kontrolního bodu lokality (bod „kontrolní“), σ, σ průměru [cm], % a s fixu, výsledek, skoky, shluky, ověření, anténa, zdroj, poznámka. U měření bodu v historii tlačítko „Surový proud .log“.
+- **Názvy souborů** bez `RG_`, datum na konci: bod `Sitiny_B1_1205_20261029.log` / `.ubx`, lokalita `Sitiny_body_20261029.csv`, `Sitiny_mereni_…`, `Sitiny_vytyceni_…`, test `TEST_Les_1612_20261020.zip`, TTFF `TEST_TTFF_…`, telefon `telefon_HHMM_YYYYMMDD.csv`.
+- **Vynulovat** (Živě, Průměr) = průměr, terč i stopa na mapě; „Smazat stopu“ vynuluje i průměr a terč. Na REC nemá vliv.
+- Odloženo do 2. části (záložka Objekt): objekt a způsob přiložení krabičky v dialogu REC, posun antény 4,5 cm.
+- Verze 0.10.0 (versionCode 20).

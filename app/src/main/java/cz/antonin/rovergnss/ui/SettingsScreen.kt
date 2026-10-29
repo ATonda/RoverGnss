@@ -37,10 +37,16 @@ import cz.antonin.rovergnss.data.UserProfile
 import cz.antonin.rovergnss.service.RoverController
 
 private val MEASURE_SEC = listOf(60 to "1 min", 180 to "3 min", 600 to "10 min", 1800 to "30 min", 0 to "ručně")
-private val SURVEY_MAX = listOf(10 to "10 s", 30 to "30 s", 60 to "1 min", 120 to "2 min", 300 to "5 min")
-private val SURVEY_SIGMA = listOf(0.01 to "1 cm", 0.02 to "2 cm", 0.05 to "5 cm", 0.10 to "10 cm", 0.50 to "50 cm")
 private const val ANT_MAX_CM = 300.0
 private val STAKE_SEC = listOf(3 to "3 s", 5 to "5 s", 10 to "10 s", 20 to "20 s")
+// měření bodu REC (0.10.0)
+private val POINT_FIX = listOf(10 to "10 s", 20 to "20 s", 30 to "30 s", 60 to "1 min", 120 to "2 min")
+private val POINT_SIGMA_H = listOf(0.01 to "1 cm", 0.02 to "2 cm", 0.03 to "3 cm", 0.05 to "5 cm")
+private val POINT_SIGMA_U = listOf(0.02 to "2 cm", 0.03 to "3 cm", 0.05 to "5 cm", 0.10 to "10 cm")
+private val POINT_JUMP_H = listOf(0.03 to "3 cm", 0.05 to "5 cm", 0.10 to "10 cm", 0.20 to "20 cm")
+private val POINT_JUMP_V = listOf(0.05 to "5 cm", 0.10 to "10 cm", 0.20 to "20 cm", 0.30 to "30 cm")
+private val POINT_TIMEOUT = listOf(60 to "1 min", 120 to "2 min", 180 to "3 min", 300 to "5 min", 600 to "10 min")
+private val SIGNAL_MODES = listOf(0 to "vypnuto", 1 to "zvuk", 2 to "vibrace", 3 to "zvuk i vibrace")
 
 /** Karta Nastavení: rover, korekce NTRIP, uživatelské profily, aplikace. */
 @Composable
@@ -141,12 +147,10 @@ private fun UserProfileEditor(u: UserProfile, roverProfiles: List<String>, onCha
     // výška antény se zadává v cm, ukládá v m
     var antH by remember { mutableStateOf(String.format(java.util.Locale.US, "%.1f", u.antennaH * 100).removeSuffix(".0").replace('.', ',')) }
     var every by remember { mutableStateOf(u.recordEvery.toString()) }
-    var minEp by remember { mutableStateOf(u.surveyMinEpochs.toString()) }
     var rpMenu by remember { mutableStateOf(false) }
     val antCmVal = antH.replace(',', '.').toDoubleOrNull()
     val antErr = antCmVal?.takeIf { it in 0.0..ANT_MAX_CM } == null
     val everyErr = every.toIntOrNull()?.takeIf { it in 1..50 } == null
-    val minErr = minEp.toIntOrNull()?.takeIf { it in 1..1000 } == null
 
     Text("Anténa", style = MaterialTheme.typography.titleSmall)
     OutlinedTextField(
@@ -199,20 +203,24 @@ private fun UserProfileEditor(u: UserProfile, roverProfiles: List<String>, onCha
     )
     CheckRow("ukládat i surový proud z roveru (~10 MB/h)", u.recordRaw) { onChange(u.copy(recordRaw = it)) }
 
-    Text("Zaměření bodu (tlačítko na mapě)", style = MaterialTheme.typography.titleSmall)
-    Text("Konec, co nastane dřív: ustálení σ, nebo nejdelší doba. Kdykoli lze uložit ručně.", style = MaterialTheme.typography.bodySmall)
-    Text("Ustálení – σ vodorovně do", style = MaterialTheme.typography.bodyMedium)
-    Chips(SURVEY_SIGMA, u.surveySigma) { onChange(u.copy(surveySigma = it)) }
-    Text("Nejdéle", style = MaterialTheme.typography.bodyMedium)
-    Chips(SURVEY_MAX, u.surveyMaxSec) { onChange(u.copy(surveyMaxSec = it)) }
-    OutlinedTextField(
-        minEp, {
-            minEp = it
-            it.toIntOrNull()?.takeIf { v -> v in 1..1000 }?.let { v -> onChange(u.copy(surveyMinEpochs = v)) }
-        },
-        label = { Text("Aspoň epoch pro ustálení") }, singleLine = true, isError = minErr,
-        modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+    Text("Měření bodu (REC)", style = MaterialTheme.typography.titleSmall)
+    Text(
+        "Do průměru jen RTK fix. Konec sám, když je splněno vše: doba fixu, σ průměru, bez skoku za posledních 30 s " +
+            "(a ověření fixu, je-li zapnuto). Po limitu bez splnění „nejde změřit“ – rozhoduješ ty.",
+        style = MaterialTheme.typography.bodySmall,
     )
+    Text("Aspoň RTK fix", style = MaterialTheme.typography.bodyMedium)
+    Chips(POINT_FIX, u.pointMinFixSec) { onChange(u.copy(pointMinFixSec = it)) }
+    Text("σ průměru vodorovně do", style = MaterialTheme.typography.bodyMedium)
+    Chips(POINT_SIGMA_H, u.pointSigmaH) { onChange(u.copy(pointSigmaH = it)) }
+    Text("σ průměru výšky do", style = MaterialTheme.typography.bodyMedium)
+    Chips(POINT_SIGMA_U, u.pointSigmaU) { onChange(u.copy(pointSigmaU = it)) }
+    Text("Skok během fixu – vodorovně / výška", style = MaterialTheme.typography.bodyMedium)
+    Chips(POINT_JUMP_H, u.pointJumpH) { onChange(u.copy(pointJumpH = it)) }
+    Chips(POINT_JUMP_V, u.pointJumpV) { onChange(u.copy(pointJumpV = it)) }
+    Text("„Nejde změřit“ po", style = MaterialTheme.typography.bodyMedium)
+    Chips(POINT_TIMEOUT, u.pointTimeoutSec) { onChange(u.copy(pointTimeoutSec = it)) }
+    CheckRow("ověření fixu (horký start X20 → nové určení fixu, porovnání)", u.pointVerify) { onChange(u.copy(pointVerify = it)) }
 
     Text("Vytyčení – průměrování polohy", style = MaterialTheme.typography.titleSmall)
     Chips(STAKE_SEC, u.stakeSec) { onChange(u.copy(stakeSec = it)) }
@@ -222,7 +230,7 @@ private fun UserProfileEditor(u: UserProfile, roverProfiles: List<String>, onCha
     CheckRow("X20 během měření ve statickém modelu", u.measStatic) { onChange(u.copy(measStatic = it)) }
     CheckRow("ukládat surová data RAWX/SFRBX (.ubx, ~1,5 kB/s)", u.measRaw) { onChange(u.copy(measRaw = it)) }
     Text(
-        "Statický model a RAWX vyžadují firmware 0.9.0+. Statický model platí i pro zaměření bodu. " +
+        "Statický model a RAWX vyžadují firmware 0.9.0+. Statický model platí i pro měření bodu (REC). " +
             "Soubor .ubx je pro dodatečné zpracování (PPK, např. RTKLIB) – export u měření bodu.",
         style = MaterialTheme.typography.bodySmall,
     )
@@ -253,8 +261,34 @@ private fun AppSection(c: RoverController) {
             "?"
         }
     }
+    var signal by remember { mutableStateOf(c.prefs.signalMode) }
     FoldSection("Aplikace", "verze $version", c.prefs, "app") {
         KeyValue("Verze", version)
+        Text("Signalizace měření bodu", style = MaterialTheme.typography.titleSmall)
+        Chips(SIGNAL_MODES, signal) {
+            signal = it
+            c.prefs.signalMode = it
+        }
+        Text(
+            "Zvuk kanálem alarmu (hraje i při ztlumených médiích), i se zhasnutým displejem. " +
+                "Fix naskočil · fix ztracen · bod změřen · podezřelý fix · nejde změřit:",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            cz.antonin.rovergnss.service.Signals.Kind.entries.forEach { k ->
+                OutlinedButton(onClick = { c.testSignal(k) }) {
+                    Text(
+                        when (k) {
+                            cz.antonin.rovergnss.service.Signals.Kind.FIX -> "fix"
+                            cz.antonin.rovergnss.service.Signals.Kind.LOST -> "ztráta"
+                            cz.antonin.rovergnss.service.Signals.Kind.DONE -> "změřen"
+                            cz.antonin.rovergnss.service.Signals.Kind.SUSPECT -> "podezřelý"
+                            cz.antonin.rovergnss.service.Signals.Kind.FAILED -> "nejde"
+                        }
+                    )
+                }
+            }
+        }
         ExitButton(c)
     }
 }

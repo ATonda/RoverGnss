@@ -243,7 +243,7 @@ private fun CompareTab(c: RoverController) {
                 OutlinedButton(onClick = { c.phoneCompare.reset() }, enabled = session == null) { Text("Vynulovat") }
                 OutlinedButton(onClick = {
                     exportCurrent = true
-                    csvLauncher.launch("telefon_${stamp()}.csv")
+                    csvLauncher.launch(cz.antonin.rovergnss.export.FileNames.plain("telefon", System.currentTimeMillis(), "csv"))
                 }, enabled = stats.isNotEmpty()) { Text("Export CSV") }
             }
         }
@@ -277,7 +277,7 @@ private fun CompareTab(c: RoverController) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         TextButton(onClick = {
                             pendingExport = ss
-                            csvLauncher.launch("${ss.name.replace(Regex("[^A-Za-z0-9_-]+"), "_")}.csv")
+                            csvLauncher.launch(cz.antonin.rovergnss.export.FileNames.plain(ss.name, ss.startMs, "csv"))
                         }, enabled = ss.endMs != null) { Text("Export CSV") }
                         TextButton(onClick = { toDelete = ss }, enabled = ss.endMs != null) { Text("Smazat") }
                     }
@@ -583,7 +583,7 @@ private fun TtffTab(c: RoverController) {
                 Text("Pokusy", style = MaterialTheme.typography.titleSmall)
                 results.forEach { r -> ResultRow(r) }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    OutlinedButton(onClick = { csvLauncher.launch("ttff_${stamp()}.csv") }) { Text("Export CSV") }
+                    OutlinedButton(onClick = { csvLauncher.launch(cz.antonin.rovergnss.export.FileNames.plain("ttff_telefon", System.currentTimeMillis(), "csv")) }) { Text("Export CSV") }
                     OutlinedButton(onClick = { c.phoneTtff.clear() }, enabled = !st.running) { Text("Smazat") }
                 }
             }

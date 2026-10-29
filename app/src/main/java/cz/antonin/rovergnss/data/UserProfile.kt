@@ -21,12 +21,27 @@ data class UserProfile(
     val stakeSec: Int = 5,           // vytyčení: průměrování polohy [s]
     val roverProfile: Int = -1,      // profil roveru (index), -1 = neměnit – starší profily, nahrazeno [roverName]
     val roverName: String = "",      // nastavení přijímače: název profilu v roveru, "" = neměnit
+    // měření bodu tlačítkem REC (0.10.0)
+    val pointMinFixSec: Int = 30,    // aspoň s RTK fix
+    val pointSigmaH: Double = 0.02,  // σ průměru vodorovně [m]
+    val pointSigmaU: Double = 0.03,  // σ průměru výšky [m]
+    val pointJumpH: Double = 0.05,   // skok během fixu vodorovně [m]
+    val pointJumpV: Double = 0.10,   // skok během fixu ve výšce [m]
+    val pointTimeoutSec: Int = 180,  // „nejde změřit“ po [s]
+    val pointVerify: Boolean = false, // ověření fixu (nové určení fixu)
 ) {
+    /** Cíl měření bodu (REC). */
+    val pointGoal: PointGoal
+        get() = PointGoal(pointMinFixSec, pointSigmaH, pointSigmaU, pointJumpH, pointJumpV, pointTimeoutSec, pointVerify)
+
     fun toJson(): JSONObject = JSONObject()
         .put("name", name).put("antennaH", antennaH).put("recordEvery", recordEvery).put("recordRaw", recordRaw)
         .put("measureSec", measureSec).put("measStatic", measStatic).put("measRaw", measRaw)
         .put("surveyMaxSec", surveyMaxSec).put("surveySigma", surveySigma).put("surveyMinEpochs", surveyMinEpochs)
         .put("stakeSec", stakeSec).put("roverProfile", roverProfile).put("roverName", roverName)
+        .put("pointMinFixSec", pointMinFixSec).put("pointSigmaH", pointSigmaH).put("pointSigmaU", pointSigmaU)
+        .put("pointJumpH", pointJumpH).put("pointJumpV", pointJumpV).put("pointTimeoutSec", pointTimeoutSec)
+        .put("pointVerify", pointVerify)
 
     companion object {
         fun fromJson(o: JSONObject) = UserProfile(
@@ -43,6 +58,13 @@ data class UserProfile(
             stakeSec = o.optInt("stakeSec", 5),
             roverProfile = o.optInt("roverProfile", -1),
             roverName = o.optString("roverName", ""),
+            pointMinFixSec = o.optInt("pointMinFixSec", 30),
+            pointSigmaH = o.optDouble("pointSigmaH", 0.02),
+            pointSigmaU = o.optDouble("pointSigmaU", 0.03),
+            pointJumpH = o.optDouble("pointJumpH", 0.05),
+            pointJumpV = o.optDouble("pointJumpV", 0.10),
+            pointTimeoutSec = o.optInt("pointTimeoutSec", 180),
+            pointVerify = o.optBoolean("pointVerify", false),
         )
 
         /** Výchozí profily (aplikace 0.8.2); stejné názvy mají profily v roveru (zapíše je aplikace). */

@@ -12,6 +12,12 @@ import cz.antonin.rovergnss.data.MeasureResult
 import cz.antonin.rovergnss.data.Measurement
 import cz.antonin.rovergnss.data.Point
 import cz.antonin.rovergnss.data.PointCoords
+import cz.antonin.rovergnss.data.EvalEpoch
+import cz.antonin.rovergnss.data.PointEvaluator
+import cz.antonin.rovergnss.data.PointGoal
+import cz.antonin.rovergnss.data.PointPhase
+import cz.antonin.rovergnss.data.PointResult
+import cz.antonin.rovergnss.data.PointStatus
 import cz.antonin.rovergnss.data.PointQuality
 import cz.antonin.rovergnss.data.PointSource
 import cz.antonin.rovergnss.data.UserProfile
@@ -90,6 +96,7 @@ object MeasureMode {
     const val CONTROL = 0  // kontrolní bod (daný) – měření se ukládá k bodu
     const val SURVEY = 1   // zaměření nového bodu „tady“
     const val STAKE = 2    // vytyčení daného bodu – krátké průměrování
+    const val POINT = 3    // měření bodu tlačítkem REC: nový bod, vyhodnocení fixu, surový proud (0.10.0)
 }
 
 /** Zdroj epoch pro terč. */
@@ -115,6 +122,12 @@ data class MeasureState(
     val sigmaLimit: Double = 0.0,     // SURVEY: konec při σ vodorovně ≤ mez
     val minEpochs: Int = 0,           // SURVEY: a aspoň tolik epoch
     val ownTrack: Boolean = true,     // CONTROL: trasa „M …“ patří měření (false = měření uvnitř záznamu testu)
+    // POINT (REC, 0.10.0)
+    val goal: PointGoal? = null,
+    val status: PointStatus? = null,
+    val jobName: String = "",
+    val verifyRequested: Boolean = false,
+    val failedNotified: Boolean = false,
 )
 
 /**
@@ -562,6 +575,253 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         startTimer(maxOf(u.surveyMaxSec - elapsed, 3))
     }
 
+    // ------------------------------------------------------------------ měření bodu tlačítkem REC (0.10.0)
+    private val signals by lazy { Signals(context, prefs) }
+    @Volatile private var pointEval: PointEvaluator? = null
+    private var pointTicker: kotlinx.coroutines.Job? = null
+
+    /** Vyzkoušení signalizace (Nastavení). */
+    fun testSignal(k: Signals.Kind) = signals.play(k)
+
+    /** Název dalšího bodu v lokalitě: B1, B2, … (nejvyšší číslo B + 1). */
+    suspend fun nextPointName(jobId: Long): String {
+        val nums = db.points().listByJob(jobId).mapNotNull { Regex("^B(\\d+)$").find(it.name)?.groupValues?.get(1)?.toIntOrNull() }
+        return "B${(nums.maxOrNull() ?: 0) + 1}"
+    }
+
+    /**
+     * REC: měření nového bodu [name] v lokalitě [jobId] (nebo nové lokalitě [newJob]). Záznam se surovým proudem
+     * (hlavička JSON na začátku, souhrn na konci), statický model, průběžné vyhodnocení fixu, zvuky; konec sám
+     * při splnění cíle z profilu, „nejde změřit“ po limitu (rozhoduje uživatel), ručně kdykoli.
+     */
+    fun startPointMeasure(jobId: Long?, newJob: String?, name: String) = scope.launch {
+        if (_measure.value != null) {
+            _messages.tryEmit("Probíhá jiné měření")
+            return@launch
+        }
+        if (speedBlocks()) return@launch
+        if (link.state.value !is LinkState.Connected) {
+            _messages.tryEmit("Rover není připojený")
+            return@launch
+        }
+        if (_recording.value != null) {
+            _messages.tryEmit(if (test.run.value != null) "Běží test – měření bodu nelze spustit" else "Běží záznam – nejdřív ho ukonči")
+            return@launch
+        }
+        // lokalita: nová, vybraná, nebo aktivní
+        val nj = newJob?.trim()?.takeIf { it.isNotEmpty() }
+        val job = when {
+            nj != null -> db.jobs().insert(Job(name = nj)).let { db.jobs().get(it) }
+            jobId != null -> db.jobs().get(jobId)
+            else -> null
+        } ?: ensureJob()
+        prefs.activeJobId = job.id
+        _activeJob.value = job
+        val n = name.trim().ifEmpty { nextPointName(job.id) }
+        if (db.points().listByJob(job.id).any { it.name == n }) {
+            _messages.tryEmit("Bod $n v lokalitě ${job.name} už je")
+            return@launch
+        }
+        val u = prefs.user
+        val goal = u.pointGoal
+        val now = System.currentTimeMillis()
+        val pid = db.points().insert(
+            Point(jobId = job.id, name = n, kind = "REC", source = PointSource.MEASURED, quality = PointQuality.APPROX,
+                note = "měří se…")
+        )
+        val point = db.points().get(pid) ?: return@launch
+        val header = JSONObject()
+            .put("rg", "hlavicka").put("aplikace", appVersion()).put("lokalita", job.name).put("bod", n)
+            .put("zacatek_utc", isoUtc(now)).put("vyska_anteny_m", u.antennaH).put("profil", u.name)
+            .put("prijimac", _sta.value?.profileName ?: "").put("rover_fw", _info.value?.fw ?: "")
+            .put("cil", JSONObject().put("fix_s", goal.minFixSec).put("sigma_h_m", goal.sigmaH).put("sigma_u_m", goal.sigmaU)
+                .put("skok_h_m", goal.jumpH).put("skok_v_m", goal.jumpV).put("limit_s", goal.timeoutSec)
+                .put("overeni", goal.verify))
+        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(now))
+        val trackId = startRecordingNow("M $n $stamp", forceRaw = true, header = header.toString())
+        if (trackId == null) {
+            db.points().delete(pid)
+            _messages.tryEmit("Záznam nelze spustit")
+            return@launch
+        }
+        val id = db.measurements().insert(
+            Measurement(
+                pointId = pid, trackId = trackId, startMs = now, plannedSec = 0, antennaH = u.antennaH,
+                profile = _sta.value?.profileName ?: "", note = "REC",
+            )
+        )
+        synchronized(measEpochs) { measEpochs.clear() }
+        measLastCalc = 0
+        autoStopping = false
+        pointEval = PointEvaluator(goal) { periodMs() / 1000.0 }
+        val (static, _) = roverMeasStart(u.measStatic, false)
+        db.measurements().get(id)?.let { db.measurements().update(it.copy(staticModel = static)) }
+        _measure.value = MeasureState(
+            id, trackId, point, now, 0, u.antennaH, staticModel = static, mode = MeasureMode.POINT,
+            goal = goal, jobName = job.name,
+        )
+        EventLog.log("REC: měření bodu $n (${job.name})")
+        pointTicker = scope.launch { pointLoop() }
+    }
+
+    /** 1× za sekundu: vyhodnocení, zvuky, ověření fixu, konec po splnění cíle. */
+    private suspend fun pointLoop() {
+        var prevFix = false
+        var prevJumps = 0
+        var prevClusters = 0
+        var lastFixSignalMs = 0L
+        while (true) {
+            delay(1000)
+            val m = _measure.value ?: return
+            if (m.mode != MeasureMode.POINT) return
+            val ev = pointEval ?: return
+            val el = (System.currentTimeMillis() - m.startMs) / 1000.0
+            val st = ev.status(el, m.verifyRequested)
+            var next = m.copy(status = st)
+            // zvuky přechodů
+            val nowMs = System.currentTimeMillis()
+            if (st.phase != PointPhase.DONE) {
+                if (st.inFix && !prevFix && nowMs - lastFixSignalMs > 3000) {
+                    signals.play(Signals.Kind.FIX)
+                    lastFixSignalMs = nowMs
+                } else if (!st.inFix && prevFix) signals.play(Signals.Kind.LOST)
+                if (st.jumps > prevJumps || (st.clusters >= 2 && st.clusters > prevClusters)) {
+                    signals.play(Signals.Kind.SUSPECT)
+                    EventLog.log("REC ${m.point.name}: podezřelý fix (skoky ${st.jumps}, shluky ${st.clusters})")
+                }
+            }
+            prevFix = st.inFix
+            prevJumps = st.jumps
+            prevClusters = st.clusters
+            if (st.phase == PointPhase.FAILED && !m.failedNotified) {
+                signals.play(Signals.Kind.FAILED)
+                next = next.copy(failedNotified = true)
+                EventLog.log("REC ${m.point.name}: nejde změřit – ${st.failReason}")
+            }
+            // ověření fixu: jednou vynutit nové určení fixu (horký start X20)
+            if (st.phase == PointPhase.VERIFY && !m.verifyRequested) {
+                next = next.copy(verifyRequested = true)
+                _messages.tryEmit("Ověření fixu: X20 určí fix znovu (horký start)")
+                scope.launch { resetX20Now("hot") }
+            }
+            if (!_measure.compareAndSet(m, next)) continue
+            if (st.phase == PointPhase.DONE) {
+                signals.play(Signals.Kind.DONE)
+                stopMeasurement()
+                return
+            }
+        }
+    }
+
+    /** Uložení (nebo zahození) měření bodu REC: bod, souhrn měření, souhrn na konec surového souboru. */
+    private suspend fun finishPoint(m: MeasureState, eps: List<MeasureEpoch>, save: Boolean) {
+        val ev = pointEval
+        pointEval = null
+        if (!save) {
+            db.measurements().delete(m.measurementId)
+            deleteTrackFiles(m.trackId)
+            db.points().delete(m.point.id)
+            _messages.tryEmit("Měření bodu ${m.point.name} zrušeno")
+            return
+        }
+        val now = System.currentTimeMillis()
+        val el = (now - m.startMs) / 1000.0
+        val st = ev?.status(el, m.verifyRequested)
+        val result = when {
+            st?.phase == PointPhase.DONE -> PointResult.OK
+            m.failedNotified || (st != null && el >= (m.goal?.timeoutSec ?: Int.MAX_VALUE)) -> PointResult.FAILED
+            else -> PointResult.NOT_REACHED
+        }
+        // poloha: shluk fixu; bez fixu nejlepší dostupná kvalita (označeno)
+        val fb = MeasureCalc.compute(eps)
+        val lat = st?.lat ?: fb.lat
+        val lon = st?.lon ?: fb.lon
+        val h = st?.h ?: fb.h
+        val fromFix = st?.lat != null
+        val verify = when {
+            m.goal?.verify != true || !m.verifyRequested -> 0
+            (st?.clusters ?: 0) >= 2 -> 2
+            (st?.independent ?: 0) >= 2 -> 1
+            else -> 0
+        }
+        val mount = (ntrip.state.value as? NtripState.Streaming)?.mount
+        val corr = when {
+            fb.epochs > 0 && fb.nRtcm * 2 > fb.epochs -> "RTCM" + (mount?.let { " $it" } ?: "")
+            fb.nHas > 0 -> "HAS"
+            else -> "bez korekcí"
+        }
+        val sig = st?.sMeanH
+        val note = PointResult.name(result) + (if (fromFix) ", RTK fix" else if (lat != null) ", bez fixu (${if (fb.usedQuality == 0) "smíšená" else Quality.of(fb.usedQuality).label})" else ", bez polohy") +
+            (sig?.let { ", σ průměru ${PointEvaluator.cm(it)} cm" } ?: "") +
+            (st?.fixPct?.let { String.format(Locale.US, ", fix %.0f %%", it) } ?: "") +
+            (if ((st?.clusters ?: 0) >= 2) ", PODEZŘELÝ FIX" else "") +
+            (st?.failReason?.let { " ($it)" } ?: "")
+        val point = db.points().get(m.point.id) ?: m.point
+        val p2 = PointCoords.complete(
+            point.copy(
+                lat = lat, lon = lon, hEll = h, y = null, x = null, bpv = null, etrsDerived = false, jtskDerived = false,
+                quality = if (result == PointResult.OK && fromFix && (st?.clusters ?: 0) < 2) PointQuality.EXACT else PointQuality.APPROX,
+                note = note,
+            )
+        )
+        db.points().update(p2)
+        val old = db.measurements().get(m.measurementId)
+        if (old != null) db.measurements().update(
+            old.copy(
+                endMs = now, epochs = st?.epochs ?: fb.epochs, used = st?.nFix ?: fb.used,
+                usedQuality = if (fromFix) Quality.FIX.code else fb.usedQuality,
+                nFix = st?.nFix ?: fb.nFix, nFloat = st?.nFloat ?: fb.nFloat, nHas = fb.nHas, nDgnss = fb.nDgnss,
+                nOther = fb.nOther, corr = corr, lat = lat, lon = lon, hEll = h,
+                sN = st?.sN ?: fb.sN, sE = st?.sE ?: fb.sE, sU = st?.sU ?: fb.sU,
+                result = result, fixSec = st?.fixSec, fixPct = st?.fixPct, sMeanH = st?.sMeanH, sMeanU = st?.sMeanU,
+                maxDev = st?.maxDev, segments = st?.segments ?: 0, jumps = st?.jumps ?: 0, clusters = st?.clusters ?: 0,
+                clusterDiffH = st?.clusterDiffH, verify = verify, note = note,
+            )
+        )
+        // souhrn na konec surového souboru (záznam je už zavřený – nic se nepromíchá s daty z roveru)
+        try {
+            db.tracks().get(m.trackId)?.rawFile?.let { f ->
+                val segs = JSONArray()
+                ev?.segmentSummary()?.forEach { a ->
+                    segs.put(JSONObject().put("od_utc", isoUtc(a[0].toLong())).put("do_utc", isoUtc(a[1].toLong()))
+                        .put("epoch", a[2].toInt()).put("dN_m", r4(a[3])).put("dE_m", r4(a[4])).put("dU_m", r4(a[5])))
+                }
+                val j = if (lat != null && lon != null) cz.antonin.rovergnss.geo.Sjtsk.fromEtrs(lat, lon, h ?: 400.0) else null
+                val o = JSONObject()
+                    .put("rg", "souhrn").put("lokalita", m.jobName).put("bod", m.point.name)
+                    .put("vysledek", PointResult.name(result)).put("duvod", st?.failReason ?: "")
+                    .put("zacatek_utc", isoUtc(m.startMs)).put("konec_utc", isoUtc(now)).put("doba_s", r4(el))
+                    .put("epoch", st?.epochs ?: 0).put("fix", st?.nFix ?: 0).put("float", st?.nFloat ?: 0)
+                    .put("jine", st?.nOther ?: 0).put("fix_s", r4(st?.fixSec)).put("fix_pct", r4(st?.fixPct))
+                    .put("poloha_z_fixu", fromFix)
+                    .put("lat_etrs89", lat ?: JSONObject.NULL).put("lon_etrs89", lon ?: JSONObject.NULL)
+                    .put("h_ell_m", r4(h)).put("y_jtsk", r4(j?.y)).put("x_jtsk", r4(j?.x)).put("h_bpv", r4(j?.bpv))
+                    .put("sN_m", r4(st?.sN)).put("sE_m", r4(st?.sE)).put("sU_m", r4(st?.sU))
+                    .put("s_prumer_h_m", r4(st?.sMeanH)).put("s_prumer_u_m", r4(st?.sMeanU)).put("max_odchylka_m", r4(st?.maxDev))
+                    .put("useky", segs).put("skoky", st?.jumps ?: 0).put("shluky", st?.clusters ?: 0)
+                    .put("rozdil_shluku_h_m", r4(st?.clusterDiffH)).put("rozdil_shluku_v_m", r4(st?.clusterDiffV))
+                    .put("overeni", when (verify) { 1 -> "OK"; 2 -> "nesouhlasí"; else -> "ne" })
+                    .put("vyska_anteny_m", m.antennaH).put("staticky_model", m.staticModel)
+                FileOutputStream(rawFile(f), true).use { it.write(("\r\n" + o.toString() + "\r\n").toByteArray(Charsets.UTF_8)) }
+            }
+        } catch (e: IOException) {
+            _messages.tryEmit("Souhrn do souboru nelze zapsat: ${e.message}")
+        }
+        EventLog.log("REC ${m.point.name}: $note")
+        _messages.tryEmit("Bod ${m.point.name}: $note")
+    }
+
+    private fun r4(v: Double?): Any = v?.let { Math.round(it * 10000) / 10000.0 } ?: JSONObject.NULL
+
+    private fun isoUtc(ms: Long): String =
+        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(Date(ms))
+
+    private fun appVersion(): String = try {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
+    } catch (e: Exception) {
+        "?"
+    }
+
     /** Vytyčení: krátké průměrování polohy na vytyčovaném bodě, uloží odchylku a pokračuje dalším bodem. */
     fun startStakeCheck(p: Point) = scope.launch {
         if (_measure.value != null) return@launch
@@ -586,8 +846,14 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         measTimer = null
         if (m.staticModel || m.raw) command(JSONObject().put("cmd", "meas").put("op", "stop"), 3000)
         closeUbx()
-        if (m.mode == MeasureMode.CONTROL && m.ownTrack) stopRecording("konec měření bodu").join()
+        pointTicker?.cancel()
+        pointTicker = null
+        if ((m.mode == MeasureMode.CONTROL || m.mode == MeasureMode.POINT) && m.ownTrack) stopRecording("konec měření bodu").join()
         val eps = synchronized(measEpochs) { ArrayList(measEpochs).also { measEpochs.clear() } }
+        if (m.mode == MeasureMode.POINT) {
+            finishPoint(m, eps, save)
+            return@launch
+        }
         if (!save) {
             if (m.mode == MeasureMode.CONTROL) {
                 if (m.raw) rawFile("meas_${m.measurementId}.ubx").delete()
@@ -744,6 +1010,15 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
 
     private fun measureEpoch(p: Pos) {
         val m = _measure.value ?: return
+        if (m.mode == MeasureMode.POINT && p.timeMs != null) {
+            val ev = pointEval
+            if (ev != null) {
+                if (p.hasFix) {
+                    val g0 = etrsOf(p)
+                    ev.add(EvalEpoch(p.timeMs, if (dgnssInRtk(p)) 0 else p.quality.code, g0.lat, g0.lon, g0.h - m.antennaH, p.moving))
+                } else ev.add(EvalEpoch(p.timeMs, 0, 0.0, 0.0, 0.0, p.moving))
+            }
+        }
         if (!p.hasFix || p.timeMs == null || dgnssInRtk(p)) return
         val g = if (p.itrf) Etrs.itrfToEtrs(p.lat!!, p.lon!!, p.hEll ?: 0.0, Etrs.epochYear(p.timeMs))
         else Geodetic(p.lat!!, p.lon!!, p.hEll ?: 0.0)
@@ -1304,6 +1579,18 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         }
         phone.setAll(prefs.phoneSources.mapNotNull { PhoneSource.of(it) }.toSet())
         scope.launch { ensureJob() }
+        // 0.10.0: záznam trasy jen pro testy – dosavadní trasy (mimo testy a měření bodů) se smažou
+        if (!prefs.tracksPurged010) scope.launch(Dispatchers.IO) {
+            val keep = db.measurements().allTrackIds().toSet()
+            var n = 0
+            db.tracks().listAll().filter { it.id !in keep && !it.name.startsWith("TEST ") }.forEach { t ->
+                t.rawFile?.let { rawFile(it).delete() }
+                db.tracks().delete(t.id)
+                n++
+            }
+            prefs.tracksPurged010 = true
+            EventLog.log("0.10.0: smazáno $n dosavadních tras")
+        }
         // Po připojení zjistit, co je na druhé straně
         scope.launch {
             link.state.collect { st ->
@@ -1590,7 +1877,9 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
      * Spustí záznam a vrátí id trasy (null = záznam už běží). [forceRaw]: true = surový proud vždy (test pro EKF),
      * false = nikdy (lehký test), null = podle uživatelského profilu.
      */
-    suspend fun startRecordingNow(name: String? = null, includeAverage: Boolean = false, forceRaw: Boolean? = null): Long? {
+    suspend fun startRecordingNow(
+        name: String? = null, includeAverage: Boolean = false, forceRaw: Boolean? = null, header: String? = null,
+    ): Long? {
         if (_recording.value != null) return null
         val job = ensureJob()
         val now = System.currentTimeMillis()
@@ -1606,7 +1895,12 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             try {
                 val f = rawFile(name)
                 f.parentFile?.mkdirs()
-                synchronized(rawLock) { rawOut = BufferedOutputStream(FileOutputStream(f), 65536) }
+                synchronized(rawLock) {
+                    rawOut = BufferedOutputStream(FileOutputStream(f), 65536).also { o ->
+                        // hlavička (JSON na prvním řádku) – před prvními daty z roveru
+                        header?.let { h -> o.write((h + "\r\n").toByteArray(Charsets.UTF_8)) }
+                    }
+                }
                 db.tracks().get(id)?.let { db.tracks().update(it.copy(rawFile = name)) }
             } catch (e: IOException) {
                 _messages.tryEmit("Surový záznam nelze založit: ${e.message}")

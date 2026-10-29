@@ -369,14 +369,13 @@ private fun TestFilesSection(c: RoverController) {
                 }
                 TextButton(onClick = {
                     pending = t
-                    val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date(t.startMs))
-                    zip.launch("RG_TEST_${stamp}_${TestSession.slug(t.title)}.zip")
+                    zip.launch(cz.antonin.rovergnss.export.FileNames.test(t.title, t.startMs, "zip"))
                 }) { Text("ZIP") }
                 TextButton(onClick = { toDelete = t }) { Text("Smazat") }
             }
         }
         Text("ZIP obsahuje test.json (scénář, metadata, značky, geometrie IMU), body.csv, diag.csv a raw.log. " +
-            "Smazání odstraní jen metadata testu, trasa zůstává v Body → Trasy.", style = MaterialTheme.typography.bodySmall)
+            "Smazání odstraní test i s jeho záznamem (surový proud, epochy).", style = MaterialTheme.typography.bodySmall)
     }
     toDelete?.let { t ->
         AlertDialog(
@@ -446,7 +445,7 @@ private fun RoverTtffSection(c: RoverController) {
             if (!st.running) Button(onClick = { cfg(); c.roverTtff.start() }, enabled = link is LinkState.Connected) { Text("Spustit") }
             else OutlinedButton(onClick = { c.roverTtff.stop() }) { Text("Zastavit") }
             OutlinedButton(onClick = {
-                csv.launch("RG_TTFF_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".csv")
+                csv.launch(cz.antonin.rovergnss.export.FileNames.test("TTFF", System.currentTimeMillis(), "csv"))
             }, enabled = st.done.isNotEmpty() || c.roverTtff.boots.value.isNotEmpty()) { Text("CSV") }
         }
         if (st.status.isNotEmpty()) Text(st.status, style = MaterialTheme.typography.bodySmall)

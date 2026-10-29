@@ -233,6 +233,18 @@ data class Measurement(
     val dH: Double? = null,           // výška Bpv: měřeno (kvazigeoid CR-2005) − dané Bpv [m]
     val staticModel: Boolean = false, // X20 během měření ve statickém modelu (FW 0.9.0+)
     val rawUbx: String? = null,       // surová data RAWX/SFRBX měření (soubor v files/raw)
+    // verze 9: měření bodu tlačítkem REC (0.10.0)
+    val result: Int = 0,              // PointResult: 0 –, 1 změřen, 2 cíl nesplněn, 3 nejde změřit
+    val fixSec: Double? = null,       // doba RTK fix [s]
+    val fixPct: Double? = null,       // podíl epoch s fixem [%]
+    val sMeanH: Double? = null,       // σ průměru vodorovně [m]
+    val sMeanU: Double? = null,       // σ průměru výšky [m]
+    val maxDev: Double? = null,       // největší vodorovná odchylka epochy od průměru [m]
+    val segments: Int = 0,            // úseky fixu
+    val jumps: Int = 0,               // skoky během fixu
+    val clusters: Int = 0,            // shluky úseků (> 1 = podezřelý fix)
+    val clusterDiffH: Double? = null, // rozdíl shluků vodorovně [m]
+    val verify: Int = 0,              // ověření fixu: 0 ne, 1 OK, 2 nesouhlasí
 )
 
 /** Porovnání GNSS telefonu s roverem (verze 8). Odsazení telefonu od antény roveru [m]: telefon = anténa + odsazení. */

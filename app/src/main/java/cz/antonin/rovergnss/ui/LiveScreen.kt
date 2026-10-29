@@ -17,7 +17,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AddLocationAlt
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Fullscreen
@@ -135,8 +134,7 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
     var styleMenu by remember { mutableStateOf(false) }
     var moreMenu by remember { mutableStateOf(false) }
     var showSats by remember { mutableStateOf(false) }
-    var surveyName by remember { mutableStateOf<String?>(null) }   // dialog zaměření bodu
-    var recDialog by remember { mutableStateOf(false) }             // název trasy před záznamem
+    var recJob by remember { mutableStateOf<Long?>(null) }          // REC: dialog lokalita a název bodu
     var userMenu by remember { mutableStateOf(false) }
     val user by c.user.collectAsStateWithLifecycle()
     val users by c.users.collectAsStateWithLifecycle()
@@ -245,13 +243,16 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
                 SmallFloatingActionButton(onClick = { showSats = true }) {
                     Icon(Icons.Filled.SatelliteAlt, contentDescription = "Satelity")
                 }
-                // zaměření bodu „tady“
-                SmallFloatingActionButton(onClick = {
-                    if (meas == null) scope.launch { surveyName = c.nextSurveyName() }
-                }) {
-                    Icon(Icons.Filled.AddLocationAlt, contentDescription = "Zaměřit bod")
-                }
-                RecButton(rec, onClick = { if (rec == null) recDialog = true else c.stopRecording("tlačítko STOP v Živě", fromUi = true) })
+                // REC = jen měření stacionárního bodu (0.10.0); záznam trasy jen v testech
+                RecButton(meas?.takeIf { it.mode == cz.antonin.rovergnss.service.MeasureMode.POINT }, onClick = {
+                    val m = meas
+                    when {
+                        m?.mode == cz.antonin.rovergnss.service.MeasureMode.POINT -> c.stopMeasurement()
+                        m != null -> c.postMessage("Probíhá jiné měření")
+                        rec != null -> c.postMessage("Běží záznam testu – měření bodu nelze spustit")
+                        else -> scope.launch { recJob = c.ensureJob().id }
+                    }
+                })
                 // RTK (NTRIP) zap / vyp pod REC (0.9.0)
                 RtkButton(c)
             }
@@ -324,9 +325,11 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
                             c.prefs.mapFollow = false
                             fitTrail++
                         })
-                        DropdownMenuItem(text = { Text("Smazat stopu") }, enabled = trail.isNotEmpty(), onClick = {
+                        // smazání stopy vynuluje i průměr a terč (0.10.0)
+                        DropdownMenuItem(text = { Text("Smazat stopu") }, enabled = trail.isNotEmpty() || avg != null, onClick = {
                             moreMenu = false
                             c.clearTrail()
+                            c.resetLiveAverage()
                         })
                         if (nav != null) DropdownMenuItem(text = { Text("Ukončit navigaci") }, onClick = {
                             moreMenu = false
@@ -364,7 +367,11 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
             }
             ModeHeader(
                 avgMode, { avgMode = it; c.prefs.liveAverage = it },
-                avg, p, onReset = { c.resetLiveAverage() }, onTarget = onTarget,
+                avg, p, onReset = {
+                    // Vynulovat = průměr, terč i stopa na mapě (0.10.0); na měření bodu REC nemá vliv
+                    c.resetLiveAverage()
+                    c.clearTrail()
+                }, onTarget = onTarget,
             )
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 QualityBadge(
@@ -423,15 +430,11 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
             extra = { PointExtras(c, pt, onClose = { editing = null }) },
         )
     }
-    if (recDialog) TrackNameDialog(onStart = { name ->
-        recDialog = false
-        c.startRecording(name)
-    }, onDismiss = { recDialog = false })
-    surveyName?.let { initial ->
-        SurveyDialog(initial, user, avg?.takeIf { it.result.used >= MeasureCalc.MIN_EPOCHS }, onStart = { name, take ->
-            surveyName = null
-            c.startSurvey(name, take)
-        }, onDismiss = { surveyName = null })
+    recJob?.let { jid ->
+        PointRecDialog(c, jid, user, onStart = { jobId, newJob, name ->
+            recJob = null
+            c.startPointMeasure(jobId, newJob, name)
+        }, onDismiss = { recJob = null })
     }
     if (showSats) {
         BackHandler { showSats = false }
@@ -605,58 +608,9 @@ private fun ago(ms: Long): String {
     }
 }
 
-/** Zaměření bodu „tady“: název (navržený další v řadě), podmínky konce z profilu, případně převzetí průměru. */
+/** REC = měření bodu: malé červené REC / STOP s uplynulým časem, bez velkého rámu. */
 @Composable
-private fun SurveyDialog(
-    initial: String,
-    u: cz.antonin.rovergnss.data.UserProfile,
-    avg: LiveAverage?,
-    onStart: (String, Boolean) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    var name by remember { mutableStateOf(initial) }
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Zaměřit bod") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                androidx.compose.material3.OutlinedTextField(
-                    name, { name = it }, singleLine = true, label = { Text("Název / číslo") }, modifier = Modifier.fillMaxWidth(),
-                )
-                Text(
-                    "Konec po ustálení (σ vodorovně ≤ ${fmt(u.surveySigma * 100, 0)} cm, aspoň ${u.surveyMinEpochs} epoch), " +
-                        "nejdéle ${u.surveyMaxSec} s. Kdykoli „Uložit“ – uloží se, co je, s přesností. " +
-                        "Anténa ${antCm(u.antennaH)} (profil ${u.name}).",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                if (avg != null) {
-                    val r = avg.result
-                    val hs = if (r.sN != null && r.sE != null) kotlin.math.hypot(r.sN, r.sE) else null
-                    Text(
-                        "Převzít průměr (${duration(avg.lastMs - avg.startMs)}, ${r.used} epoch, ${avg.qualityLabel}" +
-                            (hs?.let { ", σH ${fmt(it, 3)} m" } ?: "") + ")? Měření pak pokračuje do ustálení.",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            Row {
-                if (avg != null) {
-                    TextButton(onClick = { onStart(name.trim(), false) }, enabled = name.isNotBlank()) { Text("Měřit znovu") }
-                    TextButton(onClick = { onStart(name.trim(), true) }, enabled = name.isNotBlank()) { Text("Převzít") }
-                } else {
-                    TextButton(onClick = { onStart(name.trim(), false) }, enabled = name.isNotBlank()) { Text("Měřit") }
-                }
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Zrušit") } },
-    )
-}
-
-/** Záznam trasy: malé červené REC / STOP s uplynulým časem, bez velkého rámu. */
-@Composable
-private fun RecButton(rec: cz.antonin.rovergnss.service.RecordingState?, onClick: () -> Unit) {
+private fun RecButton(rec: cz.antonin.rovergnss.service.MeasureState?, onClick: () -> Unit) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(rec != null) {
         while (rec != null) {
@@ -685,25 +639,69 @@ private fun RecButton(rec: cz.antonin.rovergnss.service.RecordingState?, onClick
 }
 
 /**
- * Název trasy před startem záznamu; prázdný = automaticky „T číslo datum čas“.
- * Záznam jen od stisku Spustit – volba „Zahrnout průměr od …“ zrušena (0.9.0, záznam nebyl úplný).
+ * REC – měření bodu: lokalita (aktuální, jiná, nebo nová) a název bodu (B1, B2, … v každé lokalitě zvlášť).
+ * [onStart] (id lokality, název nové lokality nebo null, název bodu).
  */
 @Composable
-private fun TrackNameDialog(onStart: (String?) -> Unit, onDismiss: () -> Unit) {
+private fun PointRecDialog(
+    c: RoverController,
+    initialJob: Long,
+    u: cz.antonin.rovergnss.data.UserProfile,
+    onStart: (Long?, String?, String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val jobsFlow = remember { c.db.jobs().all() }
+    val jobs by jobsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    var jobId by remember { mutableStateOf<Long?>(initialJob) }   // null = nová lokalita
+    var newJob by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
+    var menu by remember { mutableStateOf(false) }
+    LaunchedEffect(jobId) { name = jobId?.let { c.nextPointName(it) } ?: "B1" }
+    val g = u.pointGoal
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Záznam trasy") },
+        title = { Text("Měření bodu") },
         text = {
-            Column {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Box {
+                    androidx.compose.material3.OutlinedButton(onClick = { menu = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Lokalita: " + (jobId?.let { id -> jobs.firstOrNull { it.id == id }?.name } ?: "nová") + " ▾")
+                    }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        jobs.forEach { j ->
+                            DropdownMenuItem(text = { Text(j.name + if (j.id == jobId) "  ✓" else "") }, onClick = {
+                                menu = false
+                                jobId = j.id
+                            })
+                        }
+                        DropdownMenuItem(text = { Text("Nová lokalita…") }, onClick = {
+                            menu = false
+                            jobId = null
+                        })
+                    }
+                }
+                if (jobId == null) androidx.compose.material3.OutlinedTextField(
+                    newJob, { newJob = it }, singleLine = true, label = { Text("Název nové lokality") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 androidx.compose.material3.OutlinedTextField(
-                    name, { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Název") },
-                    placeholder = { Text("prázdné = T číslo, datum a čas") },
+                    name, { name = it }, singleLine = true, label = { Text("Název bodu") }, modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "Konec sám po ${g.minFixSec} s RTK fix, σ průměru ≤ ${fmt(g.sigmaH * 100, 0)} cm vodorovně a " +
+                        "${fmt(g.sigmaU * 100, 0)} cm výška, bez skoku." +
+                        (if (g.verify) " S ověřením fixu (nové určení)." else "") +
+                        " Po ${g.timeoutSec / 60} min bez splnění „nejde změřit“. Anténa ${antCm(u.antennaH)} (profil ${u.name}).",
+                    style = MaterialTheme.typography.bodySmall,
                 )
             }
         },
-        confirmButton = { TextButton(onClick = { onStart(name.trim().ifEmpty { null }) }) { Text("Spustit") } },
+        confirmButton = {
+            TextButton(
+                onClick = { onStart(jobId, if (jobId == null) newJob.trim() else null, name.trim()) },
+                enabled = name.isNotBlank() && (jobId != null || newJob.isNotBlank()),
+            ) { Text("Měřit") }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Zrušit") } },
     )
 }
