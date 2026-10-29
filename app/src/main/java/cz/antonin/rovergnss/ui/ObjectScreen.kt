@@ -147,9 +147,6 @@ fun ObjectScreen(c: RoverController) {
     val dbSk = remember(obj?.data) { obj?.sketch ?: ObjSketch() }
     // změny se zobrazí hned (místní stav), uložení do databáze běží na pozadí; nová data z databáze místní stav nahradí
     var localSk by remember { mutableStateOf<Pair<Long, ObjSketch>?>(null) }
-    // diagnostika kreslení (0.11.4): počet tahů, bodů čáry a vrcholů z posledního tahu
-    var dbgStrokes by remember { mutableIntStateOf(0) }
-    var dbgLast by remember { mutableStateOf("") }
     LaunchedEffect(obj?.data) { localSk = null }
     val sk = localSk?.takeIf { it.first == obj?.id }?.second ?: dbSk
     val lastMeas = remember(meas) { meas.filter { it.endMs != null }.groupBy { it.pointId }.mapValues { it.value.last() } }
@@ -372,11 +369,10 @@ fun ObjectScreen(c: RoverController) {
      * když začne u posledního vrcholu; skončí-li u prvního vrcholu, obrys se uzavře.
      */
     fun onStroke(pts: List<Offset>) {
-        dbgStrokes++
-        dbgLast = "čára ${pts.size} b."
-        val o = obj ?: run { dbgLast += ", bez objektu"; return }
+        val o = obj ?: return
         if (pts.size < 2) return
-        val tol = hitR * 0.55f
+        // tolerance ~20 dp: nerovná čára prstem se narovná na úsečky, vrcholy jen v lomech
+        val tol = hitR * 0.9f
         val simp = rdp(pts, tol)
         if (sk.closed) {
             c.postMessage("Obrys je uzavřený – otevři ho, nebo smaž náčrt")
@@ -389,7 +385,6 @@ fun ObjectScreen(c: RoverController) {
         if (startNearLast) add = add.drop(1)
         if (endNearFirst && add.isNotEmpty()) add = add.dropLast(1)
         val sketchPts = add.map { toSketch(it) }
-        dbgLast += " → ${simp.size} vrch., přidat ${sketchPts.size}" + (sketchPts.firstOrNull()?.let { " (${it.x.toInt()}, ${it.y.toInt()})" } ?: "")
         edit { s0 ->
             var id = s0.nextId
             val nv = sketchPts.map { q -> ObjVertex(id++, q.x.toDouble(), q.y.toDouble()) }
@@ -408,9 +403,15 @@ fun ObjectScreen(c: RoverController) {
         }
     }
 
-    val cb = rememberUpdatedState(Triple(::onTap, ::onLongPress, ::hitTest))
-    val strokeCb = rememberUpdatedState(::onStroke)
-    val editRef = rememberUpdatedState(::edit)
+    // Pozor: odkazy ::funkce jsou si rovny i s jiným zachyceným stavem → rememberUpdatedState by držel první
+    // (obj = null). Proto vždy nové lambdy (0.11.5 – kreslení „bez objektu“).
+    val cb = rememberUpdatedState(Triple(
+        { p: Offset -> onTap(p) },
+        { p: Offset -> onLongPress(p) },
+        { p: Offset, t: Boolean, pl: Boolean -> hitTest(p, t, pl) },
+    ))
+    val strokeCb = rememberUpdatedState({ pts: List<Offset> -> onStroke(pts) })
+    val editRef = rememberUpdatedState({ f: (ObjSketch) -> ObjSketch -> edit(f) })
     val stateRef = rememberUpdatedState(Triple(mode, obj?.id, sk))
     val drawRef = rememberUpdatedState(Triple(whole, selEdge, skC))
 
@@ -671,9 +672,7 @@ fun ObjectScreen(c: RoverController) {
                     for (i in 1 until stroke.size) drawLine(Color(0xFFFFA000), stroke[i - 1], stroke[i], 3f * density.density)
                 }
                 if (mode == ObjMode.DRAW) Text(
-                    "tahů $dbgStrokes · $dbgLast · zobrazeno ${sk.vertices.size} vrch. (databáze ${dbSk.vertices.size}" +
-                        (localSk?.let { ", místní ${it.second.vertices.size}" } ?: "") + ")" +
-                        String.format(java.util.Locale.US, " · měřítko %.3g", vScale) +
+                    "vrcholů ${sk.vertices.size}" + (if (sk.closed) ", uzavřeno" else "") +
                         (cz.antonin.rovergnss.data.ObjSketchJson.lastError?.let { " · chyba čtení $it" } ?: ""),
                     style = MaterialTheme.typography.labelSmall, color = Color(0xFF616161),
                     modifier = Modifier.align(Alignment.BottomStart).padding(4.dp),

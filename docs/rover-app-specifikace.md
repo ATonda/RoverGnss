@@ -415,3 +415,10 @@ Specifikace: `objekt-mereni-specifikace.md` (projekt), kap. 6.
 - Hlášení: čára se nakreslí, po zvednutí prstu zmizí (i v 0.11.1). Náčrt se zobrazoval až po návratu z databáze.
 - Změny náčrtu se zobrazí hned (místní stav), uložení do databáze běží na pozadí jako krok pro Zpět; nová data z databáze místní stav nahradí. Chyba uložení se ohlásí („Náčrt nelze uložit: …“). Počet vrcholů a stav uzavření v liště Kreslit (diagnostika).
 - Verze 0.11.3 (versionCode 24).
+
+## 24. Stav aplikace 0.11.5 (29. 10.) – kreslení opraveno
+
+- Příčina (diagnostika 0.11.4: „čára 60 b., bez objektu“): obsluha dotyku volala funkce plátna přes odkazy `::onStroke` / `::onTap` v `rememberUpdatedState`. Odkazy na místní funkci jsou si rovny i s jiným zachyceným stavem, takže zůstala první verze z doby, kdy se objekt ještě načítal (obj = null) – každé klepnutí i čára skončily bez akce. Nyní nové lambdy při každém vykreslení.
+- Narovnání čáry: tolerance zjednodušení ~20 dp (dřív 12 dp) – nerovná čára prstem se narovná na úsečky, vrcholy jen v lomech.
+- Diagnostický řádek zkrácen na „vrcholů N, uzavřeno“ (+ chyba čtení náčrtu, kdyby nastala).
+- Verze 0.11.5 (versionCode 26).
