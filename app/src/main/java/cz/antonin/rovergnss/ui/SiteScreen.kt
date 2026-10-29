@@ -9,6 +9,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -20,9 +21,11 @@ import cz.antonin.rovergnss.service.RoverController
 fun SiteScreen(c: RoverController) {
     var sub by rememberSaveable { mutableIntStateOf(0) }
     if (sub > 2) sub = 0
+    val objFull by c.objFull.collectAsStateWithLifecycle()
+    val full = objFull && sub == 2
     Column(Modifier.fillMaxSize()) {
-        JobBar(c)
-        TabRow(selectedTabIndex = sub) {
+        if (!full) JobBar(c)
+        if (!full) TabRow(selectedTabIndex = sub) {
             Tab(selected = sub == 0, onClick = { sub = 0 }, text = { Text("Body") })
             Tab(selected = sub == 1, onClick = { sub = 1 }, text = { Text("Vytyčování") })
             Tab(selected = sub == 2, onClick = { sub = 2 }, text = { Text("Objekt") })

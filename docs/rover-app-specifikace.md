@@ -422,3 +422,9 @@ Specifikace: `objekt-mereni-specifikace.md` (projekt), kap. 6.
 - Narovnání čáry: tolerance zjednodušení ~20 dp (dřív 12 dp) – nerovná čára prstem se narovná na úsečky, vrcholy jen v lomech.
 - Diagnostický řádek zkrácen na „vrcholů N, uzavřeno“ (+ chyba čtení náčrtu, kdyby nastala).
 - Verze 0.11.5 (versionCode 26).
+
+## 25. Stav aplikace 0.11.6 (29. 10.) – náčrt přes celé okno
+
+- **Celé okno:** dlouhý stisk na prázdném místě plochy (v každém režimu) nebo tlačítko „Celé okno“ skryje lištu lokality, podzáložky, výsledky a spodní lištu aplikace; zůstanou režimy a nástroje Kreslit. Zpět: další dlouhý stisk na prázdném místě, „Zmenšit“ nebo systémové Zpět. Při odchodu ze záložky se vrátí normální zobrazení. Dlouhý stisk na vrcholu (Kreslit) dál maže vrchol; po dlouhém stisku se už nekreslí čára.
+- **Výsledky** pod plochou sbalené do řádku „▸ Výsledky: …“, rozbalení klepnutím; měření dvou bodů (Změřit) se ukazuje vždy.
+- Verze 0.11.6 (versionCode 27).

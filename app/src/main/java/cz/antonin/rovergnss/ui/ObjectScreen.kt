@@ -37,6 +37,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
@@ -234,7 +236,7 @@ fun ObjectScreen(c: RoverController) {
     val edges = sk.edges()
 
     // přizpůsobení pohledu obsahu
-    LaunchedEffect(fitReq, world, obj?.id, canvasW) {
+    LaunchedEffect(fitReq, world, obj?.id, canvasW, canvasH) {
         if (canvasW <= 0f) return@LaunchedEffect
         val pts = vPos + sk.places.map { placePos(it) }
         if (pts.isEmpty()) {
@@ -395,6 +397,11 @@ fun ObjectScreen(c: RoverController) {
 
     fun onLongPress(s: Offset) {
         val o = obj ?: return
+        // dlouhý stisk na prázdném místě = celé okno / zpět
+        if (hitTest(s, wantTapes = true, wantPlaces = true) == null) {
+            c.objFull.value = !c.objFull.value
+            return
+        }
         if (mode != ObjMode.DRAW) return
         val h = hitTest(s, wantTapes = false, wantPlaces = false)
         if (h is Hit.Vertex && !whole) {
@@ -415,9 +422,15 @@ fun ObjectScreen(c: RoverController) {
     val stateRef = rememberUpdatedState(Triple(mode, obj?.id, sk))
     val drawRef = rememberUpdatedState(Triple(whole, selEdge, skC))
 
+    val full by c.objFull.collectAsStateWithLifecycle()
+    var resOpen by rememberSaveable { mutableStateOf(false) }
+    BackHandler(enabled = full) { c.objFull.value = false }
+    DisposableEffect(Unit) { onDispose { c.objFull.value = false } }
+    LaunchedEffect(full) { fitReq++ }
+
     Column(Modifier.fillMaxSize()) {
         // objekt
-        Row(Modifier.padding(horizontal = 8.dp).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+        if (!full) Row(Modifier.padding(horizontal = 8.dp).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
             Box {
                 TextButton(onClick = { objMenu = true }) { Text("Objekt: ${obj?.name ?: "žádný"} ▾", style = MaterialTheme.typography.titleSmall) }
                 DropdownMenu(expanded = objMenu, onDismissRequest = { objMenu = false }) {
@@ -467,8 +480,9 @@ fun ObjectScreen(c: RoverController) {
                     }, label = { Text(n) })
                 }
                 TextButton(onClick = { fitReq++ }) { Text("Celé") }
+                TextButton(onClick = { c.objFull.value = !full }) { Text(if (full) "Zmenšit" else "Celé okno") }
             }
-            Text(
+            if (!full) Text(
                 when (mode) {
                     ObjMode.DRAW -> when {
                         whole -> "Celý náčrt: táhni = posun, dvěma prsty = otočení a velikost. Pohled se nemění."
@@ -597,7 +611,7 @@ fun ObjectScreen(c: RoverController) {
                                             })
                                         }
                                         dragEdge = null
-                                    } else if (drawing && moved && !multi) {
+                                    } else if (drawing && moved && !multi && !long) {
                                         strokeCb.value(stroke)
                                         stroke = emptyList()
                                     } else if (grab != null && moved) {
@@ -646,7 +660,8 @@ fun ObjectScreen(c: RoverController) {
                                             val b = sk0.vertices.getOrNull(ib)?.id
                                             if (a != null && b != null) dragEdge = Triple(a, b, toD(ch.position) - toD(start))
                                         }
-                                        drawing -> stroke = if (stroke.isEmpty()) listOf(start, ch.position) else stroke + ch.position
+                                        drawing && !long -> stroke = if (stroke.isEmpty()) listOf(start, ch.position) else stroke + ch.position
+                                        drawing -> {}
                                         else -> vOff += ch.position - last
                                     }
                                     ch.consume()
@@ -689,13 +704,24 @@ fun ObjectScreen(c: RoverController) {
                         .background(Color.White.copy(alpha = 0.85f), RoundedCornerShape(6.dp)).padding(6.dp),
                 )
             }
-            // výsledky
-            Column(
-                Modifier.fillMaxWidth().heightIn(max = 260.dp).verticalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                if (mode == ObjMode.MEASURE && measSel.size == 2) MeasureCard(sk, result, measSel[0], measSel[1])
-                ResultPanel(c, obj, sk, result, lastMeas, job?.name ?: "lokalita")
+            // výsledky (sbalitelné; v celém okně jen měření mezi dvěma body)
+            if (full) {
+                if (mode == ObjMode.MEASURE && measSel.size == 2) Box(Modifier.padding(horizontal = 8.dp)) { MeasureCard(sk, result, measSel[0], measSel[1]) }
+            } else {
+                Row(
+                    Modifier.fillMaxWidth().clickable { resOpen = !resOpen }.padding(horizontal = 12.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(if (resOpen) "▾ " else "▸ ", style = MaterialTheme.typography.titleSmall)
+                    Text("Výsledky: " + result.message, style = MaterialTheme.typography.bodyMedium, maxLines = 1, modifier = Modifier.weight(1f))
+                }
+                if (mode == ObjMode.MEASURE && measSel.size == 2) Box(Modifier.padding(horizontal = 8.dp)) { MeasureCard(sk, result, measSel[0], measSel[1]) }
+                if (resOpen) Column(
+                    Modifier.fillMaxWidth().heightIn(max = 300.dp).verticalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    ResultPanel(c, obj, sk, result, lastMeas, job?.name ?: "lokalita")
+                }
             }
         }
     }

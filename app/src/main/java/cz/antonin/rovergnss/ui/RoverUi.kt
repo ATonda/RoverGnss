@@ -80,6 +80,7 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
         // odchod ze záložky Auto při běžícím měření rychlosti: dotaz Ukončit / Pokračovat (0.9.0)
         var leaveTo by remember { mutableIntStateOf(-1) }
         val speedOn by controller.speedActive.collectAsStateWithLifecycle()
+        val objFull by controller.objFull.collectAsStateWithLifecycle()
         fun goTab(i: Int) {
             if (tab == TAB_AUTO && i != TAB_AUTO && speedOn) leaveTo = i else tab = i
         }
@@ -87,7 +88,7 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
         Scaffold(
             snackbarHost = { SnackbarHost(snackbar) },
             bottomBar = {
-                if (!(tab == 0 && mapFull)) NavigationBar {
+                if (!(tab == 0 && mapFull) && !(tab == 1 && objFull)) NavigationBar {
                     TABS.forEachIndexed { i, t ->
                         NavigationBarItem(
                             selected = tab == i,

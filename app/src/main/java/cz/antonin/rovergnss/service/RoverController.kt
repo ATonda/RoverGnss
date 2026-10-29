@@ -870,6 +870,9 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     fun canUndo(objectId: Long) = synchronized(undoStacks) { undoStacks[objectId]?.isNotEmpty() == true }
     fun canRedo(objectId: Long) = synchronized(undoStacks) { redoStacks[objectId]?.isNotEmpty() == true }
 
+    /** Náčrt objektu přes celé okno (skryje lištu lokality, podzáložky a spodní lištu, 0.11.6). */
+    val objFull = MutableStateFlow(false)
+
     /** Úprava náčrtu z UI (vždy nad aktuálním stavem v databázi), uloží krok pro Zpět. */
     fun editObject(objectId: Long, f: (ObjSketch) -> ObjSketch) = scope.launch { saveSketchStep(objectId, f) }
 
