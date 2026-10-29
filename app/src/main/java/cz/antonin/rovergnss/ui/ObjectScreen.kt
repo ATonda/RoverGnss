@@ -66,6 +66,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import cz.antonin.rovergnss.data.Measurement
 import cz.antonin.rovergnss.data.ObjCalc
+import cz.antonin.rovergnss.data.ObjAngle
+import cz.antonin.rovergnss.data.ObjRight
 import cz.antonin.rovergnss.data.ObjMount
 import cz.antonin.rovergnss.data.ObjObs
 import cz.antonin.rovergnss.data.ObjPlace
@@ -168,6 +170,9 @@ fun ObjectScreen(c: RoverController) {
     var stroke by remember { mutableStateOf<List<Offset>>(emptyList()) }  // kreslení prstem (obrazovka)
     var askClear by remember { mutableStateOf(false) }
     var selEdge by remember { mutableStateOf<Int?>(null) }            // vybraná stěna (index)
+    var selVertex by remember { mutableStateOf<Int?>(null) }          // vybraný vrchol (index) – pravý úhel, smazání
+    var angleMode by remember { mutableStateOf(false) }               // Pásmo: úhel rohu (trojúhelník)
+    var angleDialog by remember { mutableStateOf<Int?>(null) }        // index vrcholu pro úhel rohu
     var selEdgePt by remember { mutableStateOf<Offset?>(null) }       // místo klepnutí na stěnu (náčrt)
     var dragEdge by remember { mutableStateOf<Triple<Int, Int, Offset>?>(null) }  // id vrcholů stěny a posun (náčrt)
     var whole by remember { mutableStateOf(false) }                   // úprava celého náčrtu
@@ -310,14 +315,21 @@ fun ObjectScreen(c: RoverController) {
                 when (h) {
                     is Hit.Vertex -> {
                         selEdge = null
-                        if (!sk.closed && h.index == 0 && sk.vertices.size >= 3) edit { it.copy(closed = true) }
+                        if (!sk.closed && h.index == 0 && sk.vertices.size >= 3) {
+                            selVertex = null
+                            edit { it.copy(closed = true) }
+                        } else selVertex = if (selVertex == h.index) null else h.index
                     }
                     is Hit.Edge -> {
                         // výběr stěny: posun tažením, vložit vrchol, smazat
                         selEdge = h.index
                         selEdgePt = q
+                        selVertex = null
                     }
-                    else -> if (selEdge != null) selEdge = null
+                    else -> if (selEdge != null || selVertex != null) {
+                        selEdge = null
+                        selVertex = null
+                    }
                     else if (sk.closed) c.postMessage("Obrys je uzavřený – vrchol vložíš výběrem stěny (klepnutím na ni)")
                     else edit { s0 -> s0.copy(vertices = s0.vertices + ObjVertex(s0.nextId, q.x.toDouble(), q.y.toDouble()), nextId = s0.nextId + 1) }
                 }
@@ -342,6 +354,14 @@ fun ObjectScreen(c: RoverController) {
                 }
             }
             ObjMode.TAPE -> {
+                if (angleMode) {
+                    val hv = hitTest(s, wantTapes = false, wantPlaces = false)
+                    if (hv is Hit.Vertex) {
+                        if (sk.neighbors(hv.index) == null) c.postMessage("Úhel jen ve vrcholu se dvěma stěnami")
+                        else angleDialog = hv.index
+                    }
+                    return
+                }
                 val h = hitTest(s, wantTapes = true, wantPlaces = true)
                 if (h is Hit.Tape) {
                     tapeEdit = sk.tapes.firstOrNull { it.id == h.id }
@@ -487,11 +507,13 @@ fun ObjectScreen(c: RoverController) {
                     ObjMode.DRAW -> when {
                         whole -> "Celý náčrt: táhni = posun, dvěma prsty = otočení a velikost. Pohled se nemění."
                         selEdge != null -> "Stěna vybrána: táhni ji = posun, nebo Vložit vrchol / Smazat stěnu."
-                        else -> "Táhni prstem = čára obrysu, klepni = vrchol, na stěnu = výběr stěny, na první vrchol = uzavřít. " +
-                            "Vrchol táhni = posun, podrž = smazat. Posun a zoom dvěma prsty."
+                        selVertex != null -> "Vrchol vybrán: pravý úhel auto / ano / ne, nebo smazat."
+                        else -> "Táhni prstem = čára obrysu, klepni = vrchol, na vrchol / stěnu = výběr, na první vrchol = uzavřít. " +
+                            "Vrchol táhni = posun, podrž = smazat. Posun a zoom dvěma prsty. Pravoúhlá = rohy kolem 90° se počítají jako pravé."
                     }
                     ObjMode.POINTS -> "Klepni na roh, na stěnu (dveře), nebo mimo obrys (bod v ose stěny / kontrolní) a vyber změřený bod."
-                    ObjMode.TAPE -> if (tapeFirst == null) "Klepni na první bod kóty (vrchol nebo bod), pak na druhý. Klepnutí na číslo kóty = úprava."
+                    ObjMode.TAPE -> if (angleMode) "Klepni na roh a zadej trojúhelník: a, b od rohu podél stěn (nebo prodloužení), c mezi konci."
+                    else if (tapeFirst == null) "Klepni na první bod kóty (vrchol nebo bod), pak na druhý. Klepnutí na číslo kóty = úprava."
                     else "Klepni na druhý bod kóty."
                     else -> "Klepni na dva body – vzdálenost, směr, rozdíl výšek a přesnost."
                 },
@@ -505,6 +527,8 @@ fun ObjectScreen(c: RoverController) {
                     OutlinedButton(onClick = { c.undoObject(obj.id, true); selEdge = null }, enabled = c.canUndo(obj.id)) { Text("Zpět") }
                     OutlinedButton(onClick = { c.undoObject(obj.id, false); selEdge = null }, enabled = c.canRedo(obj.id)) { Text("Znovu") }
                 }
+                FilterChip(selected = sk.square, onClick = { edit { it.copy(square = !it.square) } },
+                    label = { Text("Pravoúhlá") }, enabled = sk.vertices.size >= 3)
                 FilterChip(selected = whole, onClick = {
                     whole = !whole
                     selEdge = null
@@ -526,6 +550,35 @@ fun ObjectScreen(c: RoverController) {
                     "vrcholů ${sk.vertices.size}" + if (sk.closed) ", uzavřeno" else "",
                     style = MaterialTheme.typography.bodySmall, modifier = Modifier.align(Alignment.CenterVertically),
                 )
+            }
+            val sv = selVertex?.takeIf { it < sk.vertices.size }
+            if (mode == ObjMode.DRAW && sv != null && !whole) Row(
+                Modifier.padding(horizontal = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val vid = sk.vertices[sv].id
+                Text("V${sv + 1} pravý úhel:", style = MaterialTheme.typography.titleSmall)
+                ObjRight.NAMES.forEachIndexed { k, n ->
+                    FilterChip(selected = (sk.right[vid] ?: ObjRight.AUTO) == k, onClick = {
+                        edit { s0 -> s0.copy(right = if (k == ObjRight.AUTO) s0.right - vid else s0.right + (vid to k)) }
+                    }, label = { Text(n + if (k == ObjRight.AUTO) (if (sk.isRight(sv) && (sk.right[vid] ?: 0) == 0) " (90°)" else " (volný)") else "") },
+                        enabled = sk.neighbors(sv) != null)
+                }
+                OutlinedButton(onClick = {
+                    edit { s0 -> removeVertex(s0, vid) }
+                    selVertex = null
+                }) { Text("Smazat vrchol", color = MaterialTheme.colorScheme.error) }
+                TextButton(onClick = { selVertex = null }) { Text("Zrušit výběr") }
+            }
+            if (mode == ObjMode.TAPE) Row(
+                Modifier.padding(horizontal = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FilterChip(selected = !angleMode, onClick = { angleMode = false }, label = { Text("Délka") })
+                FilterChip(selected = angleMode, onClick = {
+                    angleMode = true
+                    tapeFirst = null
+                }, label = { Text("Úhel rohu (trojúhelník)") })
             }
             val se = selEdge
             if (mode == ObjMode.DRAW && se != null && !whole) Row(
@@ -678,6 +731,7 @@ fun ObjectScreen(c: RoverController) {
                     drawObject(
                         sk, result, world, mode, vPos, ::placePos, ::refD, ::toScreen, edges,
                         tapeFirst, measSel, labelColor, density.density,
+                        names = obs.mapValues { it.value.name }, selEdge = selEdge.takeIf { mode == ObjMode.DRAW }, selVertex = selVertex.takeIf { mode == ObjMode.DRAW },
                     )
                     selEdge?.takeIf { mode == ObjMode.DRAW }?.let { ei ->
                         edges.getOrNull(ei)?.let { (ia, ib) ->
@@ -814,6 +868,23 @@ fun ObjectScreen(c: RoverController) {
             if (o != null) edit { s0 -> s0.copy(tapes = s0.tapes + ObjTape(s0.nextId, a, b, len), nextId = s0.nextId + 1) }
         }, onDelete = null, onDismiss = { tapeDialog = null })
     }
+    angleDialog?.let { vi ->
+        val v = sk.vertices.getOrNull(vi)
+        if (v != null) AngleDialog(
+            name = result.vertices.getOrNull(vi)?.name ?: "V${vi + 1}",
+            initial = sk.angles.lastOrNull { it.vertex == v.id },
+            defaultMethod = if (convex(sk, vi)) 1 else 0,
+            onSave = { m, a, b, cc ->
+                angleDialog = null
+                edit { s0 -> s0.copy(angles = s0.angles.filter { it.vertex != v.id } + ObjAngle(s0.nextId, v.id, m, a, b, cc), nextId = s0.nextId + 1) }
+            },
+            onDelete = if (sk.angles.any { it.vertex == v.id }) ({
+                angleDialog = null
+                edit { s0 -> s0.copy(angles = s0.angles.filter { it.vertex != v.id }) }
+            }) else null,
+            onDismiss = { angleDialog = null },
+        )
+    }
     tapeEdit?.let { t ->
         val o = obj
         TapeDialog(t.len, onSave = { len ->
@@ -910,6 +981,15 @@ private fun deleteEdge(s: ObjSketch, ei: Int): ObjSketch {
 private fun removePlace(s: ObjSketch, id: Int): ObjSketch =
     s.copy(places = s.places.filter { it.id != id }, tapes = s.tapes.filter { it.a != "p:$id" && it.b != "p:$id" })
 
+private val AXIS_COLORS = listOf(
+    Color(0xFF1565C0), Color(0xFFD81B60), Color(0xFF00897B), Color(0xFFF4511E), Color(0xFF5E35B1), Color(0xFF7CB342),
+)
+
+/** Barvy stěn s body v ose: index stěny → barva (pořadí stěn). */
+private fun axisColors(sk: ObjSketch): Map<Int, Color> =
+    sk.places.filter { it.type == ObjPointType.AXIS }.map { sk.edgeIndex(it.edge) }.filter { it >= 0 }.distinct().sorted()
+        .withIndex().associate { (k, ei) -> ei to AXIS_COLORS[k % AXIS_COLORS.size] }
+
 /** Zjednodušení čáry (Douglas–Peucker). */
 private fun rdp(pts: List<Offset>, eps: Float): List<Offset> {
     if (pts.size < 3) return pts
@@ -945,6 +1025,7 @@ private fun DrawScope.drawObject(
     sk: ObjSketch, r: ObjResult, world: Boolean, mode: Int, vPos: List<Offset>, placePos: (ObjPlace) -> Offset,
     refD: (String) -> Offset?, toScreen: (Offset) -> Offset, edges: List<Pair<Int, Int>>,
     tapeFirst: String?, measSel: List<String>, labelColor: Color, dens: Float,
+    names: Map<Int, String> = emptyMap(), selEdge: Int? = null, selVertex: Int? = null,
 ) {
     val sw = 2.5f * dens
     val dash = PathEffect.dashPathEffect(floatArrayOf(10f * dens, 6f * dens))
@@ -960,16 +1041,29 @@ private fun DrawScope.drawObject(
             label(String.format(Locale.US, "%.2f", er.len).replace('.', ','), m.x + 4 * dens, m.y - 4 * dens, col, dens)
         }
     }
-    // osy stěn k bodům v ose
-    if (world) sk.places.filter { it.type == ObjPointType.AXIS }.forEach { p ->
-        val ei = sk.edgeIndex(p.edge)
-        if (ei < 0) return@forEach
-        val (ia, ib) = edges[ei]
-        val pp = toScreen(placePos(p))
+    // prodloužení stěn s body v ose: čárkovaná přímka přes oba vrcholy až za nejvzdálenější bod, barva podle stěny
+    val axisCol = axisColors(sk)
+    axisCol.forEach { (ei, col) ->
+        val (ia, ib) = edges.getOrNull(ei) ?: return@forEach
         val a = toScreen(vPos[ia])
         val b = toScreen(vPos[ib])
-        val near = if ((pp - a).getDistance() < (pp - b).getDistance()) a else b
-        drawLine(Color(0xFF1565C0).copy(alpha = 0.5f), near, pp, 1.5f * dens, pathEffect = dash)
+        val d = b - a
+        val l2 = d.x * d.x + d.y * d.y
+        if (l2 < 1f) return@forEach
+        var t0 = 0f
+        var t1 = 1f
+        sk.places.filter { it.type == ObjPointType.AXIS && sk.edgeIndex(it.edge) == ei }.forEach { p ->
+            val pp = toScreen(placePos(p))
+            val t = ((pp.x - a.x) * d.x + (pp.y - a.y) * d.y) / l2
+            t0 = min(t0, t)
+            t1 = max(t1, t)
+        }
+        val ext = 24f * dens / kotlin.math.sqrt(l2)
+        val hl = selEdge == ei
+        drawLine(
+            col.copy(alpha = if (hl) 1f else 0.7f), a + d * (t0 - ext), a + d * (t1 + ext), (if (hl) 3f else 1.8f) * dens,
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f * dens, 5f * dens)),
+        )
     }
     // kóty
     sk.tapes.forEach { t ->
@@ -987,19 +1081,31 @@ private fun DrawScope.drawObject(
         val s = toScreen(p)
         val vr = if (world) r.vertices.getOrNull(i) else null
         val col = vr?.let { SRC_COLORS[it.source] } ?: Color(0xFF424242)
-        val sel = sk.vertices.getOrNull(i)?.let { v -> tapeFirst == "v:${v.id}" || "v:${v.id}" in measSel } == true
+        val sel = sk.vertices.getOrNull(i)?.let { v -> tapeFirst == "v:${v.id}" || "v:${v.id}" in measSel } == true || selVertex == i
         drawCircle(col, radius = (if (sel) 9f else 6f) * dens, center = s)
         if (sel) drawCircle(Color(0xFFFFA000), radius = 12f * dens, center = s, style = Stroke(2.5f * dens))
         label(vr?.name ?: "V${i + 1}", s.x + 8 * dens, s.y - 8 * dens, labelColor, dens)
+        // úhel: ∟ předpoklad 90°, ∠ pásmem; ve skutečných souřadnicích vypočtený úhel mezi stěnami
+        val tapeAng = sk.vertices.getOrNull(i)?.let { v -> sk.angles.lastOrNull { it.vertex == v.id } }
+        val fix = if (tapeAng != null) 2 else if (sk.isRight(i)) 1 else 0
+        if (fix != 0 || (vr?.wallAngle != null && world)) {
+            val txt = (if (fix == 2) "∠" else if (fix == 1) "∟" else "") +
+                (vr?.wallAngle?.let { String.format(Locale.US, "%.1f°", it).replace('.', ',') } ?: if (fix == 1) "90°" else
+                    tapeAng?.wallAngle?.let { String.format(Locale.US, "%.1f°", it).replace('.', ',') } ?: "")
+            val ac = if (vr?.angleBad == true) BAD else if (fix == 2) Color(0xFF8E24AA) else if (fix == 1) Color(0xFF00897B) else labelColor
+            label(txt, s.x + 8 * dens, s.y + 6 * dens, ac, dens)
+        }
     }
     // umístěné body
     sk.places.forEach { p ->
         val s = toScreen(placePos(p))
         val pr = r.places.firstOrNull { it.placeId == p.id }
+        val wallCol = if (p.type == ObjPointType.AXIS) axisCol[sk.edgeIndex(p.edge)] else null
         val col = when {
-            pr == null -> Color(0xFF9E9E9E)
-            pr.bad -> BAD
-            pr.suspect -> Color(0xFFEF6C00)
+            pr == null && p.pointId == 0L -> Color(0xFF9E9E9E)
+            pr?.bad == true -> BAD
+            pr?.suspect == true -> Color(0xFFEF6C00)
+            wallCol != null -> wallCol
             else -> Color(0xFF2E7D32)
         }
         val sel = tapeFirst == "p:${p.id}" || "p:${p.id}" in measSel
@@ -1017,8 +1123,19 @@ private fun DrawScope.drawObject(
                 drawCircle(Color.White, radius = 3f * dens, center = s)
             }
         }
-        if (sel) drawCircle(Color(0xFFFFA000), radius = 13f * dens, center = s, style = Stroke(2.5f * dens))
-        if (p.type != ObjPointType.CORNER || !world) label(pr?.name ?: if (p.pointId == 0L) "?" else "", s.x + 9 * dens, s.y + 14 * dens, col, dens)
+        val hlAxis = p.type == ObjPointType.AXIS && selEdge != null && sk.edgeIndex(p.edge) == selEdge
+        if (sel || hlAxis) drawCircle(if (hlAxis && !sel) (wallCol ?: Color(0xFFFFA000)) else Color(0xFFFFA000), radius = 13f * dens,
+            center = s, style = Stroke(2.5f * dens))
+        val nm = pr?.name ?: names[p.id] ?: if (p.pointId == 0L) "?" else ""
+        val txt = when (p.type) {
+            ObjPointType.AXIS -> {
+                val ei = sk.edgeIndex(p.edge)
+                val en = edges.getOrNull(ei)?.let { (a, b) -> "V${a + 1}–V${b + 1}" } ?: "?"
+                "$nm ⟂ $en" + (pr?.residual?.let { " · " + String.format(Locale.US, "%.1f cm", it * 100).replace('.', ',') } ?: "")
+            }
+            else -> nm
+        }
+        if (p.type != ObjPointType.CORNER || !world) label(txt, s.x + 9 * dens, s.y + 14 * dens, col, dens)
     }
     // měření mezi dvěma body
     if (mode == ObjMode.MEASURE && measSel.size == 2) {
@@ -1099,6 +1216,20 @@ private fun ResultPanel(c: RoverController, obj: SiteObject, sk: ObjSketch, r: O
                     (v.dh?.let { String.format(Locale.US, "  Δh %+.2f", it) } ?: ""),
                 fontFamily = FontFamily.Monospace, style = mono, color = SRC_COLORS[v.source],
             )
+        }
+        if (r.vertices.any { it.wallAngle != null }) {
+            Text("Úhly mezi stěnami (∟ předpoklad 90°, ∠ pásmem)", style = MaterialTheme.typography.titleSmall)
+            r.vertices.filter { it.wallAngle != null }.forEach { v ->
+                Text(
+                    String.format(Locale.US, "%-6s %6.2f°", v.name, v.wallAngle) +
+                        when (v.angleFix) {
+                            1 -> String.format(Locale.US, "  ∟ předpoklad, odchylka %+.2f°", v.wallAngle!! - 90)
+                            2 -> String.format(Locale.US, "  ∠ pásmem %.2f°, rozdíl %+.2f°", v.angleObs, v.wallAngle!! - (v.angleObs ?: 0.0))
+                            else -> "  z měření"
+                        } + if (v.angleBad) "  – měření si odporují" else "",
+                    fontFamily = FontFamily.Monospace, style = mono, color = if (v.angleBad) BAD else MaterialTheme.colorScheme.onSurface,
+                )
+            }
         }
         Text("Stěny", style = MaterialTheme.typography.titleSmall)
         r.edges.forEach { e ->
@@ -1300,6 +1431,70 @@ private fun PlaceDialog(
         dismissButton = {
             Row {
                 onRemove?.let { TextButton(onClick = it) { Text("Odebrat", color = MaterialTheme.colorScheme.error) } }
+                TextButton(onClick = onDismiss) { Text("Zrušit") }
+            }
+        },
+    )
+}
+
+/**
+ * Úhel rohu pásmem (trojúhelník): a, b od rohu, c mezi konci; způsob podél obou stěn / jedna stěna prodloužená.
+ * Ukazuje změřený úhel a úhel mezi stěnami.
+ */
+@Composable
+private fun AngleDialog(
+    name: String, initial: ObjAngle?, defaultMethod: Int,
+    onSave: (Int, Double, Double, Double) -> Unit, onDelete: (() -> Unit)?, onDismiss: () -> Unit,
+) {
+    fun t(v: Double?) = v?.let { String.format(Locale.US, "%.3f", it).trimEnd('0').trimEnd('.').replace('.', ',') } ?: ""
+    var method by remember { mutableIntStateOf(initial?.method ?: defaultMethod) }
+    var ta by remember { mutableStateOf(t(initial?.a ?: 3.0)) }
+    var tb by remember { mutableStateOf(t(initial?.b ?: 4.0)) }
+    var tc by remember { mutableStateOf(t(initial?.c)) }
+    fun num(s: String) = s.replace(',', '.').toDoubleOrNull()?.takeIf { it > 0 && it < 100 }
+    val a = num(ta)
+    val b = num(tb)
+    val cc = num(tc)
+    val ang = if (a != null && b != null && cc != null) ObjAngle(0, 0, method, a, b, cc) else null
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Úhel rohu $name") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FilterChip(selected = method == 1, onClick = { method = 1 }, label = { Text("vnější roh: 1 stěna prodloužená") })
+                    FilterChip(selected = method == 0, onClick = { method = 0 }, label = { Text("podél obou stěn") })
+                }
+                Text(
+                    if (method == 1) "a podél jedné stěny za roh (prodloužení její linie), b podél druhé stěny, c mezi konci."
+                    else "a, b podél obou stěn od rohu (vnitřní roh, nebo uvnitř budovy), c mezi konci.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedTextField(ta, { ta = it }, singleLine = true, label = { Text("a [m]") }, modifier = Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+                    OutlinedTextField(tb, { tb = it }, singleLine = true, label = { Text("b [m]") }, modifier = Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+                    OutlinedTextField(tc, { tc = it }, singleLine = true, label = { Text("c [m]") }, modifier = Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+                }
+                Text(
+                    when {
+                        ang == null -> "Zadej a, b, c (u pravého úhlu a 3, b 4 → c 5,00)."
+                        ang.measured == null -> "Délky netvoří trojúhelník."
+                        else -> String.format(Locale.US, "změřený úhel %.2f° → úhel mezi stěnami %.2f° (±%.1f°)",
+                            ang.measured, ang.wallAngle, ObjCalc.angleSigma(ang)).replace('.', ',')
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { if (a != null && b != null && cc != null) onSave(method, a, b, cc) }, enabled = ang?.measured != null) { Text("Uložit") }
+        },
+        dismissButton = {
+            Row {
+                onDelete?.let { TextButton(onClick = it) { Text("Smazat", color = MaterialTheme.colorScheme.error) } }
                 TextButton(onClick = onDismiss) { Text("Zrušit") }
             }
         },

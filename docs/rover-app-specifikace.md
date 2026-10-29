@@ -428,3 +428,12 @@ Specifikace: `objekt-mereni-specifikace.md` (projekt), kap. 6.
 - **Celé okno:** dlouhý stisk na prázdném místě plochy (v každém režimu) nebo tlačítko „Celé okno“ skryje lištu lokality, podzáložky, výsledky a spodní lištu aplikace; zůstanou režimy a nástroje Kreslit. Zpět: další dlouhý stisk na prázdném místě, „Zmenšit“ nebo systémové Zpět. Při odchodu ze záložky se vrátí normální zobrazení. Dlouhý stisk na vrcholu (Kreslit) dál maže vrchol; po dlouhém stisku se už nekreslí čára.
 - **Výsledky** pod plochou sbalené do řádku „▸ Výsledky: …“, rozbalení klepnutím; měření dvou bodů (Změřit) se ukazuje vždy.
 - Verze 0.11.6 (versionCode 27).
+
+## 26. Stav aplikace 0.11.7 (29. 10.) – úhly a body v ose
+
+- **Body v ose stěn:** každá stěna s body v ose má vlastní barvu (6 barev); čárkovaná přímka v ose stěny přes oba vrcholy až za nejvzdálenější bod (v náčrtu i ve skutečných souřadnicích); popisek „B7 ⟂ V3–V4“, ve skutečných souřadnicích s odchylkou od přímky v cm (chybný červeně). Vybraná stěna (Kreslit) zvýrazní svou přímku i body v ose.
+- **Úhel rohu pásmem (trojúhelník):** Pásmo → „Úhel rohu“, klepnutí na vrchol → a, b od rohu, c mezi konci; způsob „vnější roh: 1 stěna prodloužená“ (úhel stěn = 180° − změřený) nebo „podél obou stěn“ (vnitřní roh, uvnitř budovy). Náhled změřeného úhlu a úhlu stěn; přesnost ~1 cm na kratší straně, aspoň 0,2°. Ve výpočtu měření úhlu mezi stěnami.
+- **Předpoklad pravého úhlu:** Kreslit → „Pravoúhlá“ (objekt): vrcholy nakreslené 90° ± 20° dostanou vazbu 90° ± 1°. Klepnutí na vrchol → pravý úhel auto / ano / ne (+ Smazat vrchol). Polygonální závěr (120–150°) bez vazby. Měření (GNSS, osy, úhel pásmem) mají přednost; odchylka od 90° nad 2° = upozornění.
+- Na ploše u vrcholu ∟ (předpoklad) / ∠ (pásmem) a úhel; výsledky: oddíl „Úhly mezi stěnami“ s odchylkami.
+- Ověřeno (Kotlin): obdélník 5 × 16 m, náčrt jako lichoběžník, 2 rohy GNSS + 3 kóty stran – bez vazby chyba vrcholů 1,7 m, s „Pravoúhlá“ 5 cm, s jedním úhlem pásmem (3-4-5) 1,3 cm.
+- Verze 0.11.7 (versionCode 28).

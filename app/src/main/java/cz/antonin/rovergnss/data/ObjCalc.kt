@@ -29,6 +29,9 @@ object ObjSource {
 data class ObjVertexRes(
     val index: Int, val id: Int, val name: String, val e: Double, val n: Double, val sigma: Double?,
     val source: Int, val angle: Double?, val h: Double?, val dh: Double?,
+    // úhel mezi stěnami (0.11.7): [wallAngle] vypočtený, [angleFix] 0 bez vazby, 1 předpoklad 90°, 2 pásmem (trojúhelník);
+    // [angleObs] předepsaný / změřený, [angleBad] výsledek se od něj liší víc, než odpovídá přesnosti
+    val wallAngle: Double? = null, val angleFix: Int = 0, val angleObs: Double? = null, val angleBad: Boolean = false,
 ) {
     val y get() = -e
     val x get() = -n
@@ -108,6 +111,22 @@ class ObjResult(
  */
 object ObjCalc {
     const val SKETCH_SIGMA = 5.0
+    const val RIGHT_SIGMA_DEG = 1.0      // předpoklad pravého úhlu ±1°
+    const val RIGHT_TOL_DEG = 2.0        // odchylka od 90° nad 2° = upozornění
+
+    /** Přesnost úhlu z trojúhelníku pásmem [°]: ~1 cm na kratší straně, aspoň 0,2°. */
+    fun angleSigma(a: ObjAngle): Double = max(0.2, Math.toDegrees(0.01 / max(min(a.a, a.b), 0.1)))
+
+    /** Úhel mezi stěnami ve vrcholu i (k sousedům p, q) [°]. */
+    fun wallAngleDeg(x: DoubleArray, i: Int, p: Int, q: Int): Double {
+        val e1 = x[2 * p] - x[2 * i]
+        val n1 = x[2 * p + 1] - x[2 * i + 1]
+        val e2 = x[2 * q] - x[2 * i]
+        val n2 = x[2 * q + 1] - x[2 * i + 1]
+        val l = hypot(e1, n1) * hypot(e2, n2)
+        if (l < 1e-12) return 0.0
+        return Math.toDegrees(Math.acos(((e1 * e2 + n1 * n2) / l).coerceIn(-1.0, 1.0)))
+    }
     fun edgeSigma(len: Double) = 0.05 + 0.08 * len
     const val AXIS_SIGMA = 0.03
     const val WALL_SIGMA = 0.02
@@ -237,8 +256,17 @@ object ObjCalc {
             val sg = if (c != null) sqrt(max(0.0, c[2 * i][2 * i] + c[2 * i + 1][2 * i + 1])) else null
             val ang = interiorAngle(X, i, nV, sk.closed, ccw)
             val h = corner?.let { obs[it.id]?.h }
+            val wa = sk.neighbors(i)?.let { (p, q) -> wallAngleDeg(X, i, p, q) }
+            val tapeAng = sk.angles.lastOrNull { it.vertex == v.id && it.wallAngle != null }
+            val fix = when {
+                tapeAng != null -> 2
+                sk.isRight(i) -> 1
+                else -> 0
+            }
+            val obsAng = if (fix == 2) tapeAng!!.wallAngle else if (fix == 1) 90.0 else null
+            val bad = wa != null && obsAng != null && abs(wa - obsAng) > (if (fix == 2) max(3 * angleSigma(tapeAng!!), 0.5) else RIGHT_TOL_DEG)
             ObjVertexRes(i, v.id, corner?.let { obs[it.id]?.name } ?: "V${i + 1}", X[2 * i], X[2 * i + 1], sg, src, ang, h,
-                if (h != null && controlH != null) h - controlH else null)
+                if (h != null && controlH != null) h - controlH else null, wa, fix, obsAng, bad)
         }
         val tapeOf = { ia: Int, ib: Int ->
             sk.tapes.firstOrNull { t ->
@@ -432,6 +460,19 @@ object ObjCalc {
                     l.add(Eq(1 / (s * s), { x -> lineDist(x, ia, ib, c[0], c[1]) }, 0.0, intArrayOf(2 * ia, 2 * ia + 1, 2 * ib, 2 * ib + 1)))
                 }
             }
+        }
+        // úhly mezi stěnami: pásmem (trojúhelník) a předpoklad pravého úhlu (0.11.7)
+        if (!linearOnly) for (i in sk.vertices.indices) {
+            val (p, q) = sk.neighbors(i) ?: continue
+            val vid = sk.vertices[i].id
+            val ta = sk.angles.lastOrNull { it.vertex == vid && it.wallAngle != null }
+            val (obsDeg, sd) = when {
+                ta != null -> ta.wallAngle!! to angleSigma(ta)
+                sk.isRight(i) -> 90.0 to RIGHT_SIGMA_DEG
+                else -> continue
+            }
+            l.add(Eq(1 / (sd * sd), { x -> wallAngleDeg(x, i, p, q) }, obsDeg,
+                intArrayOf(2 * i, 2 * i + 1, 2 * p, 2 * p + 1, 2 * q, 2 * q + 1)))
         }
         for (t in sk.tapes) {
             if (linearOnly) break
