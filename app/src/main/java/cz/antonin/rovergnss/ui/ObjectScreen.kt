@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -488,6 +489,10 @@ fun ObjectScreen(c: RoverController) {
         var add = simp
         if (startNearLast) add = add.drop(1)
         if (endNearFirst && add.isNotEmpty()) add = add.dropLast(1)
+        // bez zdvojených vrcholů: bod čáry u existujícího vrcholu se vynechá (obrys nejde větvit)
+        val n0 = add.size
+        add = add.filter { q -> vPos.none { (toScreen(it) - q).getDistance() < hitR * 0.8f } }
+        if (add.size < n0) c.postMessage("Vrchol na místě existujícího vynechán – obrys uzavřeš klepnutím na první vrchol")
         val sketchPts = add.map { toSketch(it) }
         edit { s0 ->
             var id = s0.nextId
@@ -531,15 +536,16 @@ fun ObjectScreen(c: RoverController) {
 
     val full by c.objFull.collectAsStateWithLifecycle()
     var resOpen by rememberSaveable { mutableStateOf(false) }
+    var help by rememberSaveable { mutableStateOf(false) }
     BackHandler(enabled = full) { c.objFull.value = false }
     DisposableEffect(Unit) { onDispose { c.objFull.value = false } }
     LaunchedEffect(full) { fitReq++ }
 
     Column(Modifier.fillMaxSize()) {
-        // objekt
-        if (!full) Row(Modifier.padding(horizontal = 8.dp).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+        // výběr objektu (menu: objekty, nový, přejmenovat, smazat) – v řádku režimů, šetří plochu (0.11.12)
+        val objPicker: @Composable () -> Unit = {
             Box {
-                TextButton(onClick = { objMenu = true }) { Text("Objekt: ${obj?.name ?: "žádný"} ▾", style = MaterialTheme.typography.titleSmall) }
+                TextButton(onClick = { objMenu = true }) { Text("${obj?.name ?: "objekt"} ▾", style = MaterialTheme.typography.titleSmall) }
                 DropdownMenu(expanded = objMenu, onDismissRequest = { objMenu = false }) {
                     objects.forEach { o ->
                         DropdownMenuItem(text = { Text(o.name + if (o.id == obj?.id) "  ✓" else "") }, onClick = {
@@ -548,19 +554,24 @@ fun ObjectScreen(c: RoverController) {
                             fitReq++
                         })
                     }
+                    HorizontalDivider()
                     DropdownMenuItem(text = { Text("Nový objekt…") }, onClick = {
                         objMenu = false
                         nameText = ""
                         nameDialog = "new"
                     })
+                    if (obj != null) {
+                        DropdownMenuItem(text = { Text("Přejmenovat…") }, onClick = {
+                            objMenu = false
+                            nameText = obj.name
+                            nameDialog = "rename"
+                        })
+                        DropdownMenuItem(text = { Text("Smazat objekt…", color = MaterialTheme.colorScheme.error) }, onClick = {
+                            objMenu = false
+                            askDeleteObj = true
+                        })
+                    }
                 }
-            }
-            if (obj != null) {
-                TextButton(onClick = {
-                    nameText = obj.name
-                    nameDialog = "rename"
-                }) { Text("Přejmenovat") }
-                TextButton(onClick = { askDeleteObj = true }) { Text("Smazat", color = MaterialTheme.colorScheme.error) }
             }
         }
         if (obj == null) {
@@ -578,6 +589,7 @@ fun ObjectScreen(c: RoverController) {
             }
         } else {
             Row(Modifier.padding(horizontal = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (!full) objPicker()
                 ObjMode.NAMES.forEachIndexed { i, n ->
                     FilterChip(selected = mode == i, onClick = {
                         mode = i
@@ -588,8 +600,10 @@ fun ObjectScreen(c: RoverController) {
                 }
                 TextButton(onClick = { fitReq++ }) { Text("Celé") }
                 TextButton(onClick = { c.objFull.value = !full }) { Text(if (full) "Zmenšit" else "Celé okno") }
+                TextButton(onClick = { help = !help }) { Text(if (help) "? ✕" else "?") }
             }
-            if (!full) Text(
+            // návod jen na požádání (?)
+            if (!full && help) Text(
                 when (mode) {
                     ObjMode.DRAW -> when {
                         whole -> "Celý náčrt: táhni = posun, dvěma prsty = otočení a velikost. Pohled se nemění."
@@ -600,7 +614,7 @@ fun ObjectScreen(c: RoverController) {
                             "Pravoúhlá = rohy kolem 90° (±15°) se počítají jako pravé, Přepočítat = náčrt převezme vypočtený tvar."
                     }
                     ObjMode.POINTS -> "Klepni na roh, na stěnu (dveře), na P, nebo mimo obrys (bod v ose stěny / kontrolní): REC změří, nebo vyber změřený bod."
-                    ObjMode.TAPE -> if (angleMode) "Klepni na roh a zadej trojúhelník: a, b od rohu podél stěn (nebo prodloužení), c mezi konci."
+                    ObjMode.TAPE -> if (angleMode) "Klepni na roh, jehož úhel jsi změřil pásmem (a, b od rohu, c mezi značkami)."
                     else if (tapeFirst == null) "Klepni na první bod kóty (vrchol nebo bod), pak na druhý. Mezi dvěma body jedna kóta – znovu = přepsat. Klepnutí na číslo kóty = úprava."
                     else "Klepni na druhý bod kóty."
                     else -> "Klepni na dva body – vzdálenost, směr, rozdíl výšek a přesnost."
@@ -671,7 +685,7 @@ fun ObjectScreen(c: RoverController) {
                 FilterChip(selected = angleMode, onClick = {
                     angleMode = true
                     tapeFirst = null
-                }, label = { Text("Úhel rohu (trojúhelník)") })
+                }, label = { Text("Úhel rohu pásmem") })
             }
             val se = selEdge
             if (mode == ObjMode.DRAW && se != null && !whole) Row(
@@ -1244,7 +1258,8 @@ private fun DrawScope.drawObject(
         val er = if (world) r.edges.getOrNull(i) else null
         val col = if (er != null) SRC_COLORS[er.source] else Color(0xFF424242)
         drawLine(col, a, b, sw, pathEffect = if (er != null && er.source == ObjSource.SKETCH) dash else null)
-        if (er != null) {
+        // vypočtená délka jen u stěny bez kóty (s kótou je vidět kóta a rozdíl)
+        if (er != null && er.tape == null) {
             val m = Offset((a.x + b.x) / 2, (a.y + b.y) / 2)
             val d = b - a
             val ld = max(d.getDistance(), 1e-3f)
@@ -1380,8 +1395,10 @@ private fun DrawScope.drawObject(
         if (sel || hlAxis) drawCircle(if (hlAxis && !sel) (wallCol ?: Color(0xFFFFA000)) else Color(0xFFFFA000), radius = 13f * dens,
             center = s, style = Stroke(2.5f * dens))
         val nm = pr?.name ?: names[p.id] ?: if (p.pointId == 0L) (if (p.label.isNotEmpty()) "${p.label} ?" else "?") else ""
+        // na ploše krátce (barva osy ukazuje stěnu); celý popisek u vybrané stěny / bodu nebo chybného bodu
+        val full = sel || hlAxis || pr?.bad == true
         val txt = when (p.type) {
-            ObjPointType.AXIS -> {
+            ObjPointType.AXIS -> if (!full) nm.replace(" ?", "?") else {
                 val ei = sk.edgeIndex(p.edge)
                 val en = edges.getOrNull(ei)?.let { (a, b) -> "V${a + 1}–V${b + 1}" } ?: "?"
                 "$nm ⟂ $en" + (pr?.residual?.let { " · " + String.format(Locale.US, "%.1f cm", it * 100).replace('.', ',') } ?: "")
@@ -1735,8 +1752,8 @@ private fun AngleDialog(
 ) {
     fun t(v: Double?) = v?.let { String.format(Locale.US, "%.3f", it).trimEnd('0').trimEnd('.').replace('.', ',') } ?: ""
     var method by remember { mutableIntStateOf(initial?.method ?: defaultMethod) }
-    var ta by remember { mutableStateOf(t(initial?.a ?: 3.0)) }
-    var tb by remember { mutableStateOf(t(initial?.b ?: 4.0)) }
+    var ta by remember { mutableStateOf(t(initial?.a)) }
+    var tb by remember { mutableStateOf(t(initial?.b)) }
     var tc by remember { mutableStateOf(t(initial?.c)) }
     fun num(s: String) = s.replace(',', '.').toDoubleOrNull()?.takeIf { it > 0 && it < 100 }
     val a = num(ta)
@@ -1745,7 +1762,7 @@ private fun AngleDialog(
     val ang = if (a != null && b != null && cc != null) ObjAngle(0, 0, method, a, b, cc) else null
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Úhel rohu $name") },
+        title = { Text("Úhel rohu $name pásmem") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1753,10 +1770,12 @@ private fun AngleDialog(
                     FilterChip(selected = method == 0, onClick = { method = 0 }, label = { Text("podél obou stěn") })
                 }
                 Text(
-                    if (method == 1) "a podél jedné stěny za roh (prodloužení její linie), b podél druhé stěny, c mezi konci."
-                    else "a, b podél obou stěn od rohu (vnitřní roh, nebo uvnitř budovy), c mezi konci.",
+                    "Nepovinné – jen když roh není pravý a chceš jeho úhel. Od rohu odměř a, udělej značku, po druhé stěně b, " +
+                        "druhá značka, pak změř c mezi značkami. " +
+                        if (method == 1) "Vnější roh: a po prodloužení jedné stěny za roh." else "a, b podél obou stěn (vnitřní roh, uvnitř budovy).",
                     style = MaterialTheme.typography.bodySmall,
                 )
+                AngleSketch(method)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     OutlinedTextField(ta, { ta = it }, singleLine = true, label = { Text("a [m]") }, modifier = Modifier.weight(1f),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
@@ -1767,7 +1786,7 @@ private fun AngleDialog(
                 }
                 Text(
                     when {
-                        ang == null -> "Zadej a, b, c (u pravého úhlu a 3, b 4 → c 5,00)."
+                        ang == null -> "Zadej a, b, c (např. a 3, b 4: u pravého úhlu c 5,00)."
                         ang.measured == null -> "Délky netvoří trojúhelník."
                         else -> String.format(Locale.US, "změřený úhel %.2f° → úhel mezi stěnami %.2f° (±%.1f°)",
                             ang.measured, ang.wallAngle, ObjCalc.angleSigma(ang)).replace('.', ',')
@@ -1786,6 +1805,39 @@ private fun AngleDialog(
             }
         },
     )
+}
+
+/** Obrázek k úhlu rohu pásmem: stěny, značky a, b a spojnice c. [method] 1 = vnější roh (jedna stěna prodloužená). */
+@Composable
+private fun AngleSketch(method: Int) {
+    val wallC = MaterialTheme.colorScheme.onSurface
+    Canvas(Modifier.fillMaxWidth().height(110.dp)) {
+        val dn = density
+        val k = Offset(size.width * 0.45f, size.height * 0.82f)           // roh
+        val up = Offset(k.x - size.height * 0.12f, size.height * 0.08f)    // konec stěny 2 (mírně šikmo – obecný úhel)
+        val sw = 3f * dn
+        // stěna 1 vodorovně doleva od rohu, stěna 2 nahoru
+        drawLine(wallC, Offset(size.width * 0.05f, k.y), k, sw)
+        drawLine(wallC, k, up, sw)
+        val purple = Color(0xFF8E24AA)
+        val dash = PathEffect.dashPathEffect(floatArrayOf(5f * dn, 4f * dn))
+        val pa = if (method == 1) {
+            // prodloužení stěny 1 za roh doprava
+            drawLine(wallC.copy(alpha = 0.5f), k, Offset(size.width * 0.85f, k.y), 1.5f * dn, pathEffect = dash)
+            Offset(size.width * 0.75f, k.y)
+        } else Offset(size.width * 0.15f, k.y)
+        val pb = k + (up - k) * 0.7f
+        drawLine(purple, k, pa, 2f * dn)
+        drawLine(purple, k, pb, 2f * dn)
+        drawLine(purple, pa, pb, 2f * dn, pathEffect = dash)
+        drawCircle(purple, 4f * dn, pa)
+        drawCircle(purple, 4f * dn, pb)
+        drawCircle(wallC, 5f * dn, k)
+        label("roh", k.x + 6 * dn, k.y + 14 * dn, wallC, dn)
+        label("a", (k.x + pa.x) / 2, k.y + 12 * dn, purple, dn, center = true)
+        label("b", (k.x + pb.x) / 2 - 10 * dn, (k.y + pb.y) / 2, purple, dn, center = true)
+        label("c", (pa.x + pb.x) / 2 + 10 * dn, (pa.y + pb.y) / 2 - 6 * dn, purple, dn, center = true)
+    }
 }
 
 /** Kóta pásmem: délka v metrech (čárka i tečka). */

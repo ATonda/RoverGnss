@@ -472,3 +472,12 @@ Specifikace: `objekt-mereni-specifikace.md` (projekt), kap. 6.
 - Režim **Vzdálenost** (dřív Změřit) – neplést s REC.
 - Popisky: vypočtená délka stěny uvnitř obrysu, kóta vně; u svislé stěny text kóty zarovnaný od čáry; jméno vrcholu vně rohu, úhel uvnitř.
 - Verze 0.11.11 (versionCode 32).
+
+## 31. Stav aplikace 0.11.12 (29. 10.) – víc místa pro náčrt, popisky, úhel rohu pásmem
+
+- **Plocha:** v Objektu jeden řádek „Sítiny ▾ … Objekt ▾“ (lokalita a přepínač Body / Vytyčování / Objekt) místo lišty lokality a záložek. Výběr objektu „test ▾“ v řádku režimů; menu: objekty, Nový, Přejmenovat, Smazat. Návod skrytý, zobrazí ho „?“.
+- **Délky:** vypočtená délka uvnitř obrysu jen u stěny bez kóty (s kótou je vidět kóta a rozdíl – dřív dvakrát stejné číslo).
+- **Body v ose:** na ploše krátce „P1?“ / „B7“ (barva osy = stěna); celý popisek „P1 ⟂ V1–V2“ u vybrané stěny nebo bodu a u chybného bodu.
+- **Úhel rohu pásmem** (dřív „trojúhelník“): nepovinné, jen pro roh, který není pravý. Dialog s obrázkem (roh, značky a, b, spojnice c), bez předvyplněných 3 / 4. Proč nestačí kóty stěn: délky stran čtyřúhelník neurčí, dá se „naklonit“; úhel dá Pravoúhlá, GPS body, úhlopříčka nebo a, b, c.
+- **Bez zdvojených vrcholů:** bod čáry prstem u existujícího vrcholu se vynechá (obrys nejde větvit); obrys se uzavře klepnutím na první vrchol.
+- Verze 0.11.12 (versionCode 33).

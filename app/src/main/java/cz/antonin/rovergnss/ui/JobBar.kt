@@ -30,7 +30,7 @@ import cz.antonin.rovergnss.service.RoverController
 
 /** Výběr aktivní lokality (v datech „job“): přepnutí, nová, přejmenování, smazání. */
 @Composable
-fun JobBar(c: RoverController, modifier: Modifier = Modifier) {
+fun JobBar(c: RoverController, modifier: Modifier = Modifier, compact: Boolean = false) {
     val job by c.activeJob.collectAsStateWithLifecycle()
     val jobsFlow = remember { c.db.jobs().all() }
     val jobs by jobsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
@@ -38,11 +38,13 @@ fun JobBar(c: RoverController, modifier: Modifier = Modifier) {
     var dialog by remember { mutableStateOf<String?>(null) }   // "new" / "rename" / "delete"
     var text by remember { mutableStateOf("") }
 
-    Row(modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(Icons.Filled.Folder, contentDescription = null)
+    // compact: bez ikony a slova „Lokalita“ (Objekt – víc místa pro náčrt)
+    Row(modifier.fillMaxWidth().padding(horizontal = if (compact) 4.dp else 12.dp, vertical = if (compact) 0.dp else 4.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        if (!compact) Icon(Icons.Filled.Folder, contentDescription = null)
         Box(Modifier.weight(1f)) {
             TextButton(onClick = { menu = true }) {
-                Text("Lokalita: ${job?.name ?: "…"}", style = MaterialTheme.typography.titleSmall)
+                Text(if (compact) (job?.name ?: "…") else "Lokalita: ${job?.name ?: "…"}", style = MaterialTheme.typography.titleSmall)
                 Icon(Icons.Filled.ArrowDropDown, contentDescription = null)
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
