@@ -186,6 +186,8 @@ fun ObjectScreen(c: RoverController) {
     var nameDialog by remember { mutableStateOf<String?>(null) }   // "new" / "rename"
     var nameText by remember { mutableStateOf("") }
     var askDeleteObj by remember { mutableStateOf(false) }
+    var moveDialog by remember { mutableStateOf<Boolean?>(null) }   // přesun (false) / kopie (true) do jiné lokality
+    val allJobs by remember { c.db.jobs().all() }.collectAsStateWithLifecycle(initialValue = emptyList())
 
     val dbSk = remember(obj?.data) { obj?.sketch ?: ObjSketch() }
     // změny se zobrazí hned (místní stav), uložení do databáze běží na pozadí; nová data z databáze místní stav nahradí
@@ -599,6 +601,14 @@ fun ObjectScreen(c: RoverController) {
                             objMenu = false
                             nameText = obj.name
                             nameDialog = "rename"
+                        })
+                        DropdownMenuItem(text = { Text("Přesunout do lokality…") }, onClick = {
+                            objMenu = false
+                            moveDialog = false
+                        })
+                        DropdownMenuItem(text = { Text("Kopírovat do lokality…") }, onClick = {
+                            objMenu = false
+                            moveDialog = true
                         })
                         DropdownMenuItem(text = { Text("Smazat objekt…", color = MaterialTheme.colorScheme.error) }, onClick = {
                             objMenu = false
@@ -1125,6 +1135,33 @@ fun ObjectScreen(c: RoverController) {
             dismissButton = { TextButton(onClick = { askDelV = null }) { Text("Zrušit") } },
         )
     }
+    moveDialog?.let { copy ->
+        val o = obj
+        if (o != null) AlertDialog(
+            onDismissRequest = { moveDialog = null },
+            title = { Text(if (copy) "Kopírovat ${o.name} do lokality" else "Přesunout ${o.name} do lokality") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Náčrt, kóty, vazby a pomocné body. Změřené body zůstávají v této lokalitě – v náčrtu budou " +
+                        "připravené k novému změření (stejné jméno).", style = MaterialTheme.typography.bodySmall)
+                    allJobs.filter { it.id != o.jobId }.forEach { jb ->
+                        TextButton(onClick = {
+                            moveDialog = null
+                            c.moveObject(o, jb.id, copy) { id ->
+                                if (!copy) {
+                                    selId = id
+                                    c.setActiveJob(jb.id)   // přesun: přepnout na cílovou lokalitu
+                                }
+                            }
+                        }) { Text(jb.name) }
+                    }
+                    if (allJobs.none { it.id != o.jobId }) Text("Jiná lokalita není – založ ji v menu lokality.")
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { moveDialog = null }) { Text("Zrušit") } },
+        )
+    }
     if (askDeleteObj && obj != null) AlertDialog(
         onDismissRequest = { askDeleteObj = false },
         title = { Text("Smazat objekt ${obj.name}?") },
@@ -1158,8 +1195,11 @@ fun ObjectScreen(c: RoverController) {
                     val name = if (np.label.isNotEmpty()) {
                         val names = c.db.points().listByJob(j.id).map { it.name }.toSet()
                         if (np.label !in names) np.label else {
-                            val used = names.mapNotNull { Regex("^P(\\d+)$").find(it)?.groupValues?.get(1)?.toIntOrNull() }
-                            "P${(used.maxOrNull() ?: 0) + 1}"
+                            // obsazené: další volné se stejnou předponou (P…, B…)
+                            val pre = Regex("^([^0-9]*)").find(np.label)?.groupValues?.get(1)?.ifEmpty { "P" } ?: "P"
+                            val rx = Regex("^" + Regex.escape(pre) + "(\\d+)$")
+                            val used = names.mapNotNull { rx.find(it)?.groupValues?.get(1)?.toIntOrNull() }
+                            pre + ((used.maxOrNull() ?: 0) + 1)
                         }
                     } else c.nextPointName(j.id)
                     // id nového umístění se přidělí hned; připravené (P) zůstává a REC doplní změřený bod
@@ -1893,7 +1933,8 @@ private fun PlaceDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                if (initial.label.isNotEmpty() && initial.pointId == 0L) "Pomocný bod ${initial.label}"
+                if (initial.label.isNotEmpty() && initial.pointId == 0L)
+                    (if (initial.type == ObjPointType.AXIS) "Pomocný bod " else "Bod ") + initial.label
                 else if (initial.id == 0) "Umístit bod" else "Bod v náčrtu"
             )
         },

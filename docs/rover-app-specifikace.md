@@ -516,3 +516,9 @@ Specifikace: `objekt-mereni-specifikace.md` (projekt), kap. 6.
   - pohled: Celý objekt `ZoomOutMap`, Celé okno `Fullscreen`, Nápověda `HelpOutline`.
 - Nad plochou jen řádek s objektem a stavem (režim, vybraná stěna / vrchol).
 - Verze 0.11.15 (versionCode 36).
+
+## 35. Stav aplikace 0.11.16 (30. 10.) – přesun / kopie objektu, hlášení 3 s
+
+- Menu objektu („test ▾“): **Přesunout do lokality…** a **Kopírovat do lokality…** – výběr cílové lokality. Přenáší se náčrt, kóty, vazby a pomocné body. Změřené body zůstávají v původní lokalitě; v náčrtu se z nich stanou nezměřené body se stejným jménem (REC je změří pod tím jménem, je-li v cílové lokalitě obsazené, další volné se stejnou předponou). Přesun přepne na cílovou lokalitu, kopie zůstane.
+- Hlášení dole (snackbar) 3 s.
+- Verze 0.11.16 (versionCode 37).

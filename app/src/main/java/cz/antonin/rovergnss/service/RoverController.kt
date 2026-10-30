@@ -858,6 +858,31 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
 
     fun deleteObject(o: SiteObject) = scope.launch { db.objects().delete(o.id) }
 
+    /**
+     * Přesun / kopie objektu do jiné lokality (0.11.16): náčrt, kóty, vazby, pomocné body. Změřené body zůstávají
+     * v původní lokalitě – v náčrtu z nich jsou nezměřené body se stejným jménem, připravené k novému změření.
+     */
+    fun moveObject(o: SiteObject, toJob: Long, copy: Boolean, onDone: (Long) -> Unit = {}) = scope.launch {
+        if (toJob == o.jobId) return@launch
+        val names = db.points().listByJob(o.jobId).associate { it.id to it.name }
+        val sk = o.sketch
+        val nsk = sk.copy(places = sk.places.map { p ->
+            if (p.pointId == 0L) p else p.copy(pointId = 0L, label = p.label.ifEmpty { names[p.pointId] ?: "" })
+        })
+        val target = db.jobs().get(toJob)?.name ?: "?"
+        val id = if (copy) db.objects().insert(SiteObject(jobId = toJob, name = o.name, data = nsk.toJson()))
+        else {
+            db.objects().update(o.copy(jobId = toJob, data = nsk.toJson()))
+            o.id
+        }
+        synchronized(undoStacks) {
+            undoStacks.remove(o.id)
+            redoStacks.remove(o.id)
+        }
+        postMessage(if (copy) "Objekt ${o.name} zkopírován do lokality $target" else "Objekt ${o.name} přesunut do lokality $target")
+        withContext(Dispatchers.Main) { onDone(id) }
+    }
+
     /** Uloží náčrt objektu. */
     fun saveSketch(objectId: Long, sk: ObjSketch) = scope.launch {
         db.objects().get(objectId)?.let { db.objects().update(it.copy(data = sk.toJson())) }

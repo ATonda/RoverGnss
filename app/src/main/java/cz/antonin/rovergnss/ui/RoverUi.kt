@@ -18,12 +18,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -67,7 +69,12 @@ fun RoverUi(controller: RoverController, permissionsOk: Boolean, onRequestPermis
         var mapFull by rememberSaveable { mutableStateOf(controller.prefs.mapFull) }
         val snackbar = remember { SnackbarHostState() }
         LaunchedEffect(Unit) {
-            controller.messages.collect { snackbar.showSnackbar(it) }
+            // hlášení 3 s (0.11.16; dřív výchozí krátké ~4–5 s)
+            controller.messages.collect { m ->
+                val shown = launch { snackbar.showSnackbar(m, duration = SnackbarDuration.Indefinite) }
+                kotlinx.coroutines.delay(3000)
+                shown.cancel()
+            }
         }
         // navigace k bodu a začátek měření přepnou na mapu
         LaunchedEffect(Unit) {
