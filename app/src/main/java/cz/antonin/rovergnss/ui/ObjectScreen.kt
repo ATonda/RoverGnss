@@ -4,6 +4,39 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AddCircleOutline
+import androidx.compose.material.icons.filled.AddLocationAlt
+import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.Flip
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material.icons.filled.HelpOutline
+import androidx.compose.material.icons.filled.OpenWith
+import androidx.compose.material.icons.filled.Pentagon
+import androidx.compose.material.icons.filled.Polyline
+import androidx.compose.material.icons.filled.Redo
+import androidx.compose.material.icons.filled.ShowChart
+import androidx.compose.material.icons.filled.SquareFoot
+import androidx.compose.material.icons.filled.Straighten
+import androidx.compose.material.icons.filled.Timeline
+import androidx.compose.material.icons.filled.Undo
+import androidx.compose.material.icons.filled.ZoomOutMap
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.window.Popup
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -537,6 +570,8 @@ fun ObjectScreen(c: RoverController) {
     var resOpen by rememberSaveable { mutableStateOf(false) }
     var help by rememberSaveable { mutableStateOf(false) }
     var bannerOpen by remember { mutableStateOf(false) }   // rozbalená hláška rozporu
+    val railScroll = rememberScrollState()                 // lišta nástrojů: posun se drží (0.11.15)
+    var prevView by remember { mutableStateOf<Triple<Float, Offset, Float>?>(null) }   // předchozí pohled (Celý objekt)
     BackHandler(enabled = full) { c.objFull.value = false }
     DisposableEffect(Unit) { onDispose { c.objFull.value = false } }
 
@@ -587,22 +622,15 @@ fun ObjectScreen(c: RoverController) {
                 )
             }
         } else {
-            Row(Modifier.padding(horizontal = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (!full) objPicker()
-                ObjMode.NAMES.forEachIndexed { i, n ->
-                    FilterChip(selected = mode == i, onClick = {
-                        mode = i
-                        tapeFirst = null
-                        measSel = emptyList()
-                        relFirst = null
-                    }, label = { Text(n) })
-                }
-                TextButton(onClick = {
-                    vRot = 0f   // natočení jako náčrt
-                    fitReq++
-                }) { Text("Celé") }
-                TextButton(onClick = { c.objFull.value = !full }) { Text(if (full) "Zmenšit" else "Celé okno") }
-                TextButton(onClick = { help = !help }) { Text(if (help) "? ✕" else "?") }
+            // nahoře jen výběr objektu (nástroje jsou v liště vlevo – 0.11.15)
+            if (!full) Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                objPicker()
+                Text(
+                    ObjMode.NAMES[mode] + (if (mode == ObjMode.TAPE && angleMode) " – úhel rohu" else "") +
+                        (selEdge?.let { e -> edges.getOrNull(e)?.let { (a, b) -> " · stěna V${a + 1}–V${b + 1}" } } ?: "") +
+                        (selVertex?.takeIf { it < sk.vertices.size }?.let { " · vrchol V${it + 1}" } ?: ""),
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
             // návod jen na požádání (?)
             if (!full && help) Text(
@@ -623,139 +651,169 @@ fun ObjectScreen(c: RoverController) {
                 },
                 style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp),
             )
-            if (mode == ObjMode.DRAW) Row(Modifier.padding(horizontal = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedButton(onClick = { edit { it.copy(closed = !it.closed) } }, enabled = sk.vertices.size >= 3 || sk.closed) {
-                    Text(if (sk.closed) "Otevřít obrys" else "Uzavřít obrys")
-                }
-                key(undoVer) {
-                    OutlinedButton(onClick = { c.undoObject(obj.id, true); selEdge = null }, enabled = c.canUndo(obj.id)) { Text("Zpět") }
-                    OutlinedButton(onClick = { c.undoObject(obj.id, false); selEdge = null }, enabled = c.canRedo(obj.id)) { Text("Znovu") }
-                }
-                FilterChip(selected = sk.square, onClick = { edit { it.copy(square = !it.square) } },
-                    label = { Text("Pravoúhlá") }, enabled = sk.vertices.size >= 3)
-                // Přepočítat (dřív Narovnat): náčrt převezme vypočtený tvar; při rozporu zakázáno (náčrt by převzal chybu)
-                OutlinedButton(onClick = { askRecalc = true },
-                    enabled = result.ok && !result.conflict && result.vertices.size == sk.vertices.size) { Text("Přepočítat") }
-                FilterChip(selected = whole, onClick = {
-                    whole = !whole
-                    selEdge = null
-                }, label = { Text("Upravit celý") }, enabled = sk.vertices.isNotEmpty())
-                if (whole) OutlinedButton(onClick = {
-                    // zrcadlení podle svislé osy těžiště
-                    edit { s0 ->
-                        val cx = s0.vertices.map { it.x }.average()
-                        s0.copy(
-                            vertices = s0.vertices.map { it.copy(x = 2 * cx - it.x) },
-                            places = s0.places.map { it.copy(x = 2 * cx - it.x) },
-                        )
-                    }
-                }) { Text("Zrcadlit") }
-                OutlinedButton(onClick = { askClear = true }, enabled = sk.vertices.isNotEmpty()) {
-                    Text("Smazat náčrt", color = MaterialTheme.colorScheme.error)
-                }
-                Text(
-                    "vrcholů ${sk.vertices.size}" + if (sk.closed) ", uzavřeno" else "",
-                    style = MaterialTheme.typography.bodySmall, modifier = Modifier.align(Alignment.CenterVertically),
-                )
-            }
-            val sv = selVertex?.takeIf { it < sk.vertices.size }
-            if (mode == ObjMode.DRAW && sv != null && !whole) Row(
-                Modifier.padding(horizontal = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            Row(Modifier.weight(1f).fillMaxWidth()) {
+            // lišta nástrojů vlevo: klepnutí = funkce, podržení = nápověda; pozice posunu se drží
+            Column(
+                Modifier.width(52.dp).fillMaxHeight().verticalScroll(railScroll).padding(vertical = 2.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                val vid = sk.vertices[sv].id
-                Text("V${sv + 1} pravý úhel:", style = MaterialTheme.typography.titleSmall)
-                ObjRight.NAMES.forEachIndexed { k, n ->
-                    FilterChip(selected = (sk.right[vid] ?: ObjRight.AUTO) == k, onClick = {
-                        edit { s0 -> s0.copy(right = if (k == ObjRight.AUTO) s0.right - vid else s0.right + (vid to k)) }
-                    }, label = { Text(n + if (k == ObjRight.AUTO) (if (sk.isRight(sv) && (sk.right[vid] ?: 0) == 0) " (90°)" else " (volný)") else "") },
-                        enabled = sk.neighbors(sv) != null)
-                }
-                OutlinedButton(onClick = {
-                    if (vertexDeps(sk, vid).first.isEmpty() && vertexDeps(sk, vid).second == 0) {
-                        edit { s0 -> removeVertex(s0, vid) }
-                        selVertex = null
-                    } else askDelV = vid
-                }) { Text("Smazat vrchol", color = MaterialTheme.colorScheme.error) }
-                TextButton(onClick = { selVertex = null }) { Text("Zrušit výběr") }
-            }
-            if (mode == ObjMode.TAPE) Row(
-                Modifier.padding(horizontal = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                FilterChip(selected = !angleMode, onClick = { angleMode = false }, label = { Text("Délka") })
-                FilterChip(selected = angleMode, onClick = {
-                    angleMode = true
+                fun setMode(m: Int, ang: Boolean = false) {
+                    mode = m
+                    angleMode = ang
                     tapeFirst = null
-                }, label = { Text("Úhel rohu pásmem") })
-            }
-            val se = selEdge
-            if (mode == ObjMode.DRAW && se != null && !whole) Row(
-                Modifier.padding(horizontal = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                val (ia, ib) = edges.getOrNull(se) ?: (0 to 0)
-                Text("Stěna V${ia + 1}–V${ib + 1}:", style = MaterialTheme.typography.titleSmall, modifier = Modifier.align(Alignment.CenterVertically))
-                OutlinedButton(onClick = {
-                    val q = selEdgePt
-                    if (q != null) edit { s0 ->
-                        val (a, b) = s0.edges().getOrNull(se) ?: return@edit s0
-                        val v = ObjVertex(s0.nextId, q.x.toDouble(), q.y.toDouble())
-                        val l = s0.vertices.toMutableList()
-                        if (b == 0) l.add(v) else l.add(a + 1, v)
-                        s0.copy(vertices = l, nextId = s0.nextId + 1)
+                    measSel = emptyList()
+                    relFirst = null
+                }
+                RailBtn("Kreslit – obrys prstem, vrcholy, stěny", { setMode(ObjMode.DRAW) }, selected = mode == ObjMode.DRAW) { RailIcon(Icons.Filled.Polyline) }
+                RailBtn("Body – umístit a změřit GPS body (REC)", { setMode(ObjMode.POINTS) }, selected = mode == ObjMode.POINTS) { RailIcon(Icons.Filled.GpsFixed) }
+                RailBtn("Pásmo – kóta mezi dvěma body", { setMode(ObjMode.TAPE) }, selected = mode == ObjMode.TAPE && !angleMode) { RailIcon(Icons.Filled.Straighten) }
+                RailBtn("Úhel rohu pásmem (a, b, c)", { setMode(ObjMode.TAPE, true) }, selected = mode == ObjMode.TAPE && angleMode) { RailIcon(Icons.Filled.SquareFoot) }
+                RailBtn("Vzdálenost – odměřit dva body", { setMode(ObjMode.MEASURE) }, selected = mode == ObjMode.MEASURE) { RailIcon(Icons.Filled.Timeline) }
+                HorizontalDivider(Modifier.padding(vertical = 4.dp).width(36.dp))
+                val sv = selVertex?.takeIf { it < sk.vertices.size }
+                val se = selEdge
+                when {
+                    mode != ObjMode.DRAW -> {}
+                    whole -> {
+                        RailBtn("Upravit celý – vypnout (táhni = posun, dvěma prsty = otočení a velikost)", {
+                            whole = false
+                        }, selected = true) { RailIcon(Icons.Filled.OpenWith) }
+                        RailBtn("Zrcadlit náčrt (podle svislé osy)", {
+                            edit { s0 ->
+                                val cx = s0.vertices.map { it.x }.average()
+                                s0.copy(
+                                    vertices = s0.vertices.map { it.copy(x = 2 * cx - it.x) },
+                                    places = s0.places.map { it.copy(x = 2 * cx - it.x) },
+                                )
+                            }
+                        }) { RailIcon(Icons.Filled.Flip) }
                     }
-                    selEdge = null
-                }) { Text("Vložit vrchol") }
-                OutlinedButton(onClick = {
-                    // pomocný bod P na prodloužení stěny za bližší konec (5 m; bez měřítka 30 % délky stěny), pak táhnout po ose
-                    val q = selEdgePt
-                    edit { s0 ->
-                        val (a, b) = s0.edges().getOrNull(se) ?: return@edit s0
-                        val va = s0.vertices[a]
-                        val vb = s0.vertices[b]
-                        val len = hypot(vb.x - va.x, vb.y - va.y).takeIf { it > 1e-9 } ?: return@edit s0
-                        val nearA = q == null || hypot(q.x - va.x, q.y - va.y) <= hypot(q.x - vb.x, q.y - vb.y)
-                        val sc = result.scale?.takeIf { result.ok && result.scaleKnown && it > 0 }
-                        val dist = if (sc != null) 5.0 / sc else 0.3 * len
-                        val ux = (vb.x - va.x) / len
-                        val uy = (vb.y - va.y) / len
-                        val px = if (nearA) va.x - ux * dist else vb.x + ux * dist
-                        val py = if (nearA) va.y - uy * dist else vb.y + uy * dist
-                        val pNum = Regex("^P(\\d+)$")
-                        val used = s0.places.mapNotNull { pNum.find(it.label)?.groupValues?.get(1)?.toIntOrNull() } +
-                            points.mapNotNull { pNum.find(it.name)?.groupValues?.get(1)?.toIntOrNull() }
-                        s0.copy(
-                            places = s0.places + ObjPlace(s0.nextId, 0, ObjPointType.AXIS, edge = va.id, mount = ObjMount.FREE,
-                                x = px, y = py, label = "P${(used.maxOrNull() ?: 0) + 1}"),
-                            nextId = s0.nextId + 1,
+                    se != null -> {
+                        val (ia, ib) = edges.getOrNull(se) ?: (0 to 0)
+                        RailBtn("Vložit vrchol do stěny V${ia + 1}–V${ib + 1} (v místě klepnutí)", {
+                            val q = selEdgePt
+                            if (q != null) edit { s0 ->
+                                val (a, b) = s0.edges().getOrNull(se) ?: return@edit s0
+                                val v = ObjVertex(s0.nextId, q.x.toDouble(), q.y.toDouble())
+                                val l = s0.vertices.toMutableList()
+                                if (b == 0) l.add(v) else l.add(a + 1, v)
+                                s0.copy(vertices = l, nextId = s0.nextId + 1)
+                            }
+                            selEdge = null
+                        }) { RailIcon(Icons.Filled.AddCircleOutline) }
+                        RailBtn("Pomocný bod P v ose stěny (táhni po ose, podrž = změřit)", {
+                            // pomocný bod P na prodloužení stěny za bližší konec (5 m; bez měřítka 30 % délky stěny)
+                            val q = selEdgePt
+                            edit { s0 ->
+                                val (a, b) = s0.edges().getOrNull(se) ?: return@edit s0
+                                val va = s0.vertices[a]
+                                val vb = s0.vertices[b]
+                                val len = hypot(vb.x - va.x, vb.y - va.y).takeIf { it > 1e-9 } ?: return@edit s0
+                                val nearA = q == null || hypot(q.x - va.x, q.y - va.y) <= hypot(q.x - vb.x, q.y - vb.y)
+                                val sc = result.scale?.takeIf { result.ok && result.scaleKnown && it > 0 }
+                                val dist = if (sc != null) 5.0 / sc else 0.3 * len
+                                val ux = (vb.x - va.x) / len
+                                val uy = (vb.y - va.y) / len
+                                val px = if (nearA) va.x - ux * dist else vb.x + ux * dist
+                                val py = if (nearA) va.y - uy * dist else vb.y + uy * dist
+                                val pNum = Regex("^P(\\d+)$")
+                                val used = s0.places.mapNotNull { pNum.find(it.label)?.groupValues?.get(1)?.toIntOrNull() } +
+                                    points.mapNotNull { pNum.find(it.name)?.groupValues?.get(1)?.toIntOrNull() }
+                                s0.copy(
+                                    places = s0.places + ObjPlace(s0.nextId, 0, ObjPointType.AXIS, edge = va.id, mount = ObjMount.FREE,
+                                        x = px, y = py, label = "P${(used.maxOrNull() ?: 0) + 1}"),
+                                    nextId = s0.nextId + 1,
+                                )
+                            }
+                            selEdge = null
+                        }) { RailIcon(Icons.Filled.AddLocationAlt) }
+                        // vazba: výběr stěny zůstává (další vazba bez hledání nástroje)
+                        RailBtn("Vazba ⟂ kolmé / ∥ souběžné – pak klepni na druhou stěnu", {
+                            relFirst = sk.vertices[ia].id
+                        }, selected = relFirst != null) { RailGlyph("⟂∥") }
+                        val sid = sk.vertices.getOrNull(ia)?.id
+                        sk.rels.forEachIndexed { k, r ->
+                            if (r.a == sid || r.b == sid) RailBtn("Smazat vazbu ${ObjRel.SYMBOL[r.kind]}${k + 1}", {
+                                edit { s0 -> s0.copy(rels = s0.rels.filter { it.id != r.id }) }
+                            }) { RailGlyph("${ObjRel.SYMBOL[r.kind]}${k + 1}✕", small = true) }
+                        }
+                        RailBtn("Smazat stěnu", {
+                            if (!sk.closed && ia != 0 && ib != sk.vertices.lastIndex)
+                                c.postMessage("Prostřední stěnu otevřeného obrysu nejde smazat – smaž vrchol, nebo obrys uzavři")
+                            else edit { s0 -> deleteEdge(s0, se) }
+                            selEdge = null
+                        }) { RailIcon(Icons.Filled.Delete, BAD) }
+                        RailBtn("Zrušit výběr stěny", {
+                            selEdge = null
+                            relFirst = null
+                        }) { RailIcon(Icons.Filled.Close) }
+                    }
+                    sv != null -> {
+                        val vid = sk.vertices[sv].id
+                        val cur = sk.right[vid] ?: ObjRight.AUTO
+                        val glyphs = listOf("∟A", "∟", "∟̸")
+                        val tips = listOf(
+                            "Pravý úhel V${sv + 1}: auto (podle Pravoúhlá, ±15°) – teď " + if (sk.isRight(sv)) "90°" else "volný",
+                            "Pravý úhel V${sv + 1}: vždy 90°",
+                            "Pravý úhel V${sv + 1}: nikdy (volný roh)",
                         )
+                        ObjRight.NAMES.indices.forEach { k ->
+                            RailBtn(tips[k], {
+                                edit { s0 -> s0.copy(right = if (k == ObjRight.AUTO) s0.right - vid else s0.right + (vid to k)) }
+                            }, selected = cur == k, enabled = sk.neighbors(sv) != null) { RailGlyph(glyphs[k]) }
+                        }
+                        RailBtn("Smazat vrchol V${sv + 1}", {
+                            if (vertexDeps(sk, vid).first.isEmpty() && vertexDeps(sk, vid).second == 0) {
+                                edit { s0 -> removeVertex(s0, vid) }
+                                selVertex = null
+                            } else askDelV = vid
+                        }) { RailIcon(Icons.Filled.Delete, BAD) }
+                        RailBtn("Zrušit výběr vrcholu", { selVertex = null }) { RailIcon(Icons.Filled.Close) }
                     }
-                    selEdge = null
-                }) { Text("Pomocný bod") }
-                OutlinedButton(onClick = {
-                    if (!sk.closed && ia != 0 && ib != sk.vertices.lastIndex)
-                        c.postMessage("Prostřední stěnu otevřeného obrysu nejde smazat – smaž vrchol, nebo obrys uzavři")
-                    else edit { s0 -> deleteEdge(s0, se) }
-                    selEdge = null
-                }) { Text("Smazat stěnu", color = MaterialTheme.colorScheme.error) }
-                OutlinedButton(onClick = {
-                    relFirst = sk.vertices[ia].id
-                    selEdge = null
-                }) { Text("Vazba ⟂ ∥") }
-                // vazby této stěny: klepnutí = smazat
-                val sid = sk.vertices.getOrNull(ia)?.id
-                sk.rels.forEachIndexed { k, r ->
-                    if (r.a == sid || r.b == sid) TextButton(onClick = { edit { s0 -> s0.copy(rels = s0.rels.filter { it.id != r.id }) } }) {
-                        Text("${ObjRel.SYMBOL[r.kind]}${k + 1} ✕")
+                    else -> {
+                        key(undoVer) {
+                            RailBtn("Zpět", { c.undoObject(obj.id, true); selEdge = null }, enabled = c.canUndo(obj.id)) { RailIcon(Icons.Filled.Undo) }
+                            RailBtn("Znovu", { c.undoObject(obj.id, false); selEdge = null }, enabled = c.canRedo(obj.id)) { RailIcon(Icons.Filled.Redo) }
+                        }
+                        RailBtn(if (sk.closed) "Otevřít obrys" else "Uzavřít obrys (spojit poslední vrchol s prvním)", {
+                            edit { it.copy(closed = !it.closed) }
+                        }, enabled = sk.vertices.size >= 3 || sk.closed) { RailIcon(if (sk.closed) Icons.Filled.ShowChart else Icons.Filled.Pentagon) }
+                        RailBtn("Pravoúhlá – rohy kreslené kolem 90° (±15°) se počítají jako pravé", {
+                            edit { it.copy(square = !it.square) }
+                        }, selected = sk.square, enabled = sk.vertices.size >= 3) { RailGlyph("∟") }
+                        RailBtn("Přepočítat – náčrt převezme vypočtený tvar (Zpět vrátí)", { askRecalc = true },
+                            enabled = result.ok && !result.conflict && result.vertices.size == sk.vertices.size) { RailIcon(Icons.Filled.AutoFixHigh) }
+                        RailBtn("Upravit celý náčrt – posun, otočení, velikost, zrcadlení", {
+                            whole = true
+                            selEdge = null
+                        }, enabled = sk.vertices.isNotEmpty()) { RailIcon(Icons.Filled.OpenWith) }
+                        RailBtn("Smazat náčrt", { askClear = true }, enabled = sk.vertices.isNotEmpty()) { RailIcon(Icons.Filled.DeleteForever, BAD) }
                     }
                 }
-                TextButton(onClick = { selEdge = null }) { Text("Zrušit výběr") }
+                HorizontalDivider(Modifier.padding(vertical = 4.dp).width(36.dp))
+                RailBtn("Celý objekt (podrž = předchozí pohled)", {
+                    prevView = Triple(vScale, vOff, vRot)
+                    vRot = 0f   // natočení jako náčrt
+                    fitReq++
+                }, onLong = {
+                    prevView?.let { (s1, o1, r1) ->
+                        val now = Triple(vScale, vOff, vRot)
+                        vScale = s1
+                        vOff = o1
+                        vRot = r1
+                        prevView = now
+                    } ?: c.postMessage("Předchozí pohled není")
+                }) { RailIcon(Icons.Filled.ZoomOutMap) }
+                RailBtn(if (full) "Zmenšit" else "Celé okno (podrž na prázdném místě plochy = totéž)", { c.objFull.value = !full }) {
+                    RailIcon(if (full) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen)
+                }
+                RailBtn("Nápověda k režimu", { help = !help }, selected = help) { RailIcon(Icons.Filled.HelpOutline) }
             }
             // plátno
             Box(
                 Modifier
                     .weight(1f)
-                    .fillMaxWidth()
+                    .fillMaxHeight()
                     .padding(4.dp)
                     .background(Color(0xFFF7F7F2), RoundedCornerShape(6.dp))
                     .pointerInput(Unit) {
@@ -974,6 +1032,7 @@ fun ObjectScreen(c: RoverController) {
                         .background(Color.White.copy(alpha = 0.85f), RoundedCornerShape(6.dp)).padding(6.dp),
                 )
             }
+            }   // Row: lišta + plátno
             // výsledky (sbalitelné; v celém okně jen měření mezi dvěma body)
             if (full) {
                 if (mode == ObjMode.MEASURE && measSel.size == 2) Box(Modifier.padding(horizontal = 8.dp)) { MeasureCard(sk, result, measSel[0], measSel[1]) }
@@ -1523,6 +1582,55 @@ private fun DrawScope.labelAlong(s: String, at: Offset, along: Offset, color: Co
     nc.rotate(ang, at.x, at.y)
     label(s, at.x, at.y, color, dens, center = true)
     nc.restore()
+}
+
+/** Tlačítko lišty: klepnutí = funkce, podržení = nápověda (bublina), nebo [onLong]. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun RailBtn(
+    tip: String, onClick: () -> Unit, selected: Boolean = false, enabled: Boolean = true, onLong: (() -> Unit)? = null,
+    content: @Composable () -> Unit,
+) {
+    var showTip by remember { mutableStateOf(false) }
+    LaunchedEffect(showTip) {
+        if (showTip) {
+            kotlinx.coroutines.delay(2500)
+            showTip = false
+        }
+    }
+    Box(
+        Modifier.padding(vertical = 2.dp).size(44.dp)
+            .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent, RoundedCornerShape(10.dp))
+            .combinedClickable(
+                onClick = { if (enabled) onClick() },
+                onLongClick = { if (onLong != null && enabled) onLong() else showTip = true },
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(Modifier.alpha(if (enabled) 1f else 0.35f)) { content() }
+        if (showTip) Popup(
+            alignment = Alignment.CenterStart,
+            offset = IntOffset(with(LocalDensity.current) { 50.dp.roundToPx() }, 0),
+            onDismissRequest = { showTip = false },
+        ) {
+            Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.inverseSurface, shadowElevation = 4.dp) {
+                Text(tip, color = MaterialTheme.colorScheme.inverseOnSurface, style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(8.dp).widthIn(max = 260.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun RailIcon(v: ImageVector, tint: Color? = null) {
+    Icon(v, contentDescription = null, tint = tint ?: MaterialTheme.colorScheme.onSurface)
+}
+
+/** Symbol místo ikony (∟, ⟂, ∥). */
+@Composable
+private fun RailGlyph(t: String, small: Boolean = false) {
+    Text(t, style = if (small) MaterialTheme.typography.labelSmall else MaterialTheme.typography.titleMedium,
+        color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
 }
 
 /** Poslední stav převodu pohledu (pevný bod náčrtu v souřadnicích D, režim, natočení, měřítko) – 0.11.14. */

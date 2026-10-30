@@ -504,3 +504,15 @@ Specifikace: `objekt-mereni-specifikace.md` (projekt), kap. 6.
 - **Nejednoznačný rozpor:** všechny možné příčiny i důsledky oranžově („podezřelé“), nic červeně. Hláška na ploše jeden řádek („⚠ Rozpor – 5 možných příčin ▸“), klepnutí rozbalí podrobnosti. Gramatika „1 chybné / 2–4 chybná / 5 chybných měření“.
 - **Pohled jen ručně:** zoom, posun a otočení jen prsty a „Celé“ (plus otevření objektu). Změna režimu, výpočtu ani velikosti plochy pohled nemění; přepnutí náčrt ↔ výpočet drží pevný bod náčrtu na stejném místě a ve stejné velikosti.
 - Verze 0.11.14 (versionCode 35).
+
+## 34. Stav aplikace 0.11.15 (30. 10.) – lišta nástrojů vlevo (ikony)
+
+- Svislá lišta u levého okraje plochy (místo řádků tlačítek nad plochou). Klepnutí = funkce, podržení = bublina s nápovědou (u „Celý objekt“ podržení = předchozí pohled, jako v Trimble Access). Aktivní nástroj podbarvený, nedostupný zešedlý. Pozice posunu lišty se drží (po použití nástroje se lišta nevrací na začátek).
+- Ikony (Material, styl CAD / geodetických aplikací):
+  - režimy: Kreslit `Polyline`, Body (GPS) `GpsFixed`, Pásmo `Straighten`, Úhel rohu pásmem `SquareFoot`, Vzdálenost `Timeline` (inverze);
+  - Kreslit: Zpět `Undo`, Znovu `Redo`, Uzavřít / otevřít obrys `Pentagon` / `ShowChart`, Pravoúhlá „∟“, Přepočítat `AutoFixHigh`, Upravit celý `OpenWith`, Zrcadlit `Flip`, Smazat náčrt `DeleteForever`;
+  - vybraná stěna: Vložit vrchol `AddCircleOutline`, Pomocný bod `AddLocationAlt`, Vazba „⟂∥“ (výběr stěny zůstává), smazání vazby „⟂1✕“, Smazat stěnu `Delete`, Zrušit výběr `Close`;
+  - vybraný vrchol: pravý úhel „∟A“ auto / „∟“ ano / „∟̸“ ne, Smazat vrchol `Delete`, Zrušit výběr `Close`;
+  - pohled: Celý objekt `ZoomOutMap`, Celé okno `Fullscreen`, Nápověda `HelpOutline`.
+- Nad plochou jen řádek s objektem a stavem (režim, vybraná stěna / vrchol).
+- Verze 0.11.15 (versionCode 36).
