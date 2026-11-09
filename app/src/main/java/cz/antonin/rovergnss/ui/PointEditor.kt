@@ -74,8 +74,22 @@ fun PointEditor(
     var hOff by remember { mutableStateOf(if (initial.hOffset == 0.0) "" else num(initial.hOffset, 3)) }
     var err by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
+    // změřený bod (REC, 0.13.0): souřadnice jen ke čtení – mění je jen nové měření
+    val measured = initial.id != 0L && initial.source == PointSource.MEASURED
+
+    fun buildMeasured(): Point? {
+        if (name.isBlank()) return null.also { err = "Chybí název" }
+        val off = if (hOff.isBlank()) 0.0 else Angles.parseNumber(hOff) ?: return null.also { err = "Excentr nejde přečíst" }
+        if (kotlin.math.abs(off) > 100) return null.also { err = "Excentr nad 100 m" }
+        val dOff = off - initial.hOffset
+        return initial.copy(
+            name = name.trim(), kind = kind.trim(), note = note.trim(), url = url.trim().ifEmpty { null }, control = control,
+            hOffset = off, hEll = initial.hEll?.plus(dOff), bpv = initial.bpv?.plus(dOff),
+        )
+    }
 
     fun build(): Point? {
+        if (measured) return buildMeasured()
         val py = Angles.parseNumber(y)
         val px = Angles.parseNumber(x)
         val pl = Angles.parseAngle(lat)
@@ -126,13 +140,17 @@ fun PointEditor(
                 OutlinedTextField(name, { name = it }, label = { Text("Název / číslo") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(kind, { kind = it }, label = { Text("Druh") }, singleLine = true, modifier = Modifier.fillMaxWidth())
 
-                Text("S-JTSK a výška Bpv", style = MaterialTheme.typography.titleSmall)
-                Row {
+                if (measured) MeasuredCoords(initial) else Text("S-JTSK a výška Bpv", style = MaterialTheme.typography.titleSmall)
+                if (!measured) Row {
                     NumField(y, { y = it }, "Y [m]", Modifier.weight(1f), if (initial.jtskDerived) num(initial.y, 2) else "")
                     Spacer(Modifier.width(8.dp))
                     NumField(x, { x = it }, "X [m]", Modifier.weight(1f), if (initial.jtskDerived) num(initial.x, 2) else "")
                 }
-                if (initial.jtskDerived && y.isEmpty()) Text("S-JTSK dopočteno z ETRS89 (šedě)", style = MaterialTheme.typography.bodySmall)
+                if (!measured) {
+                if (initial.jtskDerived && y.isEmpty()) Text(
+                    "dopočteno z ETRS89: Y ${num(initial.y, 3)} · X ${num(initial.x, 3)} (při uložení se přepočte)",
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 NumField(bpv, { bpv = it }, "Bpv [m]", Modifier.fillMaxWidth())
 
                 Text("ETRS89", style = MaterialTheme.typography.titleSmall)
@@ -143,11 +161,16 @@ fun PointEditor(
                 OutlinedTextField(lon, { lon = it }, label = { Text("λ") }, singleLine = true,
                     modifier = Modifier.fillMaxWidth(), placeholder = { if (dLon.isNotEmpty()) Text(dLon) })
                 NumField(hEll, { hEll = it }, "h elipsoidická [m]", Modifier.fillMaxWidth(), if (initial.etrsDerived) num(initial.hEll, 2) else "")
-                if (initial.etrsDerived && lat.isEmpty()) Text("ETRS89 dopočteno ze S-JTSK (šedě)", style = MaterialTheme.typography.bodySmall)
+                if (initial.etrsDerived && lat.isEmpty()) Text(
+                    "dopočteno ze S-JTSK: φ ${initial.lat?.let { Angles.dms(it, 5) } ?: "–"} · λ ${initial.lon?.let { Angles.dms(it, 5) } ?: "–"}" +
+                        " · h ${num(initial.hEll, 3)} m (při uložení se přepočte)",
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 Text(
                     "Stačí jeden systém, druhý se dopočte převodem ČÚZK (~1–2 cm, h elipsoidu z Bpv přes kvazigeoid). Prázdná pole = dopočtená.",
                     style = MaterialTheme.typography.bodySmall,
                 )
+                }
 
                 Text("Výškový excentr", style = MaterialTheme.typography.titleSmall)
                 NumField(hOff, { hOff = it }, "Excentr výšky [m] (např. −1,80)", Modifier.fillMaxWidth())
@@ -158,8 +181,8 @@ fun PointEditor(
                     style = MaterialTheme.typography.bodySmall,
                 )
 
-                Text("Kvalita polohy", style = MaterialTheme.typography.titleSmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (!measured) Text("Kvalita polohy", style = MaterialTheme.typography.titleSmall)
+                if (!measured) Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     PointQuality.NAMES.forEachIndexed { i, n ->
                         FilterChip(selected = quality == i, onClick = { quality = i }, label = { Text(n) })
                     }
@@ -198,6 +221,31 @@ fun PointEditor(
             )
         }
     }
+}
+
+/** Souřadnice změřeného bodu jen ke čtení (0.13.0): S-JTSK, Bpv, ETRS89, excentr, kvalita. */
+@Composable
+private fun MeasuredCoords(p: Point) {
+    val mono = androidx.compose.ui.text.font.FontFamily.Monospace
+    Text("Souřadnice – změřeno (mění je jen nové měření)", style = MaterialTheme.typography.titleSmall)
+    @Composable
+    fun kv(k: String, v: String) {
+        Row(Modifier.fillMaxWidth()) {
+            Text(k, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+            Text(v, fontFamily = mono, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+    kv("S-JTSK Y / X", "${num(p.y, 3)} / ${num(p.x, 3)}")
+    kv("H Bpv", num(p.bpv, 3) + " m")
+    kv("φ ETRS89", p.lat?.let { Angles.dms(it, 5) } ?: "–")
+    kv("λ ETRS89", p.lon?.let { Angles.dms(it, 5) } ?: "–")
+    kv("h elipsoid", num(p.hEll, 3) + " m")
+    if (p.hOffset != 0.0) kv("v tom excentr výšky", num(p.hOffset, 3) + " m")
+    kv("kvalita", PointQuality.NAMES.getOrElse(p.quality) { "?" })
+    Text(
+        "Poloha antény na značce (výška antény odečtena), S-JTSK a Bpv převodem ČÚZK.",
+        style = MaterialTheme.typography.bodySmall,
+    )
 }
 
 @Composable

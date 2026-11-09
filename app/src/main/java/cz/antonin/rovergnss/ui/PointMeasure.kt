@@ -172,13 +172,16 @@ fun PointExtras(c: RoverController, p: Point, onClose: () -> Unit) {
         onClose()
     }
 
+    // změřený bod (REC): nové měření jen tlačítkem REC (kontrolní bod: Přeměřit), časované měření je pro dané body
+    val measuredPt = p.source == cz.antonin.rovergnss.data.PointSource.MEASURED
+    val running = meas
+    if (!measuredPt) {
     Text("Měření bodu", style = MaterialTheme.typography.titleSmall)
     Text(
         "Postav anténu na značku bodu. Výška antény ${antCm(c.prefs.antennaH)} (uživatelský profil v Nastavení). " +
             "Měří se průměr epoch bez pohybu a porovná s danými souřadnicemi bodu; ty se nemění.",
         style = MaterialTheme.typography.bodySmall,
     )
-    val running = meas
     if (running != null && running.point.id == p.id) {
         MeasureStatus(running, onStop = { c.stopMeasurement() }, onCancel = { c.stopMeasurement(save = false) })
     } else {
@@ -201,6 +204,10 @@ fun PointExtras(c: RoverController, p: Point, onClose: () -> Unit) {
         }, enabled = reason == null) { Text("Měřit") }
         reason?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
     }
+    } else if (p.control) Text(
+        "Kontrolní bod: přeměření tlačítkem REC → „Přeměřit ${p.name}“ (odchylka od tohoto měření).",
+        style = MaterialTheme.typography.bodySmall,
+    )
 
     val done = list.filter { it.endMs != null }
     if (done.isNotEmpty()) {

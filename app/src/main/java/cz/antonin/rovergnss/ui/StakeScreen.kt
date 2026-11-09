@@ -4,6 +4,8 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -16,6 +18,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -25,6 +29,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -35,7 +40,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import cz.antonin.rovergnss.data.Point
+import cz.antonin.rovergnss.data.PointIo
+import cz.antonin.rovergnss.data.PointSource
 import cz.antonin.rovergnss.export.Exporter
+import cz.antonin.rovergnss.export.FileNames
 import cz.antonin.rovergnss.service.RoverController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.emptyFlow
@@ -46,8 +55,9 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Vytyčování: výběr bodů, pořadí (podle názvu / nejbližší další), spuštění navigace po seznamu,
- * stav vytyčení u bodů a protokol CSV.
+ * Vytyčování: zadané body a body ČÚZK (0.13.0 – změřené body REC jsou v záložce Body). Nový bod, import a export
+ * CSV / KML, karta bodu (formulář, měření daného bodu), výběr bodů, pořadí (podle názvu / nejbližší další),
+ * spuštění navigace po seznamu, stav vytyčení u bodů a protokol CSV.
  */
 @Composable
 fun StakeScreen(c: RoverController) {
@@ -56,7 +66,11 @@ fun StakeScreen(c: RoverController) {
     val job by c.activeJob.collectAsStateWithLifecycle()
     val pointsFlow = remember(job?.id) { job?.let { c.db.points().byJob(it.id) } ?: emptyFlow() }
     val all by pointsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
-    val points = remember(all) { all.filter { it.lat != null && it.lon != null }.sortedWith(RoverController.NaturalOrder) }
+    // dané body (ruční, import, ČÚZK); změřené body REC se tu nevytyčují
+    val given = remember(all) { all.filter { it.source != PointSource.MEASURED }.sortedWith(RoverController.NaturalOrder) }
+    val points = remember(given) { given.filter { it.lat != null && it.lon != null } }
+    var editing by remember { mutableStateOf<Point?>(null) }
+    var exportMenu by remember { mutableStateOf(false) }
     val stake by c.stake.collectAsStateWithLifecycle()
     val nav by c.navTarget.collectAsStateWithLifecycle()
     var order by remember { mutableIntStateOf(c.prefs.stakeOrder) }
@@ -78,8 +92,80 @@ fun StakeScreen(c: RoverController) {
         }
     }
 
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val j = c.ensureJob()
+            val r = withContext(Dispatchers.IO) {
+                try {
+                    context.contentResolver.openInputStream(uri)?.use { PointIo.import(it, j.id) }
+                } catch (e: Exception) {
+                    PointIo.ImportResult(emptyList(), 0, e.message)
+                }
+            }
+            if (r == null || r.error != null) {
+                c.postMessage("Import selhal: ${r?.error ?: "soubor nelze otevřít"}")
+                return@launch
+            }
+            withContext(Dispatchers.IO) { c.db.points().insertAll(r.points) }
+            c.postMessage("Načteno ${r.points.size} bodů" + if (r.skipped > 0) ", vynecháno ${r.skipped} řádků" else "")
+        }
+    }
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val n = withContext(Dispatchers.IO) {
+                try {
+                    context.contentResolver.openOutputStream(uri)?.use { PointIo.export(given, it) } ?: -1
+                } catch (e: Exception) {
+                    -1
+                }
+            }
+            c.postMessage(if (n >= 0) "Exportováno $n bodů" else "Soubor nelze zapsat")
+        }
+    }
+    val kmlLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.google-earth.kml+xml")) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val n = withContext(Dispatchers.IO) {
+                try {
+                    context.contentResolver.openOutputStream(uri)?.use { Exporter.pointsKml(job?.name ?: "Body", given, it) } ?: -1
+                } catch (e: Exception) {
+                    -1
+                }
+            }
+            c.postMessage(if (n >= 0) "Exportováno $n bodů (KML)" else "Soubor nelze zapsat")
+        }
+    }
+
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Button(onClick = {
+                    scope.launch {
+                        val j = c.ensureJob()
+                        editing = Point(jobId = j.id, name = "")
+                    }
+                }) { Text("Nový bod") }
+                OutlinedButton(onClick = { importLauncher.launch(arrayOf("text/*", "application/octet-stream")) }) { Text("Import") }
+                Box {
+                    OutlinedButton(onClick = { exportMenu = true }, enabled = given.isNotEmpty()) { Text("Export") }
+                    DropdownMenu(expanded = exportMenu, onDismissRequest = { exportMenu = false }) {
+                        DropdownMenuItem(text = { Text("CSV (S-JTSK, ETRS89, Bpv)") }, onClick = {
+                            exportMenu = false
+                            exportLauncher.launch(FileNames.job(job?.name ?: "lokalita", "dane_body", System.currentTimeMillis(), "csv"))
+                        })
+                        DropdownMenuItem(text = { Text("KML (Google Earth, mapy)") }, onClick = {
+                            exportMenu = false
+                            kmlLauncher.launch(FileNames.job(job?.name ?: "lokalita", "dane_body", System.currentTimeMillis(), "kml"))
+                        })
+                    }
+                }
+            }
+            Text(
+                "Zadané body a body ČÚZK (na mapě v Živě zapni vrstvu ČÚZK a klepni na bod). Klepnutím na bod karta s měřením.",
+                style = MaterialTheme.typography.bodySmall,
+            )
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 FilterChip(selected = order == 0, onClick = { order = 0 }, label = { Text("podle názvu") })
                 FilterChip(selected = order == 1, onClick = { order = 1 }, label = { Text("nejbližší další") })
@@ -106,7 +192,7 @@ fun StakeScreen(c: RoverController) {
             )
         }
         HorizontalDivider()
-        if (points.isEmpty()) Text("Lokalita nemá body se souřadnicemi.", modifier = Modifier.padding(16.dp))
+        if (points.isEmpty()) Text("Lokalita nemá zadané body – přidej Nový bod, Import, nebo bod ČÚZK z mapy.", modifier = Modifier.padding(16.dp))
         LazyColumn(Modifier.fillMaxSize()) {
             items(points, key = { it.id }) { p ->
                 val current = stake != null && nav?.id == p.id
@@ -118,7 +204,7 @@ fun StakeScreen(c: RoverController) {
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Checkbox(p.stakeSel, { c.setStakeSel(p, it) })
-                    Column(Modifier.weight(1f)) {
+                    Column(Modifier.weight(1f).clickable { editing = p }) {
                         Text(p.name + if (current) "  ← právě" else "", style = MaterialTheme.typography.titleSmall)
                         if (p.stakeMs != null) {
                             val d2 = if (p.stakeDN != null && p.stakeDE != null) kotlin.math.hypot(p.stakeDN, p.stakeDE) else null
@@ -137,5 +223,21 @@ fun StakeScreen(c: RoverController) {
                 HorizontalDivider()
             }
         }
+    }
+
+    editing?.let { p ->
+        PointEditor(
+            initial = p,
+            onSave = {
+                c.savePoint(it)
+                editing = null
+            },
+            onDelete = if (p.id != 0L) ({
+                c.deletePoint(p)
+                editing = null
+            }) else null,
+            onDismiss = { editing = null },
+            extra = { PointExtras(c, p, onClose = { editing = null }) },
+        )
     }
 }

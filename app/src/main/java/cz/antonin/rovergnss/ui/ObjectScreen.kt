@@ -1921,8 +1921,11 @@ private fun PlaceDialog(
     var pl by remember { mutableStateOf(initial) }
     var edgeMenu by remember { mutableStateOf(false) }
     val df = remember { SimpleDateFormat("d. M. HH:mm", Locale.getDefault()) }
-    // nejnovější nahoře: čas posledního měření, jinak založení bodu
-    val sorted = remember(points, lastMeas) { points.sortedByDescending { lastMeas[it.id]?.startMs ?: it.createdMs } }
+    // jen změřené body (0.13.0 – zadané body patří do Vytyčování), nejnovější nahoře: čas posledního měření, jinak založení
+    val sorted = remember(points, lastMeas) {
+        points.filter { it.source == cz.antonin.rovergnss.data.PointSource.MEASURED }
+            .sortedByDescending { lastMeas[it.id]?.startMs ?: it.createdMs }
+    }
     val used = sk.places.filter { it.id != initial.id }.map { it.pointId }.toSet()
     fun edgeName(startId: Int?): String {
         val ei = sk.edgeIndex(startId)

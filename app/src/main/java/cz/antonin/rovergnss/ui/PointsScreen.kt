@@ -55,8 +55,11 @@ fun PointsScreen(c: RoverController) {
     val pos by c.pos.collectAsStateWithLifecycle()
     val pointsFlow = remember(job?.id) { job?.let { c.db.points().byJob(it.id) } ?: emptyFlow() }
     val pointsByName by pointsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
-    // nejnovější nahoře (0.12.0)
-    val points = remember(pointsByName) { pointsByName.sortedByDescending { it.createdMs } }
+    // jen změřené body REC (0.13.0 – zadané a ČÚZK body jsou ve Vytyčování), nejnovější nahoře
+    val points = remember(pointsByName) {
+        pointsByName.filter { it.source == PointSource.MEASURED }.sortedByDescending { it.createdMs }
+    }
+    var show3d by remember { mutableStateOf(false) }
     val measFlow = remember(job?.id) { job?.let { c.db.measurements().byJob(it.id) } ?: emptyFlow() }
     val meas by measFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     val measByPoint = remember(meas) { meas.filter { it.endMs != null }.groupBy { it.pointId } }
@@ -100,33 +103,14 @@ fun PointsScreen(c: RoverController) {
     val zipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { exportPoints(it, true) }
     val sumLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { exportPoints(it, false) }
 
-    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            val j = c.ensureJob()
-            val r = withContext(Dispatchers.IO) {
-                try {
-                    context.contentResolver.openInputStream(uri)?.use { PointIo.import(it, j.id) }
-                } catch (e: Exception) {
-                    PointIo.ImportResult(emptyList(), 0, e.message)
-                }
-            }
-            if (r == null || r.error != null) {
-                c.postMessage("Import selhal: ${r?.error ?: "soubor nelze otevřít"}")
-                return@launch
-            }
-            withContext(Dispatchers.IO) { c.db.points().insertAll(r.points) }
-            c.postMessage("Načteno ${r.points.size} bodů" + if (r.skipped > 0) ", vynecháno ${r.skipped} řádků" else "")
-        }
-    }
     val measLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             val n = withContext(Dispatchers.IO) {
                 try {
                     val j = c.ensureJob()
-                    val list = c.db.measurements().listByJob(j.id)
-                    val map = c.db.points().listByJob(j.id).associateBy { it.id }
+                    val map = c.db.points().listByJob(j.id).filter { it.source == PointSource.MEASURED }.associateBy { it.id }
+                    val list = c.db.measurements().listByJob(j.id).filter { it.pointId in map }
                     context.contentResolver.openOutputStream(uri)?.use { Exporter.measurementsCsv(map, list, it) } ?: -1
                 } catch (e: Exception) {
                     -1
@@ -149,29 +133,10 @@ fun PointsScreen(c: RoverController) {
             c.postMessage(if (n >= 0) "Exportováno $n bodů (KML)" else "Soubor nelze zapsat")
         }
     }
-    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri: Uri? ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            val n = withContext(Dispatchers.IO) {
-                try {
-                    context.contentResolver.openOutputStream(uri)?.use { PointIo.export(points, it) } ?: -1
-                } catch (e: Exception) {
-                    -1
-                }
-            }
-            c.postMessage(if (n >= 0) "Exportováno $n bodů" else "Soubor nelze zapsat")
-        }
-    }
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.padding(horizontal = 12.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = {
-                scope.launch {
-                    val j = c.ensureJob()
-                    editing = Point(jobId = j.id, name = "")
-                }
-            }) { Text("Nový bod") }
-            OutlinedButton(onClick = { importLauncher.launch(arrayOf("text/*", "application/octet-stream")) }) { Text("Import") }
+            Button(onClick = { show3d = true }, enabled = points.any { it.lat != null && it.hEll != null }) { Text("3D") }
             OutlinedButton(onClick = {
                 selecting = !selecting
                 selected = emptySet()
@@ -184,9 +149,9 @@ fun PointsScreen(c: RoverController) {
                         selecting = true
                         selected = emptySet()
                     })
-                    androidx.compose.material3.DropdownMenuItem(text = { Text("CSV (S-JTSK, ETRS89, Bpv)") }, onClick = {
+                    androidx.compose.material3.DropdownMenuItem(text = { Text("CSV měření (každé měření, výsledek, shluky)") }, onClick = {
                         exportMenu = false
-                        exportLauncher.launch(FileNames.job(job?.name ?: "lokalita", "body", System.currentTimeMillis(), "csv"))
+                        measLauncher.launch(FileNames.job(job?.name ?: "lokalita", "mereni", System.currentTimeMillis(), "csv"))
                     })
                     androidx.compose.material3.DropdownMenuItem(text = { Text("KML (Google Earth, mapy)") }, onClick = {
                         exportMenu = false
@@ -194,11 +159,6 @@ fun PointsScreen(c: RoverController) {
                     })
                 }
             }
-        }
-        if (points.any { it.control }) Row(Modifier.padding(horizontal = 12.dp)) {
-            OutlinedButton(onClick = {
-                measLauncher.launch(FileNames.job(job?.name ?: "lokalita", "mereni", System.currentTimeMillis(), "csv"))
-            }) { Text("Export měření bodů") }
         }
         if (selecting) {
             Text(
@@ -233,13 +193,13 @@ fun PointsScreen(c: RoverController) {
             )
         }
         Text(
-            "Body bodových polí ČÚZK: na mapě (Živě) zapni vrstvu ČÚZK a klepni na bod.",
+            "Změřené body (REC). Zadané body a body ČÚZK jsou ve Vytyčování.",
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
         )
         HorizontalDivider()
         if (points.isEmpty()) {
-            Text("Lokalita nemá žádné body.", modifier = Modifier.padding(16.dp))
+            Text("Lokalita nemá změřené body – změř je tlačítkem REC v Živě.", modifier = Modifier.padding(16.dp))
         }
         val g = pos?.etrs()
         LazyColumn(Modifier.fillMaxSize()) {
@@ -330,6 +290,8 @@ fun PointsScreen(c: RoverController) {
         },
         dismissButton = { TextButton(onClick = { askDelete = false }) { Text("Zrušit") } },
     )
+
+    if (show3d) Points3DScreen(c, points, lastMeas, onClose = { show3d = false })
 
     editing?.let { p ->
         PointEditor(

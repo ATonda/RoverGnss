@@ -568,3 +568,25 @@ Podklad: měření 7. 11. (Lesní mlýn – hráz, parkoviště, potok) a 9. 11.
 - Dialog REC ukazuje výšku antény a cíl z profilu Měření.
 - Přepnutí profilu roveru změní konfiguraci X20 a může na začátku shodit fix – ověření fixu tím neovlivní.
 - Verze 0.12.1 (versionCode 39).
+
+## 38. Stav aplikace 0.13.0 (9. 11.) – Body / Vytyčování, změřený bod jen ke čtení, Body 3D
+
+**Rozdělení bodů**
+- **Body** = jen změřené body REC (zdroj „změřený“). Bez Nový bod / Import; Export: ZIP (.log + souhrn), CSV měření (každé měření, výsledek, shluky), KML. Tlačítko **3D**.
+- **Vytyčování** = zadané body a body ČÚZK. Nový bod, Import CSV, Export CSV / KML, klepnutí na bod → karta (formulář, měření daného bodu „Měřit“, Do lokality…). Výběr k vytyčení, Vytyčovat, Protokol CSV beze změny. Změřené body se tu nevytyčují.
+- **Objekt** nabízí v náčrtu jen změřené body.
+- Data se nepřesouvají – rozdělení podle zdroje bodu.
+
+**Karta změřeného bodu**
+- Souřadnice jen ke čtení, všechny vyplněné: S-JTSK Y / X, H Bpv, φ, λ, h, excentr, kvalita. Mění je jen nové měření.
+- Upravit: název, druh, poznámka, kontrolní bod, excentr výšky (posune h a Bpv), odkaz.
+- Časované „Měřit“ jen u daných bodů; kontrolní bod se přeměřuje tlačítkem REC → „Přeměřit …“.
+- U daných bodů formulář ukazuje dopočtené hodnoty viditelně („dopočteno z ETRS89: Y … · X …“), ne jen jako šedou nápovědu v poli.
+
+**Body 3D** (Body → 3D)
+- Body lokality kolem těžiště: jeden prst otáčení a naklopení, dva prsty zoom, dvojklep výchozí pohled. Podlaha ve výšce nejnižšího bodu (kružnice, S/J/V/Z), svislice od bodů, názvy.
+- Vlevo stupnice nadmořské výšky Bpv (h elipsoidu, když Bpv chybí) ve skutečných metrech; převýšení ×1 / ×5 / ×10.
+- Barvy: zelená ověřený fix, žlutá fix bez splnění cíle, oranžová podezřelý fix, červená bez fixu; volitelně „i zadané body“ (šedý čtverec).
+- Klepnutí na dva body → spojnice a ΔY, ΔX (S-JTSK), ΔH, vodorovná a šikmá vzdálenost, azimut, sklon [%], přesnost z σ obou měření; u bodu bez ověřeného fixu varování (chyba může být dm až m, σ ji neukáže). Třetí klepnutí začne novou dvojici, klepnutí mimo body výběr zruší.
+
+- Verze 0.13.0 (versionCode 40).
