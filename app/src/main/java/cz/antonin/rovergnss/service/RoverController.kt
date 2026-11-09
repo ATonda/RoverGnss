@@ -135,6 +135,7 @@ data class MeasureState(
     val verifyRequested: Boolean = false,
     val failedNotified: Boolean = false,
     val fromObject: Boolean = false,  // spuštěno z náčrtu objektu – aplikace nepřepíná na mapu
+    val remeasure: Boolean = false,   // přeměření existujícího bodu (kontrolní bod) – souřadnice bodu se nemění
 )
 
 /**
@@ -412,6 +413,92 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         _messages.tryEmit("Smazáno $n bodů")
     }
 
+    /**
+     * Přesun / kopie bodů do jiné lokality (0.12.0) i s měřeními a soubory. Přesun: bod, jeho měření a stopy měření
+     * („M …“) dostanou novou lokalitu; v náčrtech objektů původní lokality z něj zůstane nezměřený bod se stejným
+     * jménem. Kopie: nový bod s kopiemi měření, stop (epochy, diagnostika) a souborů (.log, .ubx).
+     * Při shodě jména v cílové lokalitě přípona „ (2)“, „ (3)“ …
+     */
+    fun movePoints(list: List<Point>, toJob: Long, copy: Boolean) = scope.launch {
+        val target = db.jobs().get(toJob) ?: return@launch
+        val names = db.points().listByJob(toJob).map { it.name }.toMutableSet()
+        var n = 0
+        var renamed = 0
+        for (p0 in list) {
+            val p = db.points().get(p0.id) ?: continue
+            if (p.jobId == toJob) continue
+            if (_measure.value?.point?.id == p.id) {
+                _messages.tryEmit("Na bodě ${p.name} probíhá měření")
+                continue
+            }
+            var nm = p.name
+            var k = 2
+            while (nm in names) nm = "${p.name} (${k++})"
+            if (nm != p.name) renamed++
+            names += nm
+            try {
+                if (copy) {
+                    val nid = db.points().insert(p.copy(id = 0, jobId = toJob, name = nm, stakeSel = false))
+                    for (m in db.measurements().byPointList(p.id)) {
+                        val tid = m.trackId?.let { copyTrack(it, toJob) }
+                        val ubx = m.rawUbx?.let { copyRawFile(it) }
+                        db.measurements().insert(m.copy(id = 0, pointId = nid, trackId = tid, rawUbx = ubx))
+                    }
+                } else {
+                    db.points().update(p.copy(jobId = toJob, name = nm))
+                    for (m in db.measurements().byPointList(p.id)) {
+                        m.trackId?.let { t -> db.tracks().get(t)?.let { db.tracks().update(it.copy(jobId = toJob)) } }
+                    }
+                    // náčrty objektů původní lokality: změřený bod v nich nahradí nezměřený se stejným jménem
+                    for (o in db.objects().listByJob(p.jobId)) {
+                        if (o.sketch.places.none { it.pointId == p.id }) continue
+                        updateObject(o.id) { s ->
+                            s.copy(places = s.places.map { pl ->
+                                if (pl.pointId == p.id) pl.copy(pointId = 0L, label = pl.label.ifEmpty { p.name }) else pl
+                            })
+                        }
+                    }
+                    if (_navTarget.value?.id == p.id) _navTarget.value = null
+                }
+                n++
+            } catch (e: Exception) {
+                Log.e(TAG, "přesun bodu", e)
+                _messages.tryEmit("Bod ${p.name}: ${e.javaClass.simpleName} ${e.message ?: ""}")
+            }
+        }
+        _messages.tryEmit(
+            (if (copy) "Zkopírováno" else "Přesunuto") + " $n bodů do lokality ${target.name}" +
+                if (renamed > 0) " ($renamed přejmenováno – jméno už tam bylo)" else ""
+        )
+    }
+
+    /** Kopie stopy měření do lokality [toJob]: řádek trasy, epochy, diagnostika a surový soubor. Vrací id kopie. */
+    private suspend fun copyTrack(trackId: Long, toJob: Long): Long? {
+        val t = db.tracks().get(trackId) ?: return null
+        val raw = t.rawFile?.let { copyRawFile(it) }
+        val nid = db.tracks().insert(t.copy(id = 0, jobId = toJob, rawFile = raw))
+        db.tracks().points(trackId).takeIf { it.isNotEmpty() }?.let { l -> db.tracks().insertPoints(l.map { it.copy(id = 0, trackId = nid) }) }
+        db.tracks().diag(trackId).takeIf { it.isNotEmpty() }?.let { l -> db.tracks().insertDiag(l.map { it.copy(id = 0, trackId = nid) }) }
+        return nid
+    }
+
+    /** Kopie souboru v files/raw pod novým jménem (`…_kopie2.log`); null = soubor neexistuje. */
+    private fun copyRawFile(name: String): String? {
+        val src = rawFile(name)
+        if (!src.exists()) return null
+        val dot = name.lastIndexOf('.')
+        val base = if (dot > 0) name.substring(0, dot) else name
+        val ext = if (dot > 0) name.substring(dot) else ""
+        var k = 1
+        var nn: String
+        do {
+            nn = "${base}_kopie${if (k > 1) k.toString() else ""}$ext"
+            k++
+        } while (rawFile(nn).exists())
+        src.copyTo(rawFile(nn))
+        return nn
+    }
+
     private suspend fun deletePointNow(p: Point): Boolean {
         if (_measure.value?.point?.id == p.id) {
             _messages.tryEmit("Na bodě ${p.name} probíhá měření")
@@ -610,8 +697,13 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
      * REC: měření nového bodu [name] v lokalitě [jobId] (nebo nové lokalitě [newJob]). Záznam se surovým proudem
      * (hlavička JSON na začátku, souhrn na konci), statický model, průběžné vyhodnocení fixu, zvuky; konec sám
      * při splnění cíle z profilu, „nejde změřit“ po limitu (rozhoduje uživatel), ručně kdykoli.
+     * [control] = nový bod je kontrolní; [existing] = přeměření existujícího bodu (0.12.0, kontrolní bod na začátku
+     * a na konci akce) – bod se nevytváří a jeho souřadnice se nemění, měření dostane odchylku od nich.
      */
-    fun startPointMeasure(jobId: Long?, newJob: String?, name: String, objPlace: Pair<Long, ObjPlace>? = null) = scope.launch {
+    fun startPointMeasure(
+        jobId: Long?, newJob: String?, name: String, objPlace: Pair<Long, ObjPlace>? = null,
+        control: Boolean = false, existing: Point? = null,
+    ) = scope.launch {
         if (_measure.value != null) {
             _messages.tryEmit("Probíhá jiné měření")
             return@launch
@@ -625,26 +717,27 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             _messages.tryEmit(if (test.run.value != null) "Běží test – měření bodu nelze spustit" else "Běží záznam – nejdřív ho ukonči")
             return@launch
         }
-        // lokalita: nová, vybraná, nebo aktivní
+        // lokalita: nová, vybraná, nebo aktivní (přeměření: lokalita bodu)
         val nj = newJob?.trim()?.takeIf { it.isNotEmpty() }
         val job = when {
+            existing != null -> db.jobs().get(existing.jobId)
             nj != null -> db.jobs().insert(Job(name = nj)).let { db.jobs().get(it) }
             jobId != null -> db.jobs().get(jobId)
             else -> null
         } ?: ensureJob()
         prefs.activeJobId = job.id
         _activeJob.value = job
-        val n = name.trim().ifEmpty { nextPointName(job.id) }
-        if (db.points().listByJob(job.id).any { it.name == n }) {
+        val n = existing?.name ?: name.trim().ifEmpty { nextPointName(job.id) }
+        if (existing == null && db.points().listByJob(job.id).any { it.name == n }) {
             _messages.tryEmit("Bod $n v lokalitě ${job.name} už je")
             return@launch
         }
         val u = prefs.user
         val goal = u.pointGoal
         val now = System.currentTimeMillis()
-        val pid = db.points().insert(
+        val pid = existing?.id ?: db.points().insert(
             Point(jobId = job.id, name = n, kind = "REC", source = PointSource.MEASURED, quality = PointQuality.APPROX,
-                note = "měří se…")
+                note = "měří se…", control = control)
         )
         val point = db.points().get(pid) ?: return@launch
         // měření spuštěné z náčrtu objektu: bod se hned umístí do náčrtu
@@ -654,6 +747,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         }
         val header = JSONObject()
             .put("rg", "hlavicka").put("aplikace", appVersion()).put("lokalita", job.name).put("bod", n)
+            .put("kontrolni", point.control).put("premereni", existing != null)
             .put("zacatek_utc", isoUtc(now)).put("vyska_anteny_m", u.antennaH).put("profil", u.name)
             .put("prijimac", _sta.value?.profileName ?: "").put("rover_fw", _info.value?.fw ?: "")
             .put("cil", JSONObject().put("fix_s", goal.minFixSec).put("sigma_h_m", goal.sigmaH).put("sigma_u_m", goal.sigmaU)
@@ -662,7 +756,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(now))
         val trackId = startRecordingNow("M $n $stamp", forceRaw = true, header = header.toString())
         if (trackId == null) {
-            db.points().delete(pid)
+            if (existing == null) db.points().delete(pid)
             _messages.tryEmit("Záznam nelze spustit")
             return@launch
         }
@@ -680,7 +774,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         db.measurements().get(id)?.let { db.measurements().update(it.copy(staticModel = static)) }
         _measure.value = MeasureState(
             id, trackId, point, now, 0, u.antennaH, staticModel = static, mode = MeasureMode.POINT,
-            goal = goal, jobName = job.name, fromObject = objPlace != null,
+            goal = goal, jobName = job.name, fromObject = objPlace != null, remeasure = existing != null,
         )
         EventLog.log("REC: měření bodu $n (${job.name})")
         pointTicker = scope.launch { pointLoop() }
@@ -723,6 +817,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             // ověření fixu: jednou vynutit nové určení fixu (horký start X20)
             if (st.phase == PointPhase.VERIFY && !m.verifyRequested) {
                 next = next.copy(verifyRequested = true)
+                ev.markVerify()
                 _messages.tryEmit("Ověření fixu: X20 určí fix znovu (horký start)")
                 scope.launch { resetX20Now("hot") }
             }
@@ -742,7 +837,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         if (!save) {
             db.measurements().delete(m.measurementId)
             deleteTrackFiles(m.trackId)
-            db.points().delete(m.point.id)
+            if (!m.remeasure) db.points().delete(m.point.id)
             _messages.tryEmit("Měření bodu ${m.point.name} zrušeno")
             return
         }
@@ -754,16 +849,18 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             m.failedNotified || (st != null && el >= (m.goal?.timeoutSec ?: Int.MAX_VALUE)) -> PointResult.FAILED
             else -> PointResult.NOT_REACHED
         }
-        // poloha: shluk fixu; bez fixu nejlepší dostupná kvalita (označeno)
+        // poloha: shluk fixu; bez fixu průměr posledních 30 s (ustálená část, 0.12.0), záloha celé měření (označeno)
         val fb = MeasureCalc.compute(eps)
-        val lat = st?.lat ?: fb.lat
-        val lon = st?.lon ?: fb.lon
-        val h = st?.h ?: fb.h
+        val tail = if (st?.lat == null) st?.tail else null
         val fromFix = st?.lat != null
+        val lat = st?.lat ?: tail?.lat ?: fb.lat
+        val lon = st?.lon ?: tail?.lon ?: fb.lon
+        val h = st?.h ?: tail?.h ?: fb.h
+        val noFixQ = tail?.q ?: fb.usedQuality
         val verify = when {
             m.goal?.verify != true || !m.verifyRequested -> 0
             (st?.clusters ?: 0) >= 2 -> 2
-            (st?.independent ?: 0) >= 2 -> 1
+            st?.verified == true -> 1
             else -> 0
         }
         val mount = (ntrip.state.value as? NtripState.Streaming)?.mount
@@ -773,31 +870,42 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             else -> "bez korekcí"
         }
         val sig = st?.sMeanH
-        val note = PointResult.name(result) + (if (fromFix) ", RTK fix" else if (lat != null) ", bez fixu (${if (fb.usedQuality == 0) "smíšená" else Quality.of(fb.usedQuality).label})" else ", bez polohy") +
+        val drift = if (!fromFix && st?.driftH != null) String.format(
+            Locale.US, ", drift 30 s %.2f m / výška %.2f m", st.driftH, st.driftV ?: 0.0,
+        ).replace('.', ',') else ""
+        val note = PointResult.name(result) + (if (fromFix) ", RTK fix" else if (lat != null) ", BEZ FIXU (${if (noFixQ == 0) "smíšená" else Quality.of(noFixQ).label}" + (if (tail != null) ", posledních 30 s" else "") + ") – jen orientačně" else ", bez polohy") +
             (sig?.let { ", σ průměru ${PointEvaluator.cm(it)} cm" } ?: "") +
             (st?.fixPct?.let { String.format(Locale.US, ", fix %.0f %%", it) } ?: "") +
-            (if ((st?.clusters ?: 0) >= 2) ", PODEZŘELÝ FIX" else "") +
+            (when (verify) { 1 -> ", ověřeno"; 2 -> ", ověření nesouhlasí"; else -> "" }) +
+            (if ((st?.clusters ?: 0) >= 2) ", PODEZŘELÝ FIX" else "") + drift +
             (st?.failReason?.let { " ($it)" } ?: "")
         val point = db.points().get(m.point.id) ?: m.point
-        val p2 = PointCoords.complete(
-            point.copy(
-                lat = lat, lon = lon, hEll = h, y = null, x = null, bpv = null, etrsDerived = false, jtskDerived = false,
-                quality = if (result == PointResult.OK && fromFix && (st?.clusters ?: 0) < 2) PointQuality.EXACT else PointQuality.APPROX,
-                note = note,
+        // přeměření (kontrolní bod): souřadnice bodu zůstávají, měření dostane odchylku od nich (bez excentru bodu)
+        val off = if (m.remeasure) MeasureCalc.offset(lat, lon, h?.plus(point.hOffset), point) else null
+        if (!m.remeasure) {
+            val p2 = PointCoords.complete(
+                point.copy(
+                    lat = lat, lon = lon, hEll = h?.plus(point.hOffset), y = null, x = null, bpv = null, etrsDerived = false, jtskDerived = false,
+                    quality = if (result == PointResult.OK && fromFix && verify != 2 && (st?.clusters ?: 0) < 2) PointQuality.EXACT else PointQuality.APPROX,
+                    note = note,
+                )
             )
-        )
-        db.points().update(p2)
+            db.points().update(p2)
+        }
         val old = db.measurements().get(m.measurementId)
         if (old != null) db.measurements().update(
             old.copy(
-                endMs = now, epochs = st?.epochs ?: fb.epochs, used = st?.nFix ?: fb.used,
-                usedQuality = if (fromFix) Quality.FIX.code else fb.usedQuality,
+                endMs = now, epochs = st?.epochs ?: fb.epochs,
+                used = if (fromFix) st?.clusterEpochs ?: 0 else tail?.n ?: fb.used,
+                usedQuality = if (fromFix) Quality.FIX.code else noFixQ,
                 nFix = st?.nFix ?: fb.nFix, nFloat = st?.nFloat ?: fb.nFloat, nHas = fb.nHas, nDgnss = fb.nDgnss,
                 nOther = fb.nOther, corr = corr, lat = lat, lon = lon, hEll = h,
-                sN = st?.sN ?: fb.sN, sE = st?.sE ?: fb.sE, sU = st?.sU ?: fb.sU,
+                sN = st?.sN ?: tail?.sN ?: fb.sN, sE = st?.sE ?: tail?.sE ?: fb.sE, sU = st?.sU ?: tail?.sU ?: fb.sU,
+                dN = off?.dN, dE = off?.dE, dU = off?.dU, dY = off?.dY, dX = off?.dX, dH = off?.dH,
                 result = result, fixSec = st?.fixSec, fixPct = st?.fixPct, sMeanH = st?.sMeanH, sMeanU = st?.sMeanU,
                 maxDev = st?.maxDev, segments = st?.segments ?: 0, jumps = st?.jumps ?: 0, clusters = st?.clusters ?: 0,
                 clusterDiffH = st?.clusterDiffH, verify = verify, note = note,
+                clusterDiffV = st?.clusterDiffV, driftH = st?.driftH, driftV = st?.driftV,
             )
         )
         // souhrn na konec surového souboru (záznam je už zavřený – nic se nepromíchá s daty z roveru)
@@ -822,6 +930,11 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                     .put("s_prumer_h_m", r4(st?.sMeanH)).put("s_prumer_u_m", r4(st?.sMeanU)).put("max_odchylka_m", r4(st?.maxDev))
                     .put("useky", segs).put("skoky", st?.jumps ?: 0).put("shluky", st?.clusters ?: 0)
                     .put("rozdil_shluku_h_m", r4(st?.clusterDiffH)).put("rozdil_shluku_v_m", r4(st?.clusterDiffV))
+                    .put("drift_30s_h_m", r4(st?.driftH)).put("drift_30s_v_m", r4(st?.driftV))
+                    .put("prumer_bez_fixu", if (tail != null) "posledních 30 s" else if (!fromFix && lat != null) "celé měření" else "")
+                    .put("premereni", m.remeasure)
+                    .put("odchylka_od_bodu", if (off == null) JSONObject.NULL else JSONObject().put("dN_m", r4(off.dN))
+                        .put("dE_m", r4(off.dE)).put("dU_m", r4(off.dU)).put("dH_bpv_m", r4(off.dH)))
                     .put("overeni", when (verify) { 1 -> "OK"; 2 -> "nesouhlasí"; else -> "ne" })
                     .put("vyska_anteny_m", m.antennaH).put("staticky_model", m.staticModel)
                 FileOutputStream(rawFile(f), true).use { it.write(("\r\n" + o.toString() + "\r\n").toByteArray(Charsets.UTF_8)) }
@@ -830,7 +943,11 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             _messages.tryEmit("Souhrn do souboru nelze zapsat: ${e.message}")
         }
         EventLog.log("REC ${m.point.name}: $note")
-        _messages.tryEmit("Bod ${m.point.name}: $note")
+        val offTxt = off?.let { o ->
+            String.format(Locale.US, " · od předchozího: 2D %.1f cm, výška %+.1f cm", (o.d2 ?: 0.0) * 100, ((o.dH ?: o.dU) ?: 0.0) * 100)
+                .replace('.', ',')
+        } ?: ""
+        _messages.tryEmit("Bod ${m.point.name}: $note$offTxt")
     }
 
     private fun r4(v: Double?): Any = v?.let { Math.round(it * 10000) / 10000.0 } ?: JSONObject.NULL

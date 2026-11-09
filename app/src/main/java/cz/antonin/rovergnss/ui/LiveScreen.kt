@@ -431,9 +431,9 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
         )
     }
     recJob?.let { jid ->
-        PointRecDialog(c, jid, user, onStart = { jobId, newJob, name ->
+        PointRecDialog(c, jid, user, onStart = { jobId, newJob, name, control, existing ->
             recJob = null
-            c.startPointMeasure(jobId, newJob, name)
+            c.startPointMeasure(jobId, newJob, name, control = control, existing = existing)
         }, onDismiss = { recJob = null })
     }
     if (showSats) {
@@ -640,14 +640,16 @@ private fun RecButton(rec: cz.antonin.rovergnss.service.MeasureState?, onClick: 
 
 /**
  * REC – měření bodu: lokalita (aktuální, jiná, nebo nová) a název bodu (B1, B2, … v každé lokalitě zvlášť).
- * [onStart] (id lokality, název nové lokality nebo null, název bodu).
+ * Kontrolní bod (0.12.0): nový bod označený jako kontrolní, nebo přeměření kontrolního bodu lokality
+ * (na začátku a na konci akce – odchylka od prvního měření).
+ * [onStart] (id lokality, název nové lokality nebo null, název bodu, kontrolní, přeměřovaný bod nebo null).
  */
 @Composable
 private fun PointRecDialog(
     c: RoverController,
     initialJob: Long,
     u: cz.antonin.rovergnss.data.UserProfile,
-    onStart: (Long?, String?, String) -> Unit,
+    onStart: (Long?, String?, String, Boolean, cz.antonin.rovergnss.data.Point?) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val jobsFlow = remember { c.db.jobs().all() }
@@ -656,7 +658,12 @@ private fun PointRecDialog(
     var newJob by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
-    LaunchedEffect(jobId) { name = jobId?.let { c.nextPointName(it) } ?: "B1" }
+    var control by remember { mutableStateOf(false) }
+    var controls by remember { mutableStateOf(emptyList<cz.antonin.rovergnss.data.Point>()) }
+    LaunchedEffect(jobId) {
+        name = jobId?.let { c.nextPointName(it) } ?: "B1"
+        controls = jobId?.let { id -> c.db.points().listByJob(id).filter { it.control && it.lat != null } } ?: emptyList()
+    }
     val g = u.pointGoal
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
@@ -687,10 +694,21 @@ private fun PointRecDialog(
                 androidx.compose.material3.OutlinedTextField(
                     name, { name = it }, singleLine = true, label = { Text("Název bodu") }, modifier = Modifier.fillMaxWidth(),
                 )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.Checkbox(control, { control = it })
+                    Text("Kontrolní bod (volné místo, změř na začátku i na konci akce)", style = MaterialTheme.typography.bodySmall)
+                }
+                if (controls.isNotEmpty()) {
+                    Text("Přeměřit kontrolní bod (odchylka od prvního měření):", style = MaterialTheme.typography.bodySmall)
+                    controls.forEach { p ->
+                        androidx.compose.material3.OutlinedButton(
+                            onClick = { onStart(jobId, null, p.name, true, p) }, modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Přeměřit ${p.name}") }
+                    }
+                }
                 Text(
                     "Konec sám po ${g.minFixSec} s RTK fix, σ průměru ≤ ${fmt(g.sigmaH * 100, 0)} cm vodorovně a " +
-                        "${fmt(g.sigmaU * 100, 0)} cm výška, bez skoku." +
-                        (if (g.verify) " S ověřením fixu (nové určení)." else "") +
+                        "${fmt(g.sigmaU * 100, 0)} cm výška, bez skoku, pak ověření fixu (horký start X20, nový fix se musí shodovat)." +
                         " Po ${g.timeoutSec / 60} min bez splnění „nejde změřit“. Anténa ${antCm(u.antennaH)} (profil ${u.name}).",
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -698,7 +716,7 @@ private fun PointRecDialog(
         },
         confirmButton = {
             TextButton(
-                onClick = { onStart(jobId, if (jobId == null) newJob.trim() else null, name.trim()) },
+                onClick = { onStart(jobId, if (jobId == null) newJob.trim() else null, name.trim(), control, null) },
                 enabled = name.isNotBlank() && (jobId != null || newJob.isNotBlank()),
             ) { Text("Měřit") }
         },

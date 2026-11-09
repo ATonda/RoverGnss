@@ -522,3 +522,41 @@ Specifikace: `objekt-mereni-specifikace.md` (projekt), kap. 6.
 - Menu objektu („test ▾“): **Přesunout do lokality…** a **Kopírovat do lokality…** – výběr cílové lokality. Přenáší se náčrt, kóty, vazby a pomocné body. Změřené body zůstávají v původní lokalitě; v náčrtu se z nich stanou nezměřené body se stejným jménem (REC je změří pod tím jménem, je-li v cílové lokalitě obsazené, další volné se stejnou předponou). Přesun přepne na cílovou lokalitu, kopie zůstane.
 - Hlášení dole (snackbar) 3 s.
 - Verze 0.11.16 (versionCode 37).
+
+## 36. Stav aplikace 0.12.0 (9. 11.) – spolehlivé body v terénu, přesun bodů, datum
+
+Podklad: měření 7. 11. (Lesní mlýn – hráz, parkoviště, potok) a 9. 11. (kašna MěNV, náhon) v údolí pod stromy. Rozbor logů: hráz i parkoviště měly fix od první epochy (převzatý z chůze, mezi body nic neuloženo); potok náhon – dva fixy se liší o 40 cm výšky, aplikace hlásila jen vodorovný rozdíl 9 cm; float body ujížděly 3–8 m, X20 přitom hlásila hAcc/vAcc 3–5 cm.
+
+**Ověření fixu povinné**
+- Cíl REC má ověření vždy (přepínač v Nastavení zrušen). Po splnění cíle horký start X20; bod je změřen, až když nový úsek fixu **začatý po horkém startu** trvá ≥ 10 s a leží ve shluku výsledku (5 cm / 10 cm). Fix převzatý z chůze tak sám nestačí.
+- Nový fix jinde → druhý shluk → „podezřelý fix“. Bez nového fixu do limitu → „fix se nepodařilo ověřit – po horkém startu nový fix nenaskočil“.
+- Panel: „ověřuji – čekám na nový fix“ / „nový fix 6 s z 10 s“, po shodě „Fix ověřen“.
+
+**Podezřelý fix i podle výšky**
+- Rozdíl výsledku od ostatních významných shluků: největší vodorovně a největší ve výšce (dřív jen druhý největší shluk). Text: „úseky fixu se liší o 9,3 cm, výška 40 cm“. Ukládá se `clusterDiffV`.
+
+**Bez fixu**
+- Drift za posledních 30 s (průměr posledních 5 s − prvních 5 s, všechny kvality) v panelu REC; bez fixu nad 5 cm / 10 cm červeně „poloha ujíždí, hAcc/vAcc z X20 neplatí“. Ukládá se do měření (`driftH`, `driftV`), poznámky bodu a souhrnu.
+- Výsledek bez fixu = průměr posledních 30 s v nejčastější kvalitě (ne celá konvergence); poznámka „BEZ FIXU (RTK float, posledních 30 s) – jen orientačně“. `used` = skutečný počet epoch v průměru (u fixu epochy shluku výsledku).
+- „Nejde změřit“ bez fixu doporučí změřit nejbližší volné místo s fixem a zadat výškový excentr.
+
+**Výškový excentr bodu**
+- Karta bodu: „Excentr výšky [m]“ – cíl = změřené místo + excentr (např. hladina −1,80 m pod chodníkem). Změna posune h i Bpv bodu o stejnou hodnotu; změřená výška zůstává v měření. Seznam bodů ukazuje „excentr výšky … m“, CSV sloupec `excentr_m` / `excentr_bodu`.
+
+**Kontrolní bod na začátku a na konci akce**
+- Dialog REC: zaškrtnutí „Kontrolní bod“ (nový bod s příznakem kontrolní) a tlačítka „Přeměřit KB…“ pro kontrolní body lokality. Přeměření bod nevytváří a jeho souřadnice nemění; měření dostane odchylku od bodu (dN, dE, dU, dH Bpv), hlášení „od předchozího: 2D … cm, výška … cm“, v seznamu „měření n×, poslední 2D …, výška …“.
+
+**Seznam bodů**
+- Datum a čas vzniku u každého bodu, řazení od nejnovějšího.
+- **Do lokality…** (výběr i karta bodu): přesun nebo kopie jednoho i více bodů do existující nebo nové lokality. Přesun: bod, měření a stopy měření; v náčrtech objektů původní lokality z bodu zůstane nezměřený bod se stejným jménem. Kopie: nový bod s kopiemi měření, stop (epochy, diagnostika) a souborů `.log` / `.ubx` (`…_kopie.log`). Shodné jméno v cíli → přípona „ (2)“.
+
+**Export**
+- CSV měření: navíc `vysledek` (s „PODEZŘELÝ FIX“), `fix_pct`, `skoky`, `shluky`, `rozdil_shluku_h`, `rozdil_shluku_v`, `overeni`, `drift_30s_h`, `drift_30s_v`, `excentr_bodu`.
+- `souhrn.csv`: navíc `rozdil_shluku_h_cm`, `rozdil_shluku_v_cm`, `drift_30s_h_m`, `drift_30s_v_m`, `excentr_m`.
+- Souhrn v `.log`: `drift_30s_h_m`, `drift_30s_v_m`, `prumer_bez_fixu`, `premereni`, `odchylka_od_bodu`; hlavička `kontrolni`, `premereni`.
+
+**Databáze** verze 11 (point.hOffset; measurement.clusterDiffV, driftH, driftV), data zůstávají.
+
+**Ověřit na HW:** že horký start X20 skutečně zahodí vyřešené ambiguity (nový úsek fixu po startu); jinak ověření nikdy neproběhne a bude potřeba tvrdší reset (teplý start).
+
+- Verze 0.12.0 (versionCode 38).

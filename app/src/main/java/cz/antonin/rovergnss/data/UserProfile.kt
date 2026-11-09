@@ -28,11 +28,11 @@ data class UserProfile(
     val pointJumpH: Double = 0.05,   // skok během fixu vodorovně [m]
     val pointJumpV: Double = 0.10,   // skok během fixu ve výšce [m]
     val pointTimeoutSec: Int = 180,  // „nejde změřit“ po [s]
-    val pointVerify: Boolean = false, // ověření fixu (nové určení fixu)
+    val pointVerify: Boolean = true,  // ověření fixu – od 0.12.0 povinné, uložená hodnota se nepoužívá
 ) {
-    /** Cíl měření bodu (REC). */
+    /** Cíl měření bodu (REC). Ověření fixu (nové určení po horkém startu X20) je od 0.12.0 vždy zapnuté. */
     val pointGoal: PointGoal
-        get() = PointGoal(pointMinFixSec, pointSigmaH, pointSigmaU, pointJumpH, pointJumpV, pointTimeoutSec, pointVerify)
+        get() = PointGoal(pointMinFixSec, pointSigmaH, pointSigmaU, pointJumpH, pointJumpV, pointTimeoutSec, verify = true)
 
     fun toJson(): JSONObject = JSONObject()
         .put("name", name).put("antennaH", antennaH).put("recordEvery", recordEvery).put("recordRaw", recordRaw)

@@ -206,7 +206,7 @@ private fun UserProfileEditor(u: UserProfile, roverProfiles: List<String>, onCha
     Text("Měření bodu (REC)", style = MaterialTheme.typography.titleSmall)
     Text(
         "Do průměru jen RTK fix. Konec sám, když je splněno vše: doba fixu, σ průměru, bez skoku za posledních 30 s " +
-            "(a ověření fixu, je-li zapnuto). Po limitu bez splnění „nejde změřit“ – rozhoduješ ty.",
+            "a ověření fixu (vždy: horký start X20, nový fix se musí shodovat). Po limitu bez splnění „nejde změřit“ – rozhoduješ ty.",
         style = MaterialTheme.typography.bodySmall,
     )
     Text("Aspoň RTK fix", style = MaterialTheme.typography.bodyMedium)
@@ -220,7 +220,6 @@ private fun UserProfileEditor(u: UserProfile, roverProfiles: List<String>, onCha
     Chips(POINT_JUMP_V, u.pointJumpV) { onChange(u.copy(pointJumpV = it)) }
     Text("„Nejde změřit“ po", style = MaterialTheme.typography.bodyMedium)
     Chips(POINT_TIMEOUT, u.pointTimeoutSec) { onChange(u.copy(pointTimeoutSec = it)) }
-    CheckRow("ověření fixu (horký start X20 → nové určení fixu, porovnání)", u.pointVerify) { onChange(u.copy(pointVerify = it)) }
 
     Text("Vytyčení – průměrování polohy", style = MaterialTheme.typography.titleSmall)
     Chips(STAKE_SEC, u.stakeSec) { onChange(u.copy(stakeSec = it)) }

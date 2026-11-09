@@ -73,6 +73,8 @@ private val DURATIONS = listOf(60 to "1 min", 180 to "3 min", 600 to "10 min", 1
 
 private fun signed(v: Double?, dec: Int) = if (v == null) "–" else (if (v >= 0) "+" else "") + fmt(v, dec)
 
+private fun fmtDrift(m: Double) = if (m < 1) "${fmt(m * 100, 0)} cm" else "${fmt(m, 2)} m"
+
 private fun mmss(sec: Long) = String.format(Locale.US, "%d:%02d", sec / 60, sec % 60)
 
 /** Délka měření [s]. */
@@ -101,6 +103,7 @@ fun PointExtras(c: RoverController, p: Point, onClose: () -> Unit) {
     var selected by remember { mutableStateOf(setOf<Long>()) }
     var askDeleteSel by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf<Long?>(null) }
+    var askMove by remember { mutableStateOf(false) }
 
     var ubxPending by remember { mutableStateOf<Measurement?>(null) }
     val ubxLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri: Uri? ->
@@ -156,10 +159,18 @@ fun PointExtras(c: RoverController, p: Point, onClose: () -> Unit) {
     }
 
     HorizontalDivider()
-    OutlinedButton(onClick = {
-        c.navigateTo(p)
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        OutlinedButton(onClick = {
+            c.navigateTo(p)
+            onClose()
+        }, enabled = p.lat != null && p.lon != null) { Text("Navigovat k bodu") }
+        OutlinedButton(onClick = { askMove = true }) { Text("Do lokality…") }
+    }
+    if (askMove) MovePointsDialog(c, p.jobId, 1, onDismiss = { askMove = false }) { toJob, copy ->
+        askMove = false
+        c.movePoints(listOf(p), toJob, copy)
         onClose()
-    }, enabled = p.lat != null && p.lon != null) { Text("Navigovat k bodu") }
+    }
 
     Text("Měření bodu", style = MaterialTheme.typography.titleSmall)
     Text(
@@ -413,6 +424,16 @@ private fun PointPanel(m: MeasureState, el: Long, onStop: () -> Unit, onCancel: 
                 (st.maxDev?.let { " · max ${PointEvaluator.cm(it)} cm" } ?: ""),
             fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall,
         )
+        // drift za 30 s (všechny kvality): float v údolí ujíždí o metry, i když X20 hlásí hAcc/vAcc v cm (0.12.0)
+        if (st.driftH != null) {
+            val bad = !st.inFix && (st.driftH > 0.05 || (st.driftV ?: 0.0) > 0.10)
+            Text(
+                "drift 30 s: vodorovně ${fmtDrift(st.driftH)}, výška ${fmtDrift(st.driftV ?: 0.0)}" +
+                    if (bad) " – poloha ujíždí, hAcc/vAcc z X20 neplatí" else "",
+                color = if (bad) Color(0xFFC62828) else MaterialTheme.colorScheme.onSurface,
+                fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall,
+            )
+        }
         androidx.compose.material3.LinearProgressIndicator(
             progress = { st.progress.toFloat() }, modifier = Modifier.fillMaxWidth().height(8.dp),
             color = if (st.phase == PointPhase.SUSPECT || st.phase == PointPhase.FAILED) Color(0xFFEF6C00) else Color(0xFF2E7D32),
@@ -421,8 +442,10 @@ private fun PointPanel(m: MeasureState, el: Long, onStop: () -> Unit, onCancel: 
             PointPhase.DONE -> "Bod změřen" to Color(0xFF2E7D32)
             PointPhase.VERIFY -> "Ověřuji fix – ${st.missing}" to Color(0xFF1565C0)
             PointPhase.SUSPECT -> "Podezřelý fix – ${st.missing}" to Color(0xFFEF6C00)
-            PointPhase.FAILED -> "Nejde změřit: ${st.failReason}. Bod u zdi – změř v ose stěny mimo budovu. " +
-                "Ukončit, nebo měřit dál." to Color(0xFFC62828)
+            PointPhase.FAILED -> "Nejde změřit: ${st.failReason}. " +
+                (if (st.nFix == 0) "Bez fixu je poloha jen orientační. Pod stromy: změř nejbližší volné místo s fixem " +
+                    "a k bodu zadej výškový excentr (Body → bod). " else "") +
+                "U zdi: změř v ose stěny mimo budovu. Ukončit, nebo měřit dál." to Color(0xFFC62828)
             else -> "Pokračuj – ${st.missing.ifEmpty { "měřím" }}" to MaterialTheme.colorScheme.onSurface
         }
         Text(
@@ -432,9 +455,10 @@ private fun PointPanel(m: MeasureState, el: Long, onStop: () -> Unit, onCancel: 
         if (st.segments > 1 || st.jumps > 0) Text(
             "úseky fixu ${st.segments}, skoky ${st.jumps}" +
                 (if (st.independent >= 2) ", nezávislých určení ve výsledku ${st.independent}" else "") +
-                (st.clusterDiffH?.let { ", rozdíl úseků ${PointEvaluator.cm(it)} cm" } ?: ""),
+                (st.clusterDiffH?.let { ", rozdíl úseků ${PointEvaluator.cm(it)} cm, výška ${PointEvaluator.cm(st.clusterDiffV ?: 0.0)} cm" } ?: ""),
             style = MaterialTheme.typography.bodySmall,
         )
+        if (st.verified) Text("Fix ověřen – nový fix po horkém startu se shoduje.", color = Color(0xFF2E7D32), style = MaterialTheme.typography.bodySmall)
         if (m.staticModel) Text("X20 statický model", style = MaterialTheme.typography.bodySmall)
     }
 }
@@ -455,8 +479,9 @@ private fun MeasureRow(
             PointResult.name(m.result) +
                 (m.fixPct?.let { " · fix ${it.toInt()} %" } ?: "") +
                 (m.sMeanH?.let { " · σ průměru ${PointEvaluator.cm(it)} cm" } ?: "") +
-                (if (m.clusters >= 2) " · PODEZŘELÝ FIX" else "") +
+                (if (m.clusters >= 2) " · PODEZŘELÝ FIX" + (m.clusterDiffH?.let { " (${PointEvaluator.cm(it)} cm, výška ${PointEvaluator.cm(m.clusterDiffV ?: 0.0)} cm)" } ?: "") else "") +
                 (if (m.jumps > 0) " · skoky ${m.jumps}" else "") +
+                (if (m.usedQuality != Quality.FIX.code && m.driftH != null) " · drift 30 s ${fmtDrift(m.driftH)} / výška ${fmtDrift(m.driftV ?: 0.0)}" else "") +
                 when (m.verify) { 1 -> " · ověřeno"; 2 -> " · ověření nesouhlasí"; else -> "" },
             color = when {
                 m.result == PointResult.OK && m.clusters < 2 -> Color(0xFF2E7D32)

@@ -136,7 +136,8 @@ object Exporter {
         val fmt = iso()
         val w = out.bufferedWriter(Charsets.UTF_8)
         w.write("bod;druh;zacatek_utc;konec_utc;delka_s;epoch;v_prumeru;kvalita_prumeru;fix;float;has;sbas;gnss3d;korekce;profil;" +
-            "vyska_anteny_cm;lat_etrs89;lon_etrs89;h_ell_etrs89;sN;sE;sU;dN;dE;d2D;dU;dY;dX;dH_bpv;dane_etrs_dopocteno;staticky_model\r\n")
+            "vyska_anteny_cm;lat_etrs89;lon_etrs89;h_ell_etrs89;sN;sE;sU;dN;dE;d2D;dU;dY;dX;dH_bpv;dane_etrs_dopocteno;staticky_model;" +
+            "vysledek;fix_pct;skoky;shluky;rozdil_shluku_h;rozdil_shluku_v;overeni;drift_30s_h;drift_30s_v;excentr_bodu\r\n")
         var n = 0
         for (m in list) {
             if (m.endMs == null) continue
@@ -151,6 +152,11 @@ object Exporter {
                     m.corr, m.profile, f(m.antennaH * 100, 1), f(m.lat, 9), f(m.lon, 9), f(m.hEll, 4),
                     f(m.sN, 4), f(m.sE, 4), f(m.sU, 4), f(m.dN, 4), f(m.dE, 4), f(d2, 4), f(m.dU, 4), f(m.dY, 4), f(m.dX, 4),
                     f(m.dH, 4), if (m.refDerived) "1" else "0", if (m.staticModel) "1" else "0",
+                    // 0.12.0: výsledek REC a příznaky podezřelého fixu (dřív jen v souhrn.csv)
+                    if (m.result == 0) "" else cz.antonin.rovergnss.data.PointResult.name(m.result) + if (m.clusters >= 2) " – PODEZŘELÝ FIX" else "",
+                    f(m.fixPct, 0), m.jumps.toString(), m.clusters.toString(), f(m.clusterDiffH, 3), f(m.clusterDiffV, 3),
+                    when (m.verify) { 1 -> "OK"; 2 -> "nesouhlasi"; else -> "" }, f(m.driftH, 3), f(m.driftV, 3),
+                    f(p?.hOffset?.takeIf { it != 0.0 }, 3),
                 ).joinToString(";") { it.replace(";", ",") }
             )
             w.write("\r\n")
@@ -170,7 +176,8 @@ object Exporter {
         val fmt = iso()
         val w = out.bufferedWriter(Charsets.UTF_8)
         w.write("nazev;lokalita;cas_utc;Y;X;E_5514;N_5514;lat_etrs89;lon_etrs89;h_ell;h_bpv;dh_kontrolni;" +
-            "sN_cm;sE_cm;sU_cm;s_prumer_h_cm;s_prumer_u_cm;fix_pct;fix_s;vysledek;skoky;shluky;overeni;vyska_anteny_cm;zdroj;poznamka\r\n")
+            "sN_cm;sE_cm;sU_cm;s_prumer_h_cm;s_prumer_u_cm;fix_pct;fix_s;vysledek;skoky;shluky;overeni;vyska_anteny_cm;zdroj;poznamka;" +
+            "rozdil_shluku_h_cm;rozdil_shluku_v_cm;drift_30s_h_m;drift_30s_v_m;excentr_m\r\n")
         val ctrl = points.filter { it.control && it.hEll != null }.minByOrNull { it.createdMs }
         var n = 0
         for (p in points) {
@@ -188,6 +195,8 @@ object Exporter {
                     when (m?.verify) { 1 -> "OK"; 2 -> "nesouhlasi"; else -> "" },
                     f(m?.antennaH?.times(100), 1),
                     cz.antonin.rovergnss.data.PointSource.NAMES.getOrElse(p.source) { "" }, p.note,
+                    f(m?.clusterDiffH?.times(100), 1), f(m?.clusterDiffV?.times(100), 1), f(m?.driftH, 3), f(m?.driftV, 3),
+                    f(p.hOffset.takeIf { it != 0.0 }, 3),
                 ).joinToString(";") { it.replace(";", ",").replace("\r", " ").replace("\n", " ") }
             )
             w.write("\r\n")

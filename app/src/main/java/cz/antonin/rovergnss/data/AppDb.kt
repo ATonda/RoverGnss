@@ -145,6 +145,9 @@ interface ObjectDao {
 
     @Query("SELECT * FROM site_object WHERE jobId = :jobId ORDER BY createdMs")
     fun byJob(jobId: Long): Flow<List<SiteObject>>
+
+    @Query("SELECT * FROM site_object WHERE jobId = :jobId")
+    suspend fun listByJob(jobId: Long): List<SiteObject>
 }
 
 @Dao
@@ -236,11 +239,19 @@ val MIGRATION_9_10 = object : Migration(9, 10) {
     }
 }
 
-// Verze 10. Od verze 5 se převádí (MIGRATION_5_6 … MIGRATION_9_10), starší databáze se smaže.
+/** 10 → 11: výškový excentr bodu, výškový rozdíl shluků a drift měření (0.12.0) – data zůstávají. */
+val MIGRATION_10_11 = object : Migration(10, 11) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE point ADD COLUMN hOffset REAL NOT NULL DEFAULT 0")
+        for (c in listOf("clusterDiffV REAL", "driftH REAL", "driftV REAL")) db.execSQL("ALTER TABLE measurement ADD COLUMN $c")
+    }
+}
+
+// Verze 11. Od verze 5 se převádí (MIGRATION_5_6 … MIGRATION_10_11), starší databáze se smaže.
 @Database(
     entities = [Job::class, Track::class, TrackPoint::class, TrackDiag::class, Point::class, Measurement::class,
         PhoneSession::class, PhoneSample::class, SiteObject::class],
-    version = 10, exportSchema = true,
+    version = 11, exportSchema = true,
 )
 abstract class AppDb : RoomDatabase() {
     abstract fun jobs(): JobDao
@@ -253,7 +264,7 @@ abstract class AppDb : RoomDatabase() {
     companion object {
         fun create(context: Context): AppDb =
             Room.databaseBuilder(context, AppDb::class.java, "rovergnss.db")
-                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
                 .fallbackToDestructiveMigration()
                 .build()
     }

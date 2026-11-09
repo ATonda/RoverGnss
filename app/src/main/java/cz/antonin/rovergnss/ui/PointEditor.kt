@@ -71,6 +71,7 @@ fun PointEditor(
     var source by remember { mutableIntStateOf(initial.source) }
     var url by remember { mutableStateOf(initial.url ?: "") }
     var control by remember { mutableStateOf(initial.control) }
+    var hOff by remember { mutableStateOf(if (initial.hOffset == 0.0) "" else num(initial.hOffset, 3)) }
     var err by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
 
@@ -83,6 +84,10 @@ fun PointEditor(
         if ((lat.isNotBlank() && pl == null) || (lon.isNotBlank() && pn == null)) return null.also { err = "φ/λ nejde přečíst" }
         if (bpv.isNotBlank() && Angles.parseNumber(bpv) == null) return null.also { err = "Bpv nejde přečíst" }
         if (hEll.isNotBlank() && Angles.parseNumber(hEll) == null) return null.also { err = "h nejde přečíst" }
+        val off = if (hOff.isBlank()) 0.0 else Angles.parseNumber(hOff) ?: return null.also { err = "Excentr nejde přečíst" }
+        if (kotlin.math.abs(off) > 100) return null.also { err = "Excentr nad 100 m" }
+        // změna excentru posune výšku bodu (h i Bpv o stejnou hodnotu – kvazigeoid se na místě nemění)
+        val dOff = off - initial.hOffset
         val hasJ = py != null && px != null
         val hasE = pl != null && pn != null
         if (!hasJ && !hasE) return null.also { err = "Zadej S-JTSK (Y, X) nebo ETRS89 (φ, λ)" }
@@ -91,8 +96,8 @@ fun PointEditor(
             name = name.trim(), kind = kind.trim(), note = note.trim(), url = url.trim().ifEmpty { null },
             y = if (hasJ) kotlin.math.abs(py!!) else null, x = if (hasJ) kotlin.math.abs(px!!) else null, jtskDerived = false,
             lat = if (hasE) pl else null, lon = if (hasE) pn else null, etrsDerived = false,
-            hEll = Angles.parseNumber(hEll), bpv = Angles.parseNumber(bpv),
-            quality = quality, source = source, control = control,
+            hEll = Angles.parseNumber(hEll)?.plus(dOff), bpv = Angles.parseNumber(bpv)?.plus(dOff),
+            quality = quality, source = source, control = control, hOffset = off,
         )
     }
 
@@ -141,6 +146,15 @@ fun PointEditor(
                 if (initial.etrsDerived && lat.isEmpty()) Text("ETRS89 dopočteno ze S-JTSK (šedě)", style = MaterialTheme.typography.bodySmall)
                 Text(
                     "Stačí jeden systém, druhý se dopočte převodem ČÚZK (~1–2 cm, h elipsoidu z Bpv přes kvazigeoid). Prázdná pole = dopočtená.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+
+                Text("Výškový excentr", style = MaterialTheme.typography.titleSmall)
+                NumField(hOff, { hOff = it }, "Excentr výšky [m] (např. −1,80)", Modifier.fillMaxWidth())
+                Text(
+                    "Cíl = změřené místo + excentr. Pro místa bez fixu (hladina, potok pod stromy): změř nejbližší volné místo " +
+                        "s fixem a výšku k cíli změř pásmem nebo latí. Uložení posune h i Bpv bodu" +
+                        (if (initial.hOffset != 0.0) " (teď je v nich excentr ${num(initial.hOffset, 3)} m)." else "."),
                     style = MaterialTheme.typography.bodySmall,
                 )
 

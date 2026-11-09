@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.TextButton
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -53,7 +54,9 @@ fun PointsScreen(c: RoverController) {
     val job by c.activeJob.collectAsStateWithLifecycle()
     val pos by c.pos.collectAsStateWithLifecycle()
     val pointsFlow = remember(job?.id) { job?.let { c.db.points().byJob(it.id) } ?: emptyFlow() }
-    val points by pointsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    val pointsByName by pointsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    // nejnovější nahoře (0.12.0)
+    val points = remember(pointsByName) { pointsByName.sortedByDescending { it.createdMs } }
     val measFlow = remember(job?.id) { job?.let { c.db.measurements().byJob(it.id) } ?: emptyFlow() }
     val meas by measFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     val measByPoint = remember(meas) { meas.filter { it.endMs != null }.groupBy { it.pointId } }
@@ -62,6 +65,7 @@ fun PointsScreen(c: RoverController) {
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf(setOf<Long>()) }
     var askDelete by remember { mutableStateOf(false) }
+    var askMove by remember { mutableStateOf(false) }
     val lastMeas = remember(meas) { meas.filter { it.endMs != null }.groupBy { it.pointId }.mapValues { it.value.last() } }
     fun exportPoints(uri: Uri?, logs: Boolean) {
         if (uri == null) return
@@ -213,6 +217,7 @@ fun PointsScreen(c: RoverController) {
                 OutlinedButton(onClick = {
                     sumLauncher.launch(FileNames.job(job?.name ?: "lokalita", "souhrn", System.currentTimeMillis(), "csv"))
                 }, enabled = selected.isNotEmpty()) { Text("Jen souhrn") }
+                OutlinedButton(onClick = { askMove = true }, enabled = selected.isNotEmpty()) { Text("Do lokality…") }
                 OutlinedButton(onClick = { askDelete = true }, enabled = selected.isNotEmpty()) {
                     Text("Smazat", color = MaterialTheme.colorScheme.error)
                 }
@@ -249,7 +254,10 @@ fun PointsScreen(c: RoverController) {
                         if (selecting) androidx.compose.material3.Checkbox(
                             p.id in selected, { on -> selected = if (on) selected + p.id else selected - p.id },
                         )
-                        Text(p.name, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                        Column(Modifier.weight(1f)) {
+                            Text(p.name, style = MaterialTheme.typography.titleSmall)
+                            Text(dateFmt.format(Date(p.createdMs)), style = MaterialTheme.typography.bodySmall)
+                        }
                         Text(
                             listOf(if (p.control) "kontrolní" else "", p.kind, PointSource.NAMES.getOrElse(p.source) { "" })
                                 .filter { it.isNotEmpty() }.joinToString(" · "),
@@ -276,7 +284,11 @@ fun PointsScreen(c: RoverController) {
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
-                    measByPoint[p.id]?.takeIf { p.source != PointSource.MEASURED }?.let { ms ->
+                    if (p.hOffset != 0.0) Text(
+                        "excentr výšky ${fmt(p.hOffset, 3)} m (v h a Bpv)", style = MaterialTheme.typography.bodySmall,
+                    )
+                    // odchylka posledního měření od bodu: dané body a přeměřené (kontrolní) body
+                    measByPoint[p.id]?.takeIf { p.source != PointSource.MEASURED || it.size > 1 }?.let { ms ->
                         val last = ms.last()
                         val d2 = if (last.dN != null && last.dE != null) kotlin.math.hypot(last.dN, last.dE) else null
                         Text(
@@ -295,6 +307,13 @@ fun PointsScreen(c: RoverController) {
                 HorizontalDivider()
             }
         }
+    }
+
+    if (askMove) MovePointsDialog(c, job?.id, selected.size, onDismiss = { askMove = false }) { toJob, copy ->
+        askMove = false
+        c.movePoints(points.filter { it.id in selected }, toJob, copy)
+        selected = emptySet()
+        selecting = false
     }
 
     if (askDelete) androidx.compose.material3.AlertDialog(
@@ -327,6 +346,63 @@ fun PointsScreen(c: RoverController) {
             extra = { PointExtras(c, p, onClose = { editing = null }) },
         )
     }
+}
+
+private val dateFmt = java.text.SimpleDateFormat("d. M. yyyy HH:mm", java.util.Locale.getDefault())
+
+/**
+ * Přesun / kopie bodů do jiné lokality (0.12.0): výběr existující lokality nebo nová. [onConfirm] (id lokality, kopie).
+ */
+@Composable
+fun MovePointsDialog(c: RoverController, fromJob: Long?, count: Int, onDismiss: () -> Unit, onConfirm: (Long, Boolean) -> Unit) {
+    val scope = rememberCoroutineScope()
+    val jobsFlow = remember { c.db.jobs().all() }
+    val jobs by jobsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    var target by remember { mutableStateOf<Long?>(null) }   // null = nová lokalita
+    var newName by remember { mutableStateOf("") }
+    var copy by remember { mutableStateOf(false) }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (count == 1) "Bod do jiné lokality" else "$count bodů do jiné lokality") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    androidx.compose.material3.FilterChip(!copy, { copy = false }, label = { Text("Přesunout") })
+                    androidx.compose.material3.FilterChip(copy, { copy = true }, label = { Text("Kopírovat") })
+                }
+                jobs.filter { it.id != fromJob }.forEach { j ->
+                    Row(Modifier.fillMaxWidth().clickable { target = j.id }, verticalAlignment = Alignment.CenterVertically) {
+                        androidx.compose.material3.RadioButton(target == j.id, { target = j.id })
+                        Text(j.name)
+                    }
+                }
+                Row(Modifier.fillMaxWidth().clickable { target = null }, verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.RadioButton(target == null, { target = null })
+                    Text("Nová lokalita")
+                }
+                if (target == null) androidx.compose.material3.OutlinedTextField(
+                    newName, { newName = it }, singleLine = true, label = { Text("Název nové lokality") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "Bod jde i s měřeními a soubory (.log, .ubx). Při přesunu zůstane v náčrtech objektů původní lokality " +
+                        "nezměřený bod se stejným jménem. Shodné jméno v cílové lokalitě dostane příponu (2).",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val t = target
+                if (t != null) onConfirm(t, copy)
+                else scope.launch {
+                    val id = withContext(Dispatchers.IO) { c.db.jobs().insert(cz.antonin.rovergnss.data.Job(name = newName.trim())) }
+                    onConfirm(id, copy)
+                }
+            }, enabled = target != null || newName.isNotBlank()) { Text(if (copy) "Kopírovat" else "Přesunout") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Zrušit") } },
+    )
 }
 
 fun fmtDist(d: Double): String = if (d < 1000) "${fmt(d, if (d < 10) 2 else 1)} m" else "${fmt(d / 1000, 2)} km"

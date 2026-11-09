@@ -95,6 +95,18 @@ data class PointStatus(
     val progress: Double,        // splnění cíle 0–1
     val missing: String,         // co chybí („chybí 12 s fixu“ …)
     val failReason: String?,     // důvod „nejde změřit“
+    // 0.12.0
+    val clusterEpochs: Int = 0,  // epochy v shluku výsledku (do průměru)
+    val verified: Boolean = false, // nový fix po horkém startu se shoduje s výsledkem
+    val driftH: Double? = null,  // posun polohy za posledních 30 s vodorovně [m] (všechny kvality)
+    val driftV: Double? = null,  // a ve výšce [m]
+    val tail: Tail? = null,      // průměr bez fixu: posledních 30 s, nejčastější kvalita
+)
+
+/** Průměr bez fixu z posledních [PointEvaluator.WINDOW_S] s (ustálená část, ne celá konvergence). */
+data class Tail(
+    val q: Int, val n: Int, val lat: Double, val lon: Double, val h: Double,
+    val sN: Double?, val sE: Double?, val sU: Double?,
 )
 
 /**
@@ -130,6 +142,17 @@ class PointEvaluator(val goal: PointGoal, private val periodSec: () -> Double) {
         private set
     /** Čas GNSS poslední epochy. */
     val lastTime: Long get() = lastT
+    /** Čas GNSS vynuceného nového určení fixu (horký start X20), 0 = zatím ne. */
+    var verifyT = 0L
+        private set
+    // posledních WINDOW_S s epoch s polohou bez pohybu: [t, q, n, e, u] (drift a průměr bez fixu)
+    private val window = ArrayDeque<DoubleArray>()
+
+    /** Ověření fixu: od teď se čeká na nový úsek fixu (po horkém startu X20). */
+    @Synchronized
+    fun markVerify() {
+        verifyT = lastT
+    }
 
     @Synchronized
     fun add(ep: EvalEpoch) {
@@ -142,19 +165,24 @@ class PointEvaluator(val goal: PointGoal, private val periodSec: () -> Double) {
             FLOAT -> nFloat++
             else -> nOther++
         }
+        if (ep.q > 0 && !ep.moving) {
+            if (lat0.isNaN()) {
+                // počátek místních souřadnic z první epochy s polohou (i bez fixu)
+                lat0 = ep.lat
+                lon0 = ep.lon
+                h0 = ep.h
+                val (a, b) = MeasureCalc.metersPerDeg(ep.lat)
+                kN = a
+                kE = b
+            }
+            window.addLast(doubleArrayOf(ep.t.toDouble(), ep.q.toDouble(), (ep.lat - lat0) * kN, (ep.lon - lon0) * kE, ep.h - h0))
+        }
+        while (window.isNotEmpty() && window.first()[0] < ep.t - WINDOW_S * 1000) window.removeFirst()
         if (ep.q != FIX || ep.moving) {
             closeSegment()
             return
         }
         lastFixT = ep.t
-        if (lat0.isNaN()) {
-            lat0 = ep.lat
-            lon0 = ep.lon
-            h0 = ep.h
-            val (a, b) = MeasureCalc.metersPerDeg(ep.lat)
-            kN = a
-            kE = b
-        }
         val dn = (ep.lat - lat0) * kN
         val de = (ep.lon - lon0) * kE
         val du = ep.h - h0
@@ -272,39 +300,48 @@ class PointEvaluator(val goal: PointGoal, private val periodSec: () -> Double) {
                 sMeanU = sU / sqrt(neff)
             }
         }
+        // rozdíl výsledku od ostatních významných shluků: největší vodorovně a největší ve výšce (0.12.0)
         var diffH: Double? = null
         var diffV: Double? = null
         if (signif.size >= 2) {
             val a = signif[0].mean()
-            val b = signif[1].mean()
-            diffH = hypot(a[0] - b[0], a[1] - b[1])
-            diffV = abs(a[2] - b[2])
+            for (o in signif.drop(1)) {
+                val b = o.mean()
+                diffH = max(diffH ?: 0.0, hypot(a[0] - b[0], a[1] - b[1]))
+                diffV = max(diffV ?: 0.0, abs(a[2] - b[2]))
+            }
         }
         val suspect = signif.size >= 2
         val inFix = lastQuality == FIX
         val recentJump = lastJumpT > 0 && (lastT - lastJumpT) / 1000.0 < JUMP_QUIET_S
         val independent = best?.segs?.size ?: 0
-        val newestInBest = best?.segs?.maxByOrNull { it.endT }
-        val newestSec = (newestInBest?.size ?: 0) * per
+        // ověření: úsek fixu začatý po horkém startu, ve shluku výsledku, aspoň VERIFY_MIN_S
+        val newSec = if (verifyT > 0) (best?.segs?.filter { it.startT > verifyT }?.maxOfOrNull { it.size } ?: 0) * per else 0.0
+        val verifiedNow = verifyT > 0 && newSec >= VERIFY_MIN_S
 
         // splnění jednotlivých podmínek (0–1)
         val pTime = (clusterFixSec / goal.minFixSec).coerceIn(0.0, 1.0)
         val pH = sMeanH?.let { (goal.sigmaH / max(it, 1e-6)).coerceIn(0.0, 1.0) } ?: 0.0
         val pU = sMeanU?.let { (goal.sigmaU / max(it, 1e-6)).coerceIn(0.0, 1.0) } ?: 0.0
         val baseOk = pTime >= 1.0 && pH >= 1.0 && pU >= 1.0 && inFix && !recentJump && !suspect
-        val verified = !goal.verify || (independent >= 2 && newestSec >= VERIFY_MIN_S)
+        val verified = !goal.verify || verifiedNow
+        val verifying = goal.verify && verifyT > 0 && !verified
         var progress = minOf(pTime, pH, pU)
         if (goal.verify && !verified) progress = minOf(progress, 0.9)
         if (suspect || recentJump) progress = minOf(progress, 0.5)
 
         val miss = ArrayList<String>()
-        if (!inFix) miss += if (lastQuality == FLOAT) "čekám na fix (float)" else "čekám na fix"
-        if (pTime < 1.0) miss += "chybí ${Math.ceil(goal.minFixSec - clusterFixSec).toInt()} s fixu"
-        if (sMeanH != null && pH < 1.0) miss += "rozptyl ${cm(sMeanH)} → cíl ${cm(goal.sigmaH)} cm"
-        if (sMeanU != null && pU < 1.0) miss += "výška ${cm(sMeanU)} → cíl ${cm(goal.sigmaU)} cm"
+        if (verifying) {
+            miss += if (!inFix) "ověřuji – čekám na nový fix" else "ověřuji – nový fix ${newSec.toInt()} s z ${VERIFY_MIN_S.toInt()} s"
+        } else {
+            if (!inFix) miss += if (lastQuality == FLOAT) "čekám na fix (float)" else "čekám na fix"
+            if (pTime < 1.0) miss += "chybí ${Math.ceil(goal.minFixSec - clusterFixSec).toInt()} s fixu"
+            if (sMeanH != null && pH < 1.0) miss += "rozptyl ${cm(sMeanH)} → cíl ${cm(goal.sigmaH)} cm"
+            if (sMeanU != null && pU < 1.0) miss += "výška ${cm(sMeanU)} → cíl ${cm(goal.sigmaU)} cm"
+            if (baseOk && !verified) miss += "ověření fixu"
+        }
         if (recentJump) miss += "po skoku čekám ${Math.ceil(JUMP_QUIET_S - (lastT - lastJumpT) / 1000.0).toInt()} s"
-        if (suspect) miss += "úseky fixu se liší o ${cm(diffH ?: 0.0)} cm (výška ${cm(diffV ?: 0.0)} cm)"
-        if (baseOk && !verified) miss += if (!verifyRequested) "ověření fixu" else "ověřuji – čekám na nový fix"
+        if (suspect) miss += "úseky fixu se liší o ${cm(diffH ?: 0.0)} cm, výška ${cm(diffV ?: 0.0)} cm"
 
         val done = baseOk && verified
         val timeout = elapsedSec >= goal.timeoutSec
@@ -312,21 +349,49 @@ class PointEvaluator(val goal: PointGoal, private val periodSec: () -> Double) {
             done -> PointPhase.DONE
             timeout -> PointPhase.FAILED
             suspect -> PointPhase.SUSPECT
-            baseOk && !verified -> PointPhase.VERIFY
-            !inFix && nFix == 0 -> PointPhase.WAIT_FIX
-            !inFix -> PointPhase.WAIT_FIX
-            else -> PointPhase.CONTINUE
+            verifying || (baseOk && !verified) -> PointPhase.VERIFY
+            else -> if (inFix) PointPhase.CONTINUE else PointPhase.WAIT_FIX
         }
         val failReason = if (timeout && !done) when {
             nFix == 0 && nFloat > 0 -> "jen float, fix nenaskočil"
             nFix == 0 -> "bez korekcí / bez fixu"
-            suspect -> "nestabilní fix – úseky se liší o ${cm(diffH ?: 0.0)} cm"
+            suspect -> "nestabilní fix – úseky se liší o ${cm(diffH ?: 0.0)} cm, výška ${cm(diffV ?: 0.0)} cm"
+            verifying -> "fix se nepodařilo ověřit – po horkém startu nový fix nenaskočil"
             recentJump || jumps > 0 -> "nestabilní fix (skoky)"
             pTime < 1.0 -> "fix jen ${Math.round(clusterFixSec)} s z ${goal.minFixSec} s"
             pH < 1.0 || pU < 1.0 -> "velký rozptyl"
             !verified -> "fix se nepodařilo ověřit"
             else -> "cíl nesplněn"
         } else null
+
+        // drift za posledních WINDOW_S s: průměr posledních DRIFT_EDGE_S s − průměr prvních DRIFT_EDGE_S s okna
+        var driftH: Double? = null
+        var driftV: Double? = null
+        if (window.size >= 2) {
+            val t0 = window.first()[0]
+            val t1 = window.last()[0]
+            if (t1 - t0 >= (WINDOW_S - DRIFT_EDGE_S) * 1000) {
+                val a = window.filter { it[0] <= t0 + DRIFT_EDGE_S * 1000 }
+                val b = window.filter { it[0] >= t1 - DRIFT_EDGE_S * 1000 }
+                fun avg(l: List<DoubleArray>, i: Int) = l.sumOf { it[i] } / l.size
+                driftH = hypot(avg(b, 2) - avg(a, 2), avg(b, 3) - avg(a, 3))
+                driftV = abs(avg(b, 4) - avg(a, 4))
+            }
+        }
+        // průměr bez fixu: posledních WINDOW_S s v nejčastější kvalitě (ne fix – ten má shluky)
+        val tail = window.filter { it[1].toInt() != FIX }.groupBy { it[1].toInt() }.maxByOrNull { it.value.size }?.let { (tq, l) ->
+            val n = l.size
+            val mn = l.sumOf { it[2] } / n
+            val me = l.sumOf { it[3] } / n
+            val mu = l.sumOf { it[4] } / n
+            val n1 = (n - 1).toDouble()
+            Tail(
+                q = tq, n = n, lat = lat0 + mn / kN, lon = lon0 + me / kE, h = h0 + mu,
+                sN = if (n >= 2) sqrt(l.sumOf { (it[2] - mn) * (it[2] - mn) } / n1) else null,
+                sE = if (n >= 2) sqrt(l.sumOf { (it[3] - me) * (it[3] - me) } / n1) else null,
+                sU = if (n >= 2) sqrt(l.sumOf { (it[4] - mu) * (it[4] - mu) } / n1) else null,
+            )
+        }
 
         return PointStatus(
             phase = phase, elapsedSec = elapsedSec, inFix = inFix, lastQuality = lastQuality,
@@ -337,6 +402,8 @@ class PointEvaluator(val goal: PointGoal, private val periodSec: () -> Double) {
             segments = segs.count { it.size > 0 }, jumps = jumps, clusters = signif.size,
             clusterDiffH = diffH, clusterDiffV = diffV, independent = independent,
             progress = if (done) 1.0 else progress, missing = miss.joinToString(", "), failReason = failReason,
+            clusterEpochs = best?.n ?: 0, verified = goal.verify && verified,
+            driftH = driftH, driftV = driftV, tail = tail,
         )
     }
 
@@ -359,6 +426,8 @@ class PointEvaluator(val goal: PointGoal, private val periodSec: () -> Double) {
         const val SIGNIF_SEC = 5.0     // shluk kratší než 5 s se do podezření nepočítá
         const val VERIFY_MIN_S = 10.0  // nové určení fixu aspoň 10 s
         const val TAU_S = 10.0         // korelační doba epoch pro σ průměru [s]
+        const val WINDOW_S = 30.0      // okno pro drift a průměr bez fixu [s]
+        const val DRIFT_EDGE_S = 5.0   // drift = průměr posledních 5 s − prvních 5 s okna
 
         fun cm(m: Double): String = String.format(java.util.Locale.US, "%.1f", m * 100).replace('.', ',')
     }

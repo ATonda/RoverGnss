@@ -10,7 +10,7 @@ import kotlin.math.hypot
 object Angles {
     /** Číslo s desetinnou čárkou nebo tečkou, mezery ignoruje. Prázdné = null. */
     fun parseNumber(s: String): Double? {
-        val t = s.trim().replace(" ", "").replace(' '.toString(), "").replace(',', '.')
+        val t = s.trim().replace(" ", "").replace(' '.toString(), "").replace(',', '.').replace('−', '-')
         return if (t.isEmpty()) null else t.toDoubleOrNull()
     }
 

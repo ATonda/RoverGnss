@@ -183,6 +183,9 @@ data class Point(
     val stakeDH: Double? = null,     // výška: Bpv, když je dané Bpv, jinak elipsoid
     val stakeDY: Double? = null,
     val stakeDX: Double? = null,
+    // verze 11 (0.12.0): výškový excentr – cíl (hladina, značka pod stromy) = změřené místo + hOffset [m];
+    // hEll a bpv bodu ho už obsahují, změřená výška zůstává v měření
+    val hOffset: Double = 0.0,
 )
 
 /**
@@ -245,6 +248,10 @@ data class Measurement(
     val clusters: Int = 0,            // shluky úseků (> 1 = podezřelý fix)
     val clusterDiffH: Double? = null, // rozdíl shluků vodorovně [m]
     val verify: Int = 0,              // ověření fixu: 0 ne, 1 OK, 2 nesouhlasí
+    // verze 11 (0.12.0)
+    val clusterDiffV: Double? = null, // rozdíl shluků ve výšce [m]
+    val driftH: Double? = null,       // drift polohy za posledních 30 s vodorovně [m]
+    val driftV: Double? = null,       // a ve výšce [m]
 )
 
 /** Porovnání GNSS telefonu s roverem (verze 8). Odsazení telefonu od antény roveru [m]: telefon = anténa + odsazení. */
