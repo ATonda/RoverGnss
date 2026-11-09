@@ -560,3 +560,11 @@ Podklad: měření 7. 11. (Lesní mlýn – hráz, parkoviště, potok) a 9. 11.
 **Ověřit na HW:** že horký start X20 skutečně zahodí vyřešené ambiguity (nový úsek fixu po startu); jinak ověření nikdy neproběhne a bude potřeba tvrdší reset (teplý start).
 
 - Verze 0.12.0 (versionCode 38).
+
+## 37. Stav aplikace 0.12.1 (9. 11.) – REC v profilu Měření
+
+- REC sám přepne na uživatelský profil **Měření** (i profil roveru podle názvu přijímače, čeká na potvrzení), měří v něm (výška antény, cíl, 1 Hz, statický model) a po konci nebo zrušení se vrátí na předchozí profil. Hlášení „Profil Měření na dobu měření bodu, potom zpět …“.
+- Zpět se nepřepíná, když uživatel během měření profil sám změnil. Když profil „Měření“ neexistuje (přejmenovaný / smazaný), měří se v aktivním profilu jako dřív.
+- Dialog REC ukazuje výšku antény a cíl z profilu Měření.
+- Přepnutí profilu roveru změní konfiguraci X20 a může na začátku shodit fix – ověření fixu tím neovlivní.
+- Verze 0.12.1 (versionCode 39).

@@ -431,7 +431,9 @@ fun LiveScreen(c: RoverController, full: Boolean, onTarget: () -> Unit, onFull: 
         )
     }
     recJob?.let { jid ->
-        PointRecDialog(c, jid, user, onStart = { jobId, newJob, name, control, existing ->
+        // REC měří v profilu „Měření“ (0.12.1) – dialog ukazuje jeho výšku antény a cíl
+        val recUser = c.users.value.firstOrNull { it.name.trim().equals("Měření", ignoreCase = true) } ?: user
+        PointRecDialog(c, jid, recUser, onStart = { jobId, newJob, name, control, existing ->
             recJob = null
             c.startPointMeasure(jobId, newJob, name, control = control, existing = existing)
         }, onDismiss = { recJob = null })

@@ -136,6 +136,7 @@ data class MeasureState(
     val failedNotified: Boolean = false,
     val fromObject: Boolean = false,  // spuštěno z náčrtu objektu – aplikace nepřepíná na mapu
     val remeasure: Boolean = false,   // přeměření existujícího bodu (kontrolní bod) – souřadnice bodu se nemění
+    val prevUser: Int = -1,           // REC: index profilu před přepnutím na „Měření“ (-1 = nepřepínalo se)
 )
 
 /**
@@ -732,6 +733,8 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
             _messages.tryEmit("Bod $n v lokalitě ${job.name} už je")
             return@launch
         }
+        // profil Měření na dobu REC (0.12.1) – výška antény, cíl i nastavení přijímače z něj
+        val prevUser = switchToMeasureProfile()
         val u = prefs.user
         val goal = u.pointGoal
         val now = System.currentTimeMillis()
@@ -757,6 +760,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         val trackId = startRecordingNow("M $n $stamp", forceRaw = true, header = header.toString())
         if (trackId == null) {
             if (existing == null) db.points().delete(pid)
+            restoreUserProfile(prevUser)
             _messages.tryEmit("Záznam nelze spustit")
             return@launch
         }
@@ -775,6 +779,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         _measure.value = MeasureState(
             id, trackId, point, now, 0, u.antennaH, staticModel = static, mode = MeasureMode.POINT,
             goal = goal, jobName = job.name, fromObject = objPlace != null, remeasure = existing != null,
+            prevUser = prevUser,
         )
         EventLog.log("REC: měření bodu $n (${job.name})")
         pointTicker = scope.launch { pointLoop() }
@@ -828,6 +833,38 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
                 return
             }
         }
+    }
+
+    /**
+     * REC (0.12.1): přepne na uživatelský profil „Měření“ i s profilem roveru a počká na potvrzení roveru.
+     * Vrací index původního profilu, -1 = nepřepínalo se (už je aktivní, nebo profil „Měření“ neexistuje).
+     */
+    private suspend fun switchToMeasureProfile(): Int {
+        val l = prefs.userProfiles
+        val i = l.indexOfFirst { it.name.trim().equals(MEASURE_PROFILE, ignoreCase = true) }
+        val cur = prefs.userIndex
+        if (i < 0 || i == cur) return -1
+        prefs.userIndex = i
+        refreshUsers()
+        val rp = userRoverIndex()
+        if (rp >= 0 && _info.value?.profileIndex != rp) {
+            val r = command(JSONObject().put("cmd", "profile").put("i", rp), 5000)
+            if (r == null || !r.optBoolean("ok")) _messages.tryEmit("Přepnutí profilu roveru selhalo: ${r?.optString("err") ?: "bez odpovědi"}")
+            requestInfo()
+        }
+        EventLog.log("REC: profil ${l[i].name} (předtím ${l.getOrNull(cur)?.name})")
+        _messages.tryEmit("Profil ${l[i].name} na dobu měření bodu, potom zpět ${l.getOrNull(cur)?.name ?: ""}")
+        return cur
+    }
+
+    /** Po REC zpět na profil před měřením – jen když ho uživatel mezitím sám nezměnil. */
+    private fun restoreUserProfile(prev: Int) {
+        if (prev < 0) return
+        val l = prefs.userProfiles
+        if (!l.getOrNull(prefs.userIndex)?.name.orEmpty().trim().equals(MEASURE_PROFILE, ignoreCase = true)) return
+        if (prev !in l.indices) return
+        selectUser(prev)
+        EventLog.log("REC: profil zpět ${l[prev].name}")
     }
 
     /** Uložení (nebo zahození) měření bodu REC: bod, souhrn měření, souhrn na konec surového souboru. */
@@ -1103,6 +1140,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
         val eps = synchronized(measEpochs) { ArrayList(measEpochs).also { measEpochs.clear() } }
         if (m.mode == MeasureMode.POINT) {
             finishPoint(m, eps, save)
+            restoreUserProfile(m.prevUser)
             return@launch
         }
         if (!save) {
@@ -2614,6 +2652,7 @@ class RoverController(private val context: Context, val db: AppDb, val prefs: Pr
     companion object {
         private const val AUTO_CONNECT_MS = 5 * 60_000L
         private const val TAG = "RoverController"
+        private const val MEASURE_PROFILE = "Měření"   // uživatelský profil, na který se přepíná při REC
         const val TRAIL_MAX = 7200  // 2 h při 1 Hz
         const val UNDO_MAX = 50     // kroků Zpět u náčrtu objektu
         const val LIVE_MAX = 50_000       // průběžný průměr: nejvýš posledních 50 000 epoch (14 h při 1 Hz)
